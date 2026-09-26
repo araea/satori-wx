@@ -19,6 +19,8 @@
 #include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
+#include <errno.h>
+#include <sys/mman.h>
 #include <android/log.h>
 
 #include "zygisk.hpp"
@@ -272,21 +274,18 @@ static const char *BaseOf(const char *path) {
  *   0 = 已装（幂等）；1 = 本次装上；2 = 类还没加载（retry）；
  *   3 = data_ 还是存根（natives 未注册，retry）；4 = 其它失败。
  */
-static int InstallOne(JNIEnv *env, jobject loader, Target *t, int idx) {
+/**
+ * 对已解析的类直写 data_。返回码：0=已装（幂等）；1=本次装上；
+ * 3=data_ 还是存根（retry）；4=其它失败。
+ */
+static int WriteDataFor(JNIEnv *env, Target *t, int idx, jclass cls) {
     if (t->installed) return 0;
-    jclass cls = env->FindClass(t->cls);   // 内嵌 loader 的父是宿主，直接找得到
-    if (cls == nullptr) {
-        env->ExceptionClear();
-        snprintf(t->note, sizeof(t->note), "class-missing %s", t->cls);
-        return 2;
-    }
     jmethodID mid = env->GetMethodID(cls, t->method, t->sig);
     if (mid == nullptr) {
         env->ExceptionClear();
         snprintf(t->note, sizeof(t->note), "method-missing %s.%s", t->cls, t->method);
         return 4;
     }
-    env->DeleteLocalRef(cls);
 
     auto *words = reinterpret_cast<uintptr_t *>(mid);
     uintptr_t cur = __atomic_load_n(&words[2], __ATOMIC_SEQ_CST);
@@ -325,6 +324,19 @@ static int InstallOne(JNIEnv *env, jobject loader, Target *t, int idx) {
              BaseOf(path), t->method);
     NLog("install: %s.%s %s | before: %s", t->cls, t->method, t->note, before);
     return 1;
+}
+
+static int InstallOne(JNIEnv *env, jobject loader, Target *t, int idx) {
+    if (t->installed) return 0;
+    jclass cls = env->FindClass(t->cls);   // 内嵌 loader 的父是宿主，直接找得到
+    if (cls == nullptr) {
+        env->ExceptionClear();
+        snprintf(t->note, sizeof(t->note), "class-missing %s", t->cls);
+        return 2;
+    }
+    int r = WriteDataFor(env, t, idx, cls);
+    env->DeleteLocalRef(cls);
+    return r;
 }
 
 /** 装全部目标；返回给 Java 的状态串（required 没全装上则带 retry: 前缀）。 */
@@ -385,6 +397,128 @@ static jstring NativeHookInfo(JNIEnv *env, jclass) {
                                  kTargets[i].note);
     }
     return env->NewStringUTF(buf);
+}
+
+// ---- 全局 RegisterNatives 表槽：抢在 SetCallback 之前就位 ----------------------------
+//
+// SetCallback 在 mars 初始化时毫秒级就被调用，Boot 的 500ms 重试循环追不上（v0.1.2 实测
+// setcb 零条）。这里把 libart 函数表的 RegisterNatives 槽也换一层（M1 探针验证过的数据
+// 补丁手法）：微信注册 natives 的那一刻，同步直写我们的函数——时序上必然早于 SetCallback。
+// 目标装齐后立刻把表还原。
+
+static const JNINativeInterface *g_jni_table = nullptr;
+static void **g_rn_slot = nullptr;
+static void *g_orig_rn = nullptr;
+static uintptr_t g_rn_page = 0;
+static size_t g_rn_page_size = 0;
+static int g_rn_prot = -1;
+static volatile int g_rn_active = 0;
+static pthread_mutex_t g_rn_mu = PTHREAD_MUTEX_INITIALIZER;
+
+static bool AllRequiredInstalled() {
+    for (int i = 0; i < kTargetCount; i++) {
+        if (kTargets[i].required && !kTargets[i].installed) return false;
+    }
+    return true;
+}
+
+static void RestoreGlobalRN() {
+    if (__atomic_exchange_n(&g_rn_active, 0, __ATOMIC_SEQ_CST) == 0) return;
+    mprotect((void *) g_rn_page, g_rn_page_size, g_rn_prot | PROT_WRITE);
+    *g_rn_slot = g_orig_rn;
+    if (g_rn_prot != (PROT_READ | PROT_WRITE)) {
+        mprotect((void *) g_rn_page, g_rn_page_size, g_rn_prot);
+    }
+    NLog("global RegisterNatives restored");
+}
+
+static jint MyGlobalRegisterNatives(JNIEnv *env, jclass clazz,
+                                    const JNINativeMethod *methods, jint n) {
+    using OrigRn = jint (*)(JNIEnv *, jclass, const JNINativeMethod *, jint);
+    jint r = g_orig_rn != nullptr
+        ? reinterpret_cast<OrigRn>(g_orig_rn)(env, clazz, methods, n) : JNI_ERR;
+    if (r == JNI_OK && __atomic_load_n(&g_rn_active, __ATOMIC_SEQ_CST)) {
+        pthread_mutex_lock(&g_rn_mu);
+        for (jint i = 0; i < n; i++) {
+            const char *name = methods[i].name ? methods[i].name : "";
+            const char *sig = methods[i].signature ? methods[i].signature : "";
+            for (int k = 0; k < kTargetCount; k++) {
+                Target *t = &kTargets[k];
+                if (t->installed || strcmp(name, t->method) != 0 ||
+                    strcmp(sig, t->sig) != 0) {
+                    continue;
+                }
+                // 此时 data_ 已落成微信（或 YTAG）的实现；同步直写，必然早于 SetCallback。
+                if (WriteDataFor(env, t, k, clazz) == 1) {
+                    NLog("early-hook via RegisterNatives: %s.%s", t->cls, t->method);
+                }
+            }
+        }
+        bool done = AllRequiredInstalled();
+        pthread_mutex_unlock(&g_rn_mu);
+        if (done) RestoreGlobalRN();
+    }
+    return r;
+}
+
+static bool PatchGlobalRN(JNIEnv *env) {
+    g_jni_table = env->functions;
+    auto *slot = &g_jni_table->RegisterNatives;
+    g_rn_slot = reinterpret_cast<void **>(
+            const_cast<void *>(reinterpret_cast<const void *>(slot)));
+    g_orig_rn = *g_rn_slot;
+
+    long ps = sysconf(_SC_PAGESIZE);
+    if (ps <= 0) ps = 4096;
+    g_rn_page_size = (size_t) ps;
+    g_rn_page = (uintptr_t) g_rn_slot & ~((uintptr_t) ps - 1);
+    int prot = -1;
+    FILE *f = fopen("/proc/self/maps", "re");
+    if (f != nullptr) {
+        char line[1024];
+        while (fgets(line, sizeof(line), f) != nullptr) {
+            uintptr_t s = 0, e = 0;
+            char perms[8] = {0};
+            if (sscanf(line, "%lx-%lx %7s", &s, &e, perms) != 3) continue;
+            if ((uintptr_t) g_rn_slot >= s && (uintptr_t) g_rn_slot < e) {
+                prot = 0;
+                if (strchr(perms, 'r')) prot |= PROT_READ;
+                if (strchr(perms, 'w')) prot |= PROT_WRITE;
+                if (strchr(perms, 'x')) prot |= PROT_EXEC;
+                break;
+            }
+        }
+        fclose(f);
+    }
+    if (prot < 0) { NLog("global RN: cannot read page prot, skip"); return false; }
+    g_rn_prot = prot;
+    if (mprotect((void *) g_rn_page, g_rn_page_size, prot | PROT_WRITE) != 0) {
+        NLog("global RN: mprotect failed: %s", strerror(errno));
+        return false;
+    }
+    *g_rn_slot = (void *) &MyGlobalRegisterNatives;
+    if (prot != (PROT_READ | PROT_WRITE)) {
+        mprotect((void *) g_rn_page, g_rn_page_size, prot);
+    }
+    __atomic_store_n(&g_rn_active, 1, __ATOMIC_SEQ_CST);
+    NLog("global RegisterNatives wrapped (orig=%p)", g_orig_rn);
+    return true;
+}
+
+/** 120 秒兜底：目标没装齐也把表还原，Boot 的重试直写循环继续兜底。 */
+static void *GlobalRnWatchdog(void *) {
+    for (int i = 0; i < 120 && __atomic_load_n(&g_rn_active, __ATOMIC_SEQ_CST); i++) {
+        sleep(1);
+    }
+    RestoreGlobalRN();
+    return nullptr;
+}
+
+static void StartEarly(JNIEnv *env) {
+    if (PatchGlobalRN(env)) {
+        pthread_t t;
+        if (pthread_create(&t, nullptr, GlobalRnWatchdog, nullptr) == 0) pthread_detach(t);
+    }
 }
 
 // ---- 引导（与知弦同构） -------------------------------------------------------------
@@ -558,6 +692,7 @@ public:
     void postAppSpecialize(const zygisk::AppSpecializeArgs *) override {
         if (g_process[0] == '\0' || g_bootstrap_started) return;
         g_bootstrap_started = true;
+        StartEarly(env_);   // 抢在微信任何业务代码之前包住全局 RegisterNatives
         pthread_t t;
         if (pthread_create(&t, nullptr, BootstrapThread, nullptr) == 0) {
             pthread_detach(t);
