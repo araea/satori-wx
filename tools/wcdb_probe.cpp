@@ -3,6 +3,8 @@
 //
 // usage: satori-wx-wcdb <library> <db> [key] [sql]
 //   key: "hex:<hex>" or "text:<text>" (default: no key)
+//   env: SATORI_WCDB_COMPAT (cipher_compatibility), SATORI_WCDB_PAGE (cipher_page_size)
+//        WeChat's EnMicroMsg.db needs SATORI_WCDB_COMPAT=1.
 //   sql: defaults to a bounded dump of the WeChat message table
 #include "wcdb.h"
 #include <stdio.h>
@@ -56,7 +58,10 @@ int main(int argc, char **argv) {
         if (key_size >= static_cast<int>(sizeof(decoded))) { fprintf(stderr, "key too long\n"); return 2; }
         memcpy(decoded, key, static_cast<size_t>(key_size));
     }
-    satori::Wcdb *db = satori::WcdbOpen(argv[1], argv[2], key_size ? decoded : nullptr, key_size, 1);
+    satori::Wcdb *db = satori::WcdbOpenEx(argv[1], argv[2], key_size ? decoded : nullptr, key_size,
+                                          atoi(getenv("SATORI_WCDB_PAGE") ? getenv("SATORI_WCDB_PAGE") : "0"),
+                                          atoi(getenv("SATORI_WCDB_COMPAT") ? getenv("SATORI_WCDB_COMPAT") : "0"),
+                                          0, 1);
     if (!db) { fprintf(stderr, "open failed (wrong key, wrong library, or file not readable)\n"); return 1; }
     bool header = false;
     const char *sql = argc > 4 ? argv[4] : "SELECT * FROM message ORDER BY createTime DESC LIMIT 20";

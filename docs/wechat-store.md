@@ -23,16 +23,13 @@
 
 - `EnMicroMsg.db` 是 SQLCipher/WCDB 加密库：文件头是随机 salt，不是 `SQLite format 3`；
   `.li` 只索引明文表名（`message`、`appattach`、`ImgInfo2`…）。
-- 旧推导（`md5(imei+uin)[:7]`＝账号目录名）在 8.0.78 上**不成立**：用 `aef9488`、
-  `createmd5`、uin、完整目录 hash 分别配合 PBKDF2-HMAC-SHA1/SHA512、4000/64000/256000 次、
-  page 1024/4096 都解不出 SQLite 头。密钥必须运行期获取。
-- 微信通过 `RegisterNatives` 注册了 `com.tencent.wcdb.database.SQLiteConnection nativeSetKey (J[B)V`，
-  第二个参数就是密钥字节数组（见 probe 的 `boundary.log`）。
-- `libWCDB.so` **导出了完整的 SQLCipher C API**：`sqlite3_key`、`sqlite3_key_v2`、
-  `sqlite3_open_v2`、`sqlite3_prepare_v2`、`sqlite3_step`、`sqlite3_exec`，以及
-  `WCDB::Database::setCipherKey`。Termux 进程可以直接 `dlopen` 它。
-- 因此可以只取一次密钥，然后用微信**自己的库**开一个**只读的第二连接**读库。
-  `native/wcdb.cpp` 已实现并在真机做过加密往返验证：正确密钥能读出内容，错误/缺失密钥干净失败。
+- 密钥来源：`com.tencent.wcdb.core.Database.setCipherKey (J[BII)V`，参数为 `(handle, key[], page_size, cipher_version)`。
+- **真机确认**：EnMicroMsg 的密钥是 `setCipherKey` 传入的 **7 字节随机 key**（不可从账号目录名派生），
+  正确参数是 `sqlite3_key` 之后 `PRAGMA cipher_compatibility = 1`（SQLCipher v1 / page 1024）。
+  密钥值属于账号机密，不写入仓库、不写日志；仅在本机私有文件与内存中。
+- 用微信自己的 `libWCDB.so` 在**离线副本**上已读出真实 `message` 表：群（`<数字>@chatroom`）、
+  私聊（`wxid_...`）、`isSend` 区分收发、`type` 区分消息类型；`native/wcdb.cpp` 与
+  `build/satori-wx-wcdb` 已能按该参数读库。
 
 ## 三层结构
 
