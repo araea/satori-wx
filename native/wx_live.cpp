@@ -27,6 +27,10 @@ struct Live {
     long long emitted;
 };
 
+// Shared with the RPC backend; set once the store is opened.
+Store *g_live_store = nullptr;
+int g_live_login_sn = 0;
+
 bool Emit(void *context, const char *event) {
     auto *live = static_cast<Live *>(context);
     ++live->emitted;
@@ -142,6 +146,8 @@ void *Loop(void *argument) {
         nanosleep(&second, nullptr);
     }
     Log(live->app_data, "login_count=%d", g_login_count);
+    g_live_store = live->store;
+    g_live_login_sn = live->login_sn;
     // Emit only new rows: history comes from message.list, which reads the database directly.
     live->watermark = StoreWatermark(live->store);
     Log(live->app_data, "polling from watermark=%lld", live->watermark);
@@ -172,4 +178,7 @@ bool StartLiveStore(const char *app_data_dir, EventBus *bus, int login_sn) {
     pthread_detach(thread);
     return true;
 }
+
+Store *LiveStore() { return g_live_store; }
+int LiveLoginSn() { return g_live_login_sn; }
 } // namespace satori

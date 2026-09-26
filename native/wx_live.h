@@ -11,4 +11,8 @@ namespace satori {
 // previously corrupted a WAL mmap and crashed the host. If that single attempt fails, the
 // store stays disabled.
 bool StartLiveStore(const char *app_data_dir, EventBus *bus, int login_sn);
+// The shared read-only store (null until opened) and its login sn. Queries are thread-safe.
+struct Store;
+Store *LiveStore();
+int LiveLoginSn();
 } // namespace satori

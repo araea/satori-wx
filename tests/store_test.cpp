@@ -98,6 +98,25 @@ int main() {
     }
     Check(satori::Latest(hub) > 0, "hub sequence advanced");
     satori::DestroyHub(hub);
+    // message.list returns the channel's text messages, newest first.
+    cJSON *list = satori::StoreMessageList(store, "123@chatroom", nullptr, 20);
+    Check(list != nullptr && cJSON_GetArraySize(Item(list, "data")) == 2, "message.list group");
+    cJSON_Delete(list);
+    cJSON *page = satori::StoreMessageList(store, "123@chatroom", nullptr, 1);
+    Check(page && cJSON_GetArraySize(Item(page, "data")) == 1 && Item(page, "next"), "message.list page 1");
+    const char *cursor = Str(page, "next");
+    char cursor_copy[32];
+    snprintf(cursor_copy, sizeof(cursor_copy), "%s", cursor);
+    cJSON_Delete(page);
+    cJSON *page2 = satori::StoreMessageList(store, "123@chatroom", cursor_copy, 1);
+    Check(page2 && cJSON_GetArraySize(Item(page2, "data")) == 1, "message.list page 2");
+    cJSON_Delete(page2);
+    // message.get by platform message id.
+    cJSON *one = satori::StoreMessageGet(store, "123@chatroom", "3");
+    Check(one != nullptr, "message.get");
+    Check(one && !strcmp(Nested(one, "user", "id"), "self_wxid"), "message.get author");
+    cJSON_Delete(one);
+    Check(satori::StoreMessageGet(store, "123@chatroom", "99999") == nullptr, "message.get missing");
     satori::DestroyStore(store);
     unlink(path);
     rmdir(directory);

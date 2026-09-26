@@ -76,7 +76,7 @@ class AccountEndToEndTests(unittest.TestCase):
         self.assertEqual(login['platform'], 'wechat')
         self.assertEqual(login['status'], 1)
         self.assertEqual(login['user']['nick'], '测试昵称')
-        self.assertEqual(login['features'], [])
+        self.assertEqual(login['features'], ['message.get', 'message.list'])
         self.assertEqual(self.login_get(), (200, login))
         with Wire() as w:
             w.upgrade()

@@ -1,11 +1,12 @@
 #pragma once
 #include <stddef.h>
+#include "vendor/cjson/cJSON.h"
 
 // Read-only WeChat message store built on native/wcdb.
 //
 // It opens a WeChat database (EnMicroMsg.db) read-only with the account's cipher key and
-// turns rows of the `message` table into Satori `message-created` events. It never writes
-// and never touches WeChat's own sqlite connections.
+// turns rows of the `message` table into Satori Message objects and `message-created`
+// events. It never writes and never touches WeChat's own sqlite connections.
 namespace satori {
 struct Store;
 // self_id is the account's own wxid (used as the author of sent messages).
@@ -19,4 +20,9 @@ const char *StoreError(Store *store);
 long long StoreWatermark(Store *store);
 // Emits one JSON event per new message (rowid > since). Returns the new watermark.
 long long StorePoll(Store *store, long long since, int login_sn, bool (*emit)(void *context, const char *event), void *context);
+// Satori List of messages for a channel, newest first. `next` is a rowid cursor from a
+// previous call or null. Caller frees the result.
+cJSON *StoreMessageList(Store *store, const char *channel_id, const char *next, int limit);
+// One message by platform id within a channel. Caller frees.
+cJSON *StoreMessageGet(Store *store, const char *channel_id, const char *message_id);
 } // namespace satori

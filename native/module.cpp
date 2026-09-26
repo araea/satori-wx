@@ -2,6 +2,7 @@
 #include "server.h"
 #include "protocol.h"
 #include "wx_adapter.h"
+#include "wx_backend.h"
 #include "wx_live.h"
 #include <android/log.h>
 #include <errno.h>
@@ -25,7 +26,7 @@ void *Serve(void *) {
         return nullptr;
     }
     __android_log_print(ANDROID_LOG_INFO, "SatoriWx", "native Satori listening at 127.0.0.1:%u", g_config.port);
-    satori::Run(listener, g_config, g_bus);
+    satori::Run(listener, g_config, g_bus, satori::WeChatBackend());
     return nullptr;
 }
 

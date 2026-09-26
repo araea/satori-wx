@@ -22,7 +22,7 @@ if [ "$MODE" = server ]; then
         -c "$R/native/vendor/cjson/cJSON.c" -o "$WORK/cjson.o"
     "$CXX" "${FLAGS[@]}" -shared "$R/native/module.cpp" "$R/native/server.cpp" "$R/native/protocol.cpp" "$R/native/multipart.cpp" \
         "$R/native/webhook.cpp" "$R/native/wx_account.cpp" "$R/native/wx_adapter.cpp" "$R/native/wx_live.cpp" \
-        "$R/native/wx_store.cpp" "$R/native/wcdb.cpp" "$WORK/cjson.o" \
+        "$R/native/wx_store.cpp" "$R/native/wx_backend.cpp" "$R/native/wcdb.cpp" "$WORK/cjson.o" \
         -Wl,--no-undefined,-z,relro,-z,now -llog -ldl -o "$WORK/module/zygisk/arm64-v8a.so"
     "$CXX" "${FLAGS[@]}" "$R/tools/device_verify.cpp" "$R/native/server.cpp" "$R/native/protocol.cpp" \
         "$R/native/multipart.cpp" "$R/native/webhook.cpp" "$WORK/cjson.o" -Wl,--no-undefined -o "$OUT/satori-wx-check"
