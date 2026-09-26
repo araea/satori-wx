@@ -1,0 +1,136 @@
+#include "wx_live.h"
+#include "wx_store.h"
+#include "wx_account.h"
+#include <dirent.h>
+#include <pthread.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/stat.h>
+#include <time.h>
+
+namespace satori {
+namespace {
+struct Spec {
+    unsigned char key[64];
+    int size;
+    int page;
+    int version;
+};
+struct Live {
+    char app_data[1024];
+    EventBus *bus;
+    int login_sn;
+    Store *store;
+    long long watermark;
+};
+
+bool Emit(void *context, const char *event) { return Publish(static_cast<EventBus *>(context), event); }
+
+int HexDigit(char c) {
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    return -1;
+}
+
+bool ParseSpec(const char *line, Spec *spec) {
+    int index = 0, size = 0, page = 0, version = 0;
+    char hex[160] = {};
+    if (sscanf(line, "spec=%d len=%d page=%d ver=%d hex=%159s", &index, &size, &page, &version, hex) != 5) return false;
+    if (size <= 0 || size > static_cast<int>(sizeof(spec->key))) return false;
+    if (static_cast<int>(strlen(hex)) != size * 2) return false;
+    for (int i = 0; i < size; ++i) {
+        const int high = HexDigit(hex[i * 2]), low = HexDigit(hex[i * 2 + 1]);
+        if (high < 0 || low < 0) return false;
+        spec->key[i] = static_cast<unsigned char>(high * 16 + low);
+    }
+    spec->size = size;
+    spec->page = page;
+    spec->version = version;
+    return true;
+}
+
+bool FindDatabase(const char *app_data, char *out, size_t capacity) {
+    char micro[1200];
+    snprintf(micro, sizeof(micro), "%s/MicroMsg", app_data);
+    DIR *dir = opendir(micro);
+    if (!dir) return false;
+    bool found = false;
+    for (dirent *entry; (entry = readdir(dir)); ) {
+        if (entry->d_name[0] == '.') continue;
+        char path[1600];
+        snprintf(path, sizeof(path), "%s/%s/EnMicroMsg.db", micro, entry->d_name);
+        struct stat info{};
+        if (!stat(path, &info) && S_ISREG(info.st_mode)) { snprintf(out, capacity, "%s", path); found = true; break; }
+    }
+    closedir(dir);
+    return found;
+}
+
+// Returns the one spec that came from setCipherKey (it carries page_size + cipher version).
+// Only that spec is ever used against the live database.
+bool LoadCipherSpec(const char *app_data, Spec *spec) {
+    char path[1300];
+    snprintf(path, sizeof(path), "%s/files/satori-wx-probe/key.log", app_data);
+    FILE *file = fopen(path, "r");
+    if (!file) return false;
+    char line[512];
+    bool found = false;
+    while (fgets(line, sizeof(line), file)) {
+        Spec candidate{};
+        if (!ParseSpec(line, &candidate)) continue;
+        if (candidate.version <= 0) continue;
+        if (!found) { *spec = candidate; found = true; }
+    }
+    fclose(file);
+    return found;
+}
+
+bool TryOpen(Live *live, Store **out) {
+    Spec spec{};
+    if (!LoadCipherSpec(live->app_data, &spec)) return false;
+    char database[1600];
+    if (!FindDatabase(live->app_data, database, sizeof(database))) return false;
+    Account account;
+    const char *self_id = ReadAccount(live->app_data, &account) && account.exists ? account.wxid : nullptr;
+    Store *store = CreateStore(database, spec.key, spec.size, spec.version, self_id);
+    if (!store) return false;
+    if (StoreWatermark(store) < 0) { DestroyStore(store); return false; }
+    *out = store;
+    return true;
+}
+
+void *Loop(void *argument) {
+    auto *live = static_cast<Live *>(argument);
+    pthread_setname_np(pthread_self(), "satori-wx-store");
+    for (int i = 0; i < 90 && !live->store; ++i) {
+        if (TryOpen(live, &live->store)) break;
+        const timespec delay{2, 0};
+        nanosleep(&delay, nullptr);
+    }
+    if (!live->store) return nullptr;
+    // Replay a short tail so messages that arrived just before the store opened are seen.
+    const long long watermark = StoreWatermark(live->store);
+    live->watermark = watermark > 20 ? watermark - 20 : 0;
+    for (;;) {
+        live->watermark = StorePoll(live->store, live->watermark, live->login_sn, Emit, live->bus);
+        const timespec delay{2, 0};
+        nanosleep(&delay, nullptr);
+    }
+}
+} // namespace
+
+bool StartLiveStore(const char *app_data_dir, EventBus *bus, int login_sn) {
+    if (!app_data_dir || !*app_data_dir || !bus) return false;
+    auto *live = static_cast<Live *>(calloc(1, sizeof(Live)));
+    if (!live) return false;
+    snprintf(live->app_data, sizeof(live->app_data), "%s", app_data_dir);
+    live->bus = bus;
+    live->login_sn = login_sn;
+    pthread_t thread;
+    if (pthread_create(&thread, nullptr, Loop, live)) { free(live); return false; }
+    pthread_detach(thread);
+    return true;
+}
+} // namespace satori

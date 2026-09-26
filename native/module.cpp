@@ -2,6 +2,7 @@
 #include "server.h"
 #include "protocol.h"
 #include "wx_adapter.h"
+#include "wx_live.h"
 #include <android/log.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -93,6 +94,10 @@ public:
         } else {
             pthread_detach(account);
         }
+        // Read-only message store: reads the probe's captured cipher spec and publishes
+        // message-created events. Disabled automatically if the key is unavailable.
+        if (g_data_dir[0] && !satori::StartLiveStore(g_data_dir, g_bus, 1))
+            __android_log_print(ANDROID_LOG_WARN, "SatoriWx", "live message store not started");
     }
     void preServerSpecialize(zygisk::ServerSpecializeArgs *) override {
         api_->setOption(zygisk::DLCLOSE_MODULE_LIBRARY);
