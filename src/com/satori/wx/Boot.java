@@ -79,6 +79,8 @@ public final class Boot {
             L.e("flush pending failed", t);
         }
         verifyLoop();
+        // native FindClass 对 WCDB 类拿不到方法（类副本问题）：用 Java 反射补挂。
+        com.satori.wx.xp.ReflectPatch.install(host);
         // WCDB 全局 SQL 追踪（公开 API）：接收侧的干净路线。
         com.satori.wx.SqlTrace.install(host);
     }

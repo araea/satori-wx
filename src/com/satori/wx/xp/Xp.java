@@ -67,6 +67,13 @@ public final class Xp {
     /** 补做暂存期 setCallback 的包装（Java 就绪前错过的那次），Boot 装好钩后调一次。 */
     public static native String nativeFlushPending();
 
+    /**
+     * 用反射拿到的 {@link Method} 直写 data_（native 侧 FromReflectedMethod 取 ArtMethod）。
+     * 解决 native FindClass 拿到的是「另一个类副本」、GetMethodID method-missing 的问题。
+     * 返回 {@code ok…} 或 {@code retry:…}。
+     */
+    public static native String nativePatchMethod(java.lang.reflect.Method method, int idx);
+
     public static String verifyHooks() {
         try {
             return nativeVerifyHooks();

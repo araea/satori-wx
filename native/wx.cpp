@@ -569,6 +569,47 @@ static jstring NativeHookInfo(JNIEnv *env, jclass) {
     return env->NewStringUTF(buf);
 }
 
+/**
+ * 用 Java 反射拿到的 Method 直写 data_。
+ *
+ * <p>为什么需要：对 WCDB 的类，native FindClass 解析到的是另一个副本，GetMethodID 报
+ * method-missing；Java 用宿主 classloader 能拿到真身。这里 FromReflectedMethod 取 ArtMethod
+ * 后走与 WriteDataFor 相同的直写逻辑。
+ */
+static jstring NativePatchMethod(JNIEnv *env, jclass, jobject method, jint idx) {
+    if (idx < 0 || idx >= kTargetCount) return env->NewStringUTF("bad-index");
+    Target *t = &kTargets[idx];
+    if (t->installed) return env->NewStringUTF("ok already");
+    jmethodID mid = env->FromReflectedMethod(method);
+    if (mid == nullptr) {
+        env->ExceptionClear();
+        return env->NewStringUTF("no-artmethod");
+    }
+    auto *words = reinterpret_cast<uintptr_t *>(mid);
+    uintptr_t cur = __atomic_load_n(&words[2], __ATOMIC_SEQ_CST);
+    uintptr_t ours = reinterpret_cast<uintptr_t>(TargetFnFor(idx));
+    if (cur == ours) {
+        t->installed = true;
+        t->slot = &words[2];
+        return env->NewStringUTF("ok already-ours");
+    }
+    char path[512];
+    if (IsArtStub(cur, path, sizeof(path))) {
+        return env->NewStringUTF("retry:stub");
+    }
+    t->orig = (void *) cur;
+    t->slot = &words[2];
+    __atomic_store_n(&words[2], ours, __ATOMIC_SEQ_CST);
+    if (__atomic_load_n(&words[2], __ATOMIC_SEQ_CST) != ours) {
+        return env->NewStringUTF("write-did-not-stick");
+    }
+    t->installed = true;
+    snprintf(t->note, sizeof(t->note), "installed-via-reflect orig=%p in %s (%s)", t->orig,
+             BaseOf(path), t->method);
+    NLog("install(reflect): %s.%s %s", t->cls, t->method, t->note);
+    return env->NewStringUTF("ok");
+}
+
 // ---- 全局 RegisterNatives 表槽：抢在 SetCallback 之前就位 ----------------------------
 //
 // SetCallback 在 mars 初始化时毫秒级就被调用，Boot 的 500ms 重试循环追不上（v0.1.2 实测
@@ -784,8 +825,11 @@ static bool StartJava(JNIEnv *env, jobject loader, const char *process) {
              reinterpret_cast<void *>(&NativeVerifyHooks)},
             {"nativeFlushPending", "()Ljava/lang/String;",
              reinterpret_cast<void *>(&NativeFlushPending)},
+            {"nativePatchMethod",
+             "(Ljava/lang/reflect/Method;I)Ljava/lang/String;",
+             reinterpret_cast<void *>(&NativePatchMethod)},
     };
-    if (env->RegisterNatives(xp, kXpMethods, 4) != JNI_OK) {
+    if (env->RegisterNatives(xp, kXpMethods, 5) != JNI_OK) {
         env->ExceptionDescribe();
         env->ExceptionClear();
         NLog("RegisterNatives(Xp) failed");
