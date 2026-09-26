@@ -55,10 +55,10 @@ static void NLog(const char *fmt, ...) {
     fclose(f);
 }
 
-// ---- ArtMethod 数据位：读出已注册的原 JNI 函数（只读不写） ---------------------------
+// ---- ArtMethod 数据位：data_ 的定位与分类 -------------------------------------------
 //
-// 与知弦的 InstallSsoHook 相同的认法：值必须落在可执行映射里，且不在 libart / boot.oat /
-// 本模块自己的 .so。原实现必须在某个第三方 .so 里，否则装了也转交不了原实现。
+// jmethodID 即 ArtMethod*；arm64 上 data_（native 方法注册后的 JNI 入口）在第 2 个字
+// （字节偏移 16）——知弦在 QQ 上验证过的同一定位。
 
 struct MapInfo {
     bool exec;
@@ -97,30 +97,6 @@ static bool MappingOf(const void *p, MapInfo *info) {
     return found;
 }
 
-static bool LooksLikeThirdPartyJni(void *p, char *path, size_t path_size) {
-    MapInfo info;
-    if (!MappingOf(p, &info) || !info.exec) return false;
-    if (info.path[0] == '\0') return false;                       // 匿名映射：说不清是谁的
-    if (strstr(info.path, "/system/") != nullptr) return false;
-    if (strstr(info.path, "/apex/") != nullptr) return false;
-    if (strstr(info.path, ".oat") != nullptr) return false;
-    if (strstr(info.path, "libsatori") != nullptr) return false;  // 自己的不算
-    return strstr(info.path, ".so") != nullptr;
-}
-
-static int FindJniEntrySlot(uintptr_t *words, int kWords, void **out, char *path,
-                            size_t path_size) {
-    for (int i = 0; i < kWords; ++i) {
-        auto *p = reinterpret_cast<void *>(words[i]);
-        char candidate[512];
-        if (!LooksLikeThirdPartyJni(p, candidate, sizeof(candidate))) continue;
-        *out = p;
-        snprintf(path, path_size, "%s", candidate);
-        return i;
-    }
-    return -1;
-}
-
 // ---- 换点表 -------------------------------------------------------------------------
 
 enum Kind { K_SET_CB, K_START_TASK };
@@ -134,6 +110,7 @@ struct Target {
     // 状态
     bool installed;
     void *orig;
+    uintptr_t *slot;     // ArtMethod 的 data_ 槽（verify 用）
     char note[160];
 };
 
@@ -142,16 +119,16 @@ struct Target {
 static Target kTargets[] = {
         {"com.tencent.mars.mm.MMStnManager", "OnJniSetCallback",
          "(Ljava/lang/Object;)V", K_SET_CB, true,
-         false, nullptr, "class-missing"},
+         false, nullptr, nullptr, "class-missing"},
         {"com.tencent.mars.stn.StnManager", "OnJniStartTask",
          "(Lcom/tencent/mars/stn/StnManager$Task;)V", K_START_TASK, true,
-         false, nullptr, "class-missing"},
+         false, nullptr, nullptr, "class-missing"},
         {"com.tencent.mars.stn.StnManager", "OnJniSetCallback",
          "(Ljava/lang/Object;)V", K_SET_CB, false,
-         false, nullptr, "class-missing"},
+         false, nullptr, nullptr, "class-missing"},
         {"com.tencent.mars.account.AccountManager", "OnJniSetCallback",
          "(Ljava/lang/Object;)V", K_SET_CB, false,
-         false, nullptr, "class-missing"},
+         false, nullptr, nullptr, "class-missing"},
 };
 static constexpr int kTargetCount = sizeof(kTargets) / sizeof(kTargets[0]);
 
@@ -212,11 +189,39 @@ static void *TargetFnFor(int idx) {
 }
 
 // ---- 安装 ---------------------------------------------------------------------------
+//
+// 为什么不经过 RegisterNatives：M2 观测确认微信自己的 libYTAGReflectLiveCheck.so 接管了全局
+// RegisterNatives——我们的注册先进它的 wrapper、落回它自己的 trampoline，data_ 永远不会变成
+// 我们的函数（主进程 317 次尝试全部 `slot 2 did not take`，确定性复现）。
+//
+// data_ 正是 RegisterNatives 自己写的那个槽；绕开 wrapper 直接写这一个指针，是同一类数据补丁，
+// 依旧不改任何代码字节、无 trampoline。原指针照旧保存用于委托。
+
+/** data_ 指针分类。返回 true = libart/JNI 存根（natives 还没注册，retry）；
+ *  false = 可委托的真函数（第三方 .so 或匿名可执行映射，path 给出归属）。 */
+static bool IsArtStub(uintptr_t p, char *path, size_t path_size) {
+    MapInfo info;
+    if (!MappingOf((const void *) p, &info) || !info.exec) return true;
+    if (info.path[0] == '\0') {
+        snprintf(path, path_size, "(anon-exec)");
+        return false;   // 匿名可执行映射：真函数（YTAG 的 trampoline 常落在这）
+    }
+    if (strstr(info.path, "/system/") != nullptr) return true;
+    if (strstr(info.path, "/apex/") != nullptr) return true;
+    if (strstr(info.path, ".oat") != nullptr) return true;
+    snprintf(path, path_size, "%s", info.path);
+    return false;
+}
+
+static const char *BaseOf(const char *path) {
+    const char *slash = strrchr(path, '/');
+    return slash ? slash + 1 : path;
+}
 
 /**
- * 装一个目标。返回：
- *   0 = 已装（幂等）；1 = 本次装上；2 = 类还没加载（retry）；3 = natives 还没注册（retry）；
- *   4 = 其它失败（不重试）。
+ * 直写一个目标的 data_。返回：
+ *   0 = 已装（幂等）；1 = 本次装上；2 = 类还没加载（retry）；
+ *   3 = data_ 还是存根（natives 未注册，retry）；4 = 其它失败。
  */
 static int InstallOne(JNIEnv *env, jobject loader, Target *t, int idx) {
     if (t->installed) return 0;
@@ -232,41 +237,44 @@ static int InstallOne(JNIEnv *env, jobject loader, Target *t, int idx) {
         snprintf(t->note, sizeof(t->note), "method-missing %s.%s", t->cls, t->method);
         return 4;
     }
+    env->DeleteLocalRef(cls);
 
     auto *words = reinterpret_cast<uintptr_t *>(mid);
-    constexpr int kWords = 8;
-    void *orig = nullptr;
-    char lib[512] = {0};
-    int slot = FindJniEntrySlot(words, kWords, &orig, lib, sizeof(lib));
-    if (slot < 0) {
-        snprintf(t->note, sizeof(t->note),
-                 "natives-not-registered-yet %s.%s", t->cls, t->method);
+    uintptr_t cur = __atomic_load_n(&words[2], __ATOMIC_SEQ_CST);
+    uintptr_t ours = reinterpret_cast<uintptr_t>(TargetFnFor(idx));
+    if (cur == ours) {   // 上一次重试已写成功
+        t->installed = true;
+        t->slot = &words[2];
+        snprintf(t->note, sizeof(t->note), "already-ours %s", t->method);
+        return 0;
+    }
+
+    char path[512];
+    if (IsArtStub(cur, path, sizeof(path))) {
+        snprintf(t->note, sizeof(t->note), "stub data_=%p (%s.%s)", (void *) cur,
+                 t->cls, t->method);
         return 3;
     }
 
-    JNINativeMethod m{const_cast<char *>(t->method), const_cast<char *>(t->sig),
-                      TargetFnFor(idx)};
-    if (env->RegisterNatives(cls, &m, 1) != JNI_OK) {
-        env->ExceptionDescribe();
-        env->ExceptionClear();
-        snprintf(t->note, sizeof(t->note), "RegisterNatives-rejected %s", t->method);
-        return 4;
+    // 诊断快照：写之前的 8 个字（回答「data_ 到底在哪、原来是什么」）。
+    char before[240] = {0};
+    size_t boff = 0;
+    for (int i = 0; i < 8 && boff < sizeof(before) - 1; i++) {
+        boff += (size_t) snprintf(before + boff, sizeof(before) - boff, "%s%lx",
+                                  i ? " " : "", (unsigned long) words[i]);
     }
-    auto *fn = reinterpret_cast<uintptr_t *>(TargetFnFor(idx));
-    if (words[slot] != *fn) {
-        JNINativeMethod back{const_cast<char *>(t->method), const_cast<char *>(t->sig), orig};
-        env->RegisterNatives(cls, &back, 1);
-        env->ExceptionClear();
-        snprintf(t->note, sizeof(t->note), "slot %d did not take our fn %s", slot, t->method);
+
+    t->orig = (void *) cur;
+    t->slot = &words[2];
+    __atomic_store_n(&words[2], ours, __ATOMIC_SEQ_CST);
+    if (__atomic_load_n(&words[2], __ATOMIC_SEQ_CST) != ours) {
+        snprintf(t->note, sizeof(t->note), "write did not stick %s", t->method);
         return 4;
     }
     t->installed = true;
-    t->orig = orig;
-    const char *base = strrchr(lib, '/');
-    base = base ? base + 1 : lib;
-    snprintf(t->note, sizeof(t->note), "installed slot=%d orig=%p in %s (%s)", slot, orig,
-             base, t->method);
-    NLog("install: %s.%s %s", t->cls, t->method, t->note);
+    snprintf(t->note, sizeof(t->note), "installed orig=%p in %s (%s)", t->orig,
+             BaseOf(path), t->method);
+    NLog("install: %s.%s %s | before: %s", t->cls, t->method, t->note, before);
     return 1;
 }
 
@@ -282,9 +290,41 @@ static jstring NativeInstallHooks(JNIEnv *env, jclass, jobject loader) {
                                  off ? "; " : "", kTargets[i].method, kTargets[i].note);
         if (off >= sizeof(status) - 1) break;
     }
-    NLog("installHooks: %s", status);
+    // 状态没变化就不重复落盘（重试循环每 500ms 一次，全量打会把 native.log 刷成几百 KB）。
+    static char last_status[600] = {0};
+    if (strncmp(last_status, status, sizeof(last_status) - 1) != 0) {
+        snprintf(last_status, sizeof(last_status), "%s", status);
+        NLog("installHooks: %s", status);
+    }
     char out[600];
     snprintf(out, sizeof(out), "%s%s", all_required ? "ok " : "retry:", status);
+    return env->NewStringUTF(out);
+}
+
+/**
+ * 周期校验：data_ 是否还是我们的函数。被翻回（YTAG 重新断言的话会这样）就改回并计数，
+ * 返回状态串。这是「YTAG 会不会反扑」的直接观测口。
+ */
+static jstring NativeVerifyHooks(JNIEnv *env, jclass) {
+    static int g_flips = 0;
+    char status[512] = {0};
+    size_t off = 0;
+    for (int i = 0; i < kTargetCount && off < sizeof(status) - 1; i++) {
+        Target *t = &kTargets[i];
+        if (!t->installed || t->slot == nullptr) continue;
+        uintptr_t ours = reinterpret_cast<uintptr_t>(TargetFnFor(i));
+        uintptr_t cur = __atomic_load_n(t->slot, __ATOMIC_SEQ_CST);
+        if (cur != ours) {
+            __atomic_store_n(t->slot, ours, __ATOMIC_SEQ_CST);
+            g_flips++;
+            NLog("verify: %s flipped to %p, rewrote (%d time)", t->method, (void *) cur,
+                 g_flips);
+            off += (size_t) snprintf(status + off, sizeof(status) - off, "%s%s=FLIPPED(%d)",
+                                     off ? "; " : "", t->method, g_flips);
+        }
+    }
+    char out[600];
+    snprintf(out, sizeof(out), "stable flips=%d %s", g_flips, status);
     return env->NewStringUTF(out);
 }
 
@@ -387,8 +427,10 @@ static bool StartJava(JNIEnv *env, jobject loader, const char *process) {
              reinterpret_cast<void *>(&NativeInstallHooks)},
             {"nativeHookInfo", "()Ljava/lang/String;",
              reinterpret_cast<void *>(&NativeHookInfo)},
+            {"nativeVerifyHooks", "()Ljava/lang/String;",
+             reinterpret_cast<void *>(&NativeVerifyHooks)},
     };
-    if (env->RegisterNatives(xp, kXpMethods, 2) != JNI_OK) {
+    if (env->RegisterNatives(xp, kXpMethods, 3) != JNI_OK) {
         env->ExceptionDescribe();
         env->ExceptionClear();
         NLog("RegisterNatives(Xp) failed");

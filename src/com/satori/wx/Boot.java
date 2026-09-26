@@ -69,6 +69,45 @@ public final class Boot {
         L.i("install: " + status);
         if (!status.startsWith("ok")) {
             L.e("mars hooks not fully installed: " + status, null);
+            return;
+        }
+        verifyLoop();
+    }
+
+    /**
+     * 装好后的反扑观测：每 3 秒校验一次 data_ 槽，共两分钟；之后降频到 30 秒一次再来
+     * 20 次。有翻转（YTAG 重新断言）才会写日志，稳定就不刷屏。
+     */
+    private static void verifyLoop() {
+        Thread t = new Thread(() -> {
+            String last = null;
+            for (int i = 0; i < 40; i++) {
+                String s = Xp.verifyHooks();
+                if (!s.equals(last)) {
+                    Observe.log("verify: " + s);
+                    last = s;
+                }
+                sleep(3_000);
+            }
+            for (int i = 0; i < 20; i++) {
+                String s = Xp.verifyHooks();
+                if (!s.equals(last)) {
+                    Observe.log("verify: " + s);
+                    last = s;
+                }
+                sleep(30_000);
+            }
+            Observe.log("verify: watch ended, " + last);
+        }, "SatoriWxVerify");
+        t.setDaemon(true);
+        t.start();
+    }
+
+    private static void sleep(long ms) {
+        try {
+            Thread.sleep(ms);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
         }
     }
 }

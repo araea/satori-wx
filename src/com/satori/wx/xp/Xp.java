@@ -55,8 +55,22 @@ public final class Xp {
      */
     public static native String nativeInstallHooks(ClassLoader loader);
 
-    /** native 侧对换点的说明（装到哪个槽、原函数在哪个 .so），排障用。 */
+    /** native 侧对换点的说明（原函数在哪个 .so/匿名段），排障用。 */
     public static native String nativeHookInfo();
+
+    /**
+     * 周期校验：data_ 槽是否还是我们的函数；被翻回（YTAG 重新断言）就改回并计数。
+     * 随时可调，幂等。
+     */
+    public static native String nativeVerifyHooks();
+
+    public static String verifyHooks() {
+        try {
+            return nativeVerifyHooks();
+        } catch (Throwable t) {
+            return "unavailable";
+        }
+    }
 
     // ---- 以下由 native 在换点触发，绝不能往外抛 ----
 
