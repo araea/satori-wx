@@ -147,6 +147,11 @@ static Target kTargets[] = {
         {"com.tencent.mars.account.AccountManager", "OnJniDecodeWxPkg",
          "([B[I[I)[B", K_DECODE, true,
          false, nullptr, nullptr, "class-missing"},
+        // AppManager 是 mars 的中枢管理器（M1 边界里也有它的 SetCallback）——微信很可能
+        // 经它注册回调，v0.1.4 之前一直没挂钩。
+        {"com.tencent.mars.app.AppManager", "OnJniSetCallback",
+         "(Ljava/lang/Object;)V", K_SET_CB, true,
+         false, nullptr, nullptr, "class-missing"},
 };
 static constexpr int kTargetCount = sizeof(kTargets) / sizeof(kTargets[0]);
 
@@ -252,6 +257,9 @@ static jbyteArray WxDecode5(JNIEnv *env, jobject thiz, jbyteArray a0, jintArray 
                             jintArray a2) {
     return MyDecode(env, thiz, a0, a1, a2, &kTargets[5]);
 }
+static void WxSetCb6(JNIEnv *env, jobject thiz, jobject a0) {
+    MySetCallback(env, thiz, a0, &kTargets[6]);
+}
 
 static void *TargetFnFor(int idx) {
     switch (idx) {
@@ -261,6 +269,7 @@ static void *TargetFnFor(int idx) {
         case 3: return (void *) &WxSetCb3;
         case 4: return (void *) &WxEncode4;
         case 5: return (void *) &WxDecode5;
+        case 6: return (void *) &WxSetCb6;
     }
     return nullptr;
 }
