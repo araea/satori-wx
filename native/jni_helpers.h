@@ -29,6 +29,21 @@ inline void WxReleaseEnv(JavaVM *vm, bool attached) {
     if (attached && vm != nullptr) vm->DetachCurrentThread();
 }
 
+/** 用给定 classloader 按名字取类；取不到返回 nullptr（并清掉异常）。 */
+inline jclass WxLoadClass(JNIEnv *env, jobject loader, const char *name) {
+    if (loader == nullptr) return nullptr;
+    jclass loader_cls = env->FindClass("java/lang/ClassLoader");
+    if (loader_cls == nullptr) { env->ExceptionClear(); return nullptr; }
+    jmethodID load_class = env->GetMethodID(loader_cls, "loadClass",
+                                            "(Ljava/lang/String;)Ljava/lang/Class;");
+    if (load_class == nullptr) { env->ExceptionClear(); return nullptr; }
+    jstring n = env->NewStringUTF(name);
+    auto cls = static_cast<jclass>(env->CallObjectMethod(loader, load_class, n));
+    env->DeleteLocalRef(n);
+    if (env->ExceptionCheck()) { env->ExceptionClear(); return nullptr; }
+    return cls;
+}
+
 /** 关掉 hidden API 限制：Java 侧要反射宿主内部类时用。 */
 inline void WxExemptHiddenApis(JNIEnv *env) {
     jclass vm_runtime = env->FindClass("dalvik/system/VMRuntime");
