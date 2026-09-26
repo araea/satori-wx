@@ -13,6 +13,9 @@
 #include "zygisk.hpp"
 #include "version.h"
 #include "data_slot.h"
+#include "wcdb.h"
+#include <dirent.h>
+#include <unistd.h>
 
 namespace {
 constexpr char kTarget[] = "com.tencent.mm";
@@ -34,7 +37,20 @@ JavaVM *g_vm = nullptr;
 wx::DataSlot<RegisterFn> g_patch;
 RegisterFn *g_slot = nullptr;
 char g_dir[1024];
+char g_app_data[1024];
 pthread_mutex_t g_mu = PTHREAD_MUTEX_INITIALIZER;
+
+// M3.1: capture the WCDB cipher key at the app's own RegisterNatives boundary.
+// Only the fnPtr of nativeSetKey is swapped in a writable copy of the array the app
+// passes; the app's array and code are never written. The wrapper forwards unchanged.
+constexpr size_t kKeyMax = 128;
+constexpr jint kMethodCopyLimit = 256;
+using SetKeyFn = void (*)(JNIEnv *, jobject, jlong, jbyteArray);
+SetKeyFn g_original_set_key = nullptr;
+pthread_mutex_t g_key_mu = PTHREAD_MUTEX_INITIALIZER;
+unsigned char g_db_key[kKeyMax];
+int g_db_key_size = 0;
+int g_verify_needed = 0;
 Entry g_ring[kCapacity];
 int g_head = 0, g_tail = 0, g_count = 0;
 bool g_active = false;
@@ -72,9 +88,43 @@ void Record(JNIEnv *env, jclass clazz, const JNINativeMethod *methods, jint n) {
     }
 }
 
+void CaptureSetKey(JNIEnv *env, jobject thiz, jlong handle, jbyteArray key) {
+    if (key && !env->ExceptionCheck()) {
+        pthread_mutex_lock(&g_key_mu);
+        if (g_db_key_size == 0) {
+            const jsize size = env->GetArrayLength(key);
+            if (size > 0 && static_cast<size_t>(size) <= kKeyMax) {
+                env->GetByteArrayRegion(key, 0, size, reinterpret_cast<jbyte *>(g_db_key));
+                if (!env->ExceptionCheck()) {
+                    g_db_key_size = static_cast<int>(size);
+                    __atomic_store_n(&g_verify_needed, 1, __ATOMIC_RELEASE);
+                } else {
+                    env->ExceptionClear();
+                }
+            }
+        }
+        pthread_mutex_unlock(&g_key_mu);
+    }
+    if (g_original_set_key) g_original_set_key(env, thiz, handle, key);
+}
+
 jint ObserveRegister(JNIEnv *env, jclass clazz, const JNINativeMethod *methods, jint n) {
+    // Substitute before the host registers, using a local copy so the app's array stays read-only.
+    JNINativeMethod copy[kMethodCopyLimit];
+    const JNINativeMethod *argument = methods;
+    if (methods && n > 0 && n <= kMethodCopyLimit) {
+        memcpy(copy, methods, static_cast<size_t>(n) * sizeof(JNINativeMethod));
+        for (jint i = 0; i < n; ++i) {
+            if (copy[i].name && copy[i].signature && !strcmp(copy[i].name, "nativeSetKey") &&
+                !strcmp(copy[i].signature, "(J[B)V")) {
+                g_original_set_key = reinterpret_cast<SetKeyFn>(copy[i].fnPtr);
+                copy[i].fnPtr = reinterpret_cast<void *>(CaptureSetKey);
+            }
+        }
+        argument = copy;
+    }
     // The original result and pending exception belong to the host.
-    const jint result = g_patch.original()(env, clazz, methods, n);
+    const jint result = g_patch.original()(env, clazz, argument, n);
     if (result != JNI_OK || !clazz || !methods || n <= 0 || env->ExceptionCheck()) return result;
     pthread_mutex_lock(&g_mu);
     if (g_active) {
@@ -169,6 +219,52 @@ void Resolve(JNIEnv *env, jmethodID get_name, const Entry &entry, char *out, siz
     env->DeleteGlobalRef(entry.clazz);
 }
 
+char g_key_summary[512] = "key_captured=no";
+
+bool CountRow(satori::Wcdb *db, void *stmt, void *context) {
+    *static_cast<int *>(context) = static_cast<int>(satori::WcdbInt(db, stmt, 0));
+    return false;
+}
+
+// Opens the account database read-only with the captured key and proves it decrypts.
+// The key itself is never logged; only its length and whether the read succeeded.
+void VerifyKey() {
+    if (__atomic_exchange_n(&g_verify_needed, 0, __ATOMIC_ACQ_REL) == 0) return;
+    unsigned char key[kKeyMax];
+    int size = 0;
+    pthread_mutex_lock(&g_key_mu);
+    size = g_db_key_size;
+    if (size > 0) memcpy(key, g_db_key, static_cast<size_t>(size));
+    pthread_mutex_unlock(&g_key_mu);
+    if (size <= 0) return;
+    char micro[1200];
+    snprintf(micro, sizeof(micro), "%s/MicroMsg", g_app_data);
+    DIR *dir = opendir(micro);
+    if (!dir) {
+        snprintf(g_key_summary, sizeof(g_key_summary), "key_captured=yes len=%d db_readable=no opendir", size);
+        return;
+    }
+    bool readable = false;
+    bool found = false;
+    for (dirent *entry; (entry = readdir(dir)); ) {
+        if (entry->d_name[0] == '.') continue;
+        char path[1600];
+        snprintf(path, sizeof(path), "%s/%s/EnMicroMsg.db", micro, entry->d_name);
+        if (access(path, R_OK)) continue;
+        found = true;
+        satori::Wcdb *db = satori::WcdbOpen("libWCDB.so", path, key, size, 1);
+        if (db) {
+            int count = 0;
+            readable = satori::WcdbQuery(db, "SELECT count(*) FROM message", CountRow, &count);
+            satori::WcdbClose(db);
+        }
+        break;
+    }
+    closedir(dir);
+    snprintf(g_key_summary, sizeof(g_key_summary), "key_captured=yes len=%d db_found=%s db_readable=%s",
+             size, found ? "yes" : "no", readable ? "yes" : "no");
+}
+
 void Snapshot(int dir) {
     const int out = OpenLog(dir, "maps.log");
     const int in = open("/proc/self/maps", O_RDONLY | O_CLOEXEC);
@@ -239,6 +335,15 @@ void *Worker(void *) {
             restore = Stop();
             stopping = true;
         }
+        if (__atomic_load_n(&g_verify_needed, __ATOMIC_ACQUIRE)) {
+            VerifyKey();
+            if (io_ok) {
+                char verify[768];
+                const int length = snprintf(verify, sizeof(verify), "%lld %d %s\n",
+                                            static_cast<long long>(NowMs()), static_cast<int>(syscall(SYS_gettid)), g_key_summary);
+                WriteAll(boundary, verify, Printed(length, sizeof(verify)));
+            }
+        }
         Entry entry{};
         if (!Pop(&entry)) {
             if (stopping) break;
@@ -259,9 +364,9 @@ void *Worker(void *) {
     }
     Snapshot(dir);
     len = snprintf(line, sizeof(line), "stop=%s\nrestore=%s\nprotection_ok=%s\n"
-                   "calls=%ld\nmethods=%ld\ndrops=%ld\nbytes=%zu\nio_ok=%s\nend_monotonic_ms=%lld\n",
+                   "calls=%ld\nmethods=%ld\ndrops=%ld\nbytes=%zu\nio_ok=%s\n%s\nend_monotonic_ms=%lld\n",
                    reason, restore, g_patch.protection_ok() ? "yes" : "no", g_calls, g_methods,
-                   g_drops, written, io_ok ? "yes" : "no", static_cast<long long>(NowMs()));
+                   g_drops, written, io_ok ? "yes" : "no", g_key_summary, static_cast<long long>(NowMs()));
     const bool meta_ok = WriteAll(meta, line, Printed(len, sizeof(line)));
     __android_log_print(ANDROID_LOG_INFO, "SatoriWx", "probe stop=%s restore=%s methods=%ld drops=%ld meta_ok=%d",
                         reason, restore, g_methods, g_drops, meta_ok);
@@ -284,6 +389,7 @@ public:
             if (target_) {
                 const char *data = env_->GetStringUTFChars(args->app_data_dir, nullptr);
                 const int n = data ? snprintf(g_dir, sizeof(g_dir), "%s/files/satori-wx-probe", data) : -1;
+                if (data) snprintf(g_app_data, sizeof(g_app_data), "%s", data);
                 target_ = n > 0 && static_cast<size_t>(n) < sizeof(g_dir);
                 if (data) env_->ReleaseStringUTFChars(args->app_data_dir, data);
                 if (env_->ExceptionCheck()) env_->ExceptionClear();
