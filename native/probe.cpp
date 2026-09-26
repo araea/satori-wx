@@ -1,578 +1,313 @@
-// 知言探针（satori-wx 里程碑 1）：微信进程里的 JNI 边界侦察。
-//
-// 只回答一个问题：微信有没有一条能像知弦在 QQ 上换 native_onSendSSOReply 那样，
-// 用 RegisterNatives 干净接管的 native↔Java 边界。
-//
-// 手段与边界：
-//   - 拦截 = 改 libart 全局 JNINativeInterface 函数表里的 RegisterNatives 一个函数指针
-//     （数据补丁；不写任何代码字节、无 trampoline、不碰 PROT_EXEC 页），补丁窗口 90 秒
-//     或 2 万次注册（先到者），到点 mprotect 写回原指针。
-//   - wrapper 里只做纯 C 的字符串拷贝与入队 + 一次 NewGlobalRef（叶子级调用，无锁序问题）；
-//     类名解析放到 writer 线程做。
-//   - 拦截失败（mprotect 被拒）自动降级为纯被动清单，进程零影响。
-//   - 不发任何网络请求，不改微信行为。
-//
-// 产物：/data/data/com.tencent.mm/files/satori-wx-probe/
-//   boundary.log  每条 native 方法注册：时间 tid 文件偏移 函数指针 归属.so 类名 方法名 签名
-//   maps.log      还原时刻的原生库映射清单
-//   meta.log      时间线与计数
+// Native-only JNI boundary research. No DEX, ArtMethod offsets or code patches.
 #include <jni.h>
 #include <pthread.h>
-#include <unistd.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
-#include <stdlib.h>
 #include <time.h>
-#include <errno.h>
 #include <fcntl.h>
-#include <sys/mman.h>
 #include <sys/stat.h>
 #include <sys/syscall.h>
-#include <sys/types.h>
 #include <android/log.h>
 
 #include "zygisk.hpp"
-#include "jni_helpers.h"
+#include "version.h"
+#include "data_slot.h"
 
-// ---- 常量 ---------------------------------------------------------------------
-
-static const char *kTarget = "com.tencent.mm";
-static const char *kLogDir = "/data/data/com.tencent.mm/files/satori-wx-probe";
-static constexpr int kRingSize = 4096;        // 环形缓冲条目数
-static constexpr int kNameMax = 96;           // 方法名上限
-static constexpr int kSigMax = 224;           // 签名上限
-static constexpr int kMaxClasses = 4096;      // 唯一类名计数上限（哈希集合）
-static constexpr int kCapCalls = 20000;       // 拦截的 RegisterNatives 调用上限
-static constexpr int kWindowSec = 90;         // 补丁窗口
-static constexpr int kMapMax = 16384;         // maps 缓存行数上限
-
-// ---- 数据结构 ------------------------------------------------------------------
+namespace {
+constexpr char kTarget[] = "com.tencent.mm";
+constexpr int kCapacity = 1024;
+constexpr long kCallLimit = 20000;
+constexpr int64_t kWindowMs = 90000;
+constexpr size_t kLogLimit = 16 * 1024 * 1024;
+using RegisterFn = jint (*)(JNIEnv *, jclass, const JNINativeMethod *, jint);
 
 struct Entry {
-    uint64_t fn;
-    int32_t tid;
-    jobject gref;               // 本条目专属的 global ref（writer 解析后 Delete）
-    char name[kNameMax];
-    char sig[kSigMax];
+    jobject clazz;
+    uintptr_t fn;
+    int64_t time_ms;
+    int tid;
+    char name[96];
+    char sig[224];
 };
+JavaVM *g_vm = nullptr;
+wx::DataSlot<RegisterFn> g_patch;
+RegisterFn *g_slot = nullptr;
+char g_dir[1024];
+pthread_mutex_t g_mu = PTHREAD_MUTEX_INITIALIZER;
+Entry g_ring[kCapacity];
+int g_head = 0, g_tail = 0, g_count = 0;
+bool g_active = false;
+long g_calls = 0, g_methods = 0, g_drops = 0;
+int64_t g_started_ms = 0;
 
-struct MapRange {
-    uintptr_t start, end;
-    uint64_t offset;            // 文件内偏移
-    bool has_path;
-    char path[256];
-};
-
-// ---- 全局 ----------------------------------------------------------------------
-
-static JavaVM *g_vm = nullptr;
-static bool g_target = false;
-
-static const JNINativeInterface *g_table = nullptr;
-static void **g_slot = nullptr;               // &table->RegisterNatives
-static void *g_orig = nullptr;                // 原 RegisterNatives
-static int g_page_prot_saved = -1;
-static uintptr_t g_page_start = 0;
-static size_t g_page_size = 0;
-
-static volatile int g_active = 0;             // wrapper 是否在记录
-static volatile int g_restored = 0;
-static volatile int g_done = 0;               // writer 可以收尾
-
-static long g_call_count = 0;                 // 拦截到的 RegisterNatives 调用数
-static long g_method_count = 0;
-static long g_drop_count = 0;
-static int g_unique_classes = 0;
-
-static pthread_mutex_t g_mu = PTHREAD_MUTEX_INITIALIZER;
-static pthread_cond_t g_cv = PTHREAD_COND_INITIALIZER;
-static Entry g_ring[kRingSize];
-static int g_ring_head = 0;   // 写入位
-static int g_ring_tail = 0;   // 消费位
-
-static MapRange g_maps[kMapMax];
-static int g_map_count = 0;
-static int64_t g_last_maps_load_ms = 0;
-
-static int g_fd_boundary = -1;
-static int g_fd_meta = -1;
-
-static int64_t NowMs() {
-    struct timespec ts;
-    clock_gettime(CLOCK_REALTIME, &ts);
-    return (int64_t) ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+int64_t NowMs() {
+    timespec ts{};
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return static_cast<int64_t>(ts.tv_sec) * 1000 + ts.tv_nsec / 1000000;
 }
 
-static void LoadMapsLocked();
-
-static jint MyRegisterNatives(JNIEnv *env, jclass clazz, const JNINativeMethod *methods,
-                              jint n);
-
-static void *TimerThread(void *);
-
-// ---- maps 缓存：把 fn 归属到 .so ------------------------------------------------
-
-static void LoadMapsLocked() {
-    g_map_count = 0;
-    FILE *f = fopen("/proc/self/maps", "re");
-    if (f == nullptr) return;
-    char line[1024];
-    while (fgets(line, sizeof(line), f) != nullptr && g_map_count < kMapMax) {
-        uintptr_t start = 0, end = 0;
-        char perms[8] = {0};
-        uint64_t off = 0;
-        unsigned dev_maj = 0, dev_min = 0;
-        unsigned long inode = 0;
-        int consumed = 0;
-        if (sscanf(line, "%lx-%lx %7s %lx %x:%x %lu%n", &start, &end, perms, &off,
-                   &dev_maj, &dev_min, &inode, &consumed) != 7) continue;
-        MapRange &r = g_maps[g_map_count];
-        r.start = start; r.end = end; r.offset = off;
-        const char *p = line + consumed;
-        while (*p == ' ') p++;
-        size_t n = strlen(p);
-        while (n > 0 && (p[n - 1] == '\n' || p[n - 1] == ' ')) n--;
-        if (n == 0) { r.has_path = false; r.path[0] = '\0'; }
-        else {
-            r.has_path = true;
-            snprintf(r.path, sizeof(r.path), "%.*s", (int) n, p);
-        }
-        g_map_count++;
-    }
-    fclose(f);
-    g_last_maps_load_ms = NowMs();
-}
-
-/** fn → (路径, 文件内偏移)。找不到返回 false。 */
-static bool AttributeFn(uint64_t fn, char *out, size_t out_size, uint64_t *file_off) {
-    pthread_mutex_lock(&g_mu);
-    if (g_map_count == 0) LoadMapsLocked();
-    for (int i = 0; i < g_map_count; i++) {
-        const MapRange &r = g_maps[i];
-        if (fn >= r.start && fn < r.end) {
-            if (!r.has_path) { pthread_mutex_unlock(&g_mu); return false; }
-            snprintf(out, out_size, "%s", r.path);
-            *file_off = r.offset + (fn - r.start);
-            pthread_mutex_unlock(&g_mu);
-            return true;
-        }
-    }
-    // 新库后加载：重读一次 maps（限频 2 秒）。
-    if (NowMs() - g_last_maps_load_ms > 2000) {
-        LoadMapsLocked();
-        for (int i = 0; i < g_map_count; i++) {
-            const MapRange &r = g_maps[i];
-            if (fn >= r.start && fn < r.end && r.has_path) {
-                snprintf(out, out_size, "%s", r.path);
-                *file_off = r.offset + (fn - r.start);
-                pthread_mutex_unlock(&g_mu);
-                return true;
-            }
-        }
-    }
-    pthread_mutex_unlock(&g_mu);
-    return false;
-}
-
-// ---- 唯一类名计数（FNV 哈希 + 线性探开） -------------------------------------------
-
-static uint64_t g_class_hashes[kMaxClasses];
-
-static void CountClassName(const char *name) {
-    uint64_t h = 1469598103934665603ull;
-    for (const char *p = name; *p; p++) { h ^= (uint8_t) *p; h *= 1099511628211ull; }
-    if (h == 0) h = 1;
-    size_t i = (size_t) (h % kMaxClasses);
-    for (;;) {
-        if (g_class_hashes[i] == 0) { g_class_hashes[i] = h; g_unique_classes++; return; }
-        if (g_class_hashes[i] == h) return;
-        i = (i + 1) % kMaxClasses;
-    }
-}
-
-// ---- 落盘 -----------------------------------------------------------------------
-
-static void EnsureDir() {
-    mkdir(kLogDir, 0700);   // 已存在则 EEXIST，忽略
-}
-
-static int OpenLog(const char *name) {
-    char path[512];
-    snprintf(path, sizeof(path), "%s/%s", kLogDir, name);
-    int fd = open(path, O_CREAT | O_WRONLY | O_APPEND, 0600);
-    return fd;
-}
-
-static void WriteAll(int fd, const char *buf, size_t len) {
-    while (len > 0) {
-        ssize_t w = write(fd, buf, len);
-        if (w <= 0) {
-            if (errno == EINTR) continue;
-            return;
-        }
-        buf += w;
-        len -= (size_t) w;
-    }
-}
-
-// ---- 环形缓冲（多生产者单消费者，互斥锁 + 条件变量） ---------------------------------
-
-static void RingPush(const Entry &e) {
-    pthread_mutex_lock(&g_mu);
-    int next = (g_ring_head + 1) % kRingSize;
-    if (next == g_ring_tail) {
-        g_drop_count++;
-    } else {
-        g_ring[g_ring_head] = e;
-        g_ring_head = next;
-        pthread_cond_signal(&g_cv);
-    }
-    pthread_mutex_unlock(&g_mu);
-}
-
-static int RingDrain(Entry *out, int max) {
-    pthread_mutex_lock(&g_mu);
-    int n = 0;
-    while (g_ring_tail != g_ring_head && n < max) {
-        out[n++] = g_ring[g_ring_tail];
-        g_ring_tail = (g_ring_tail + 1) % kRingSize;
-    }
-    if (n == 0) {
-        struct timespec ts;
-        clock_gettime(CLOCK_REALTIME, &ts);
-        ts.tv_nsec += 200 * 1000 * 1000;
-        if (ts.tv_nsec >= 1000000000L) { ts.tv_sec++; ts.tv_nsec -= 1000000000L; }
-        pthread_cond_timedwait(&g_cv, &g_mu, &ts);
-    }
-    pthread_mutex_unlock(&g_mu);
-    return n;
-}
-
-// ---- 补丁 ------------------------------------------------------------------------
-
-/** 读出某地址所在页当前的保护位（"r"/"w"/"x"），失败返回 -1。 */
-static int PageProt(uintptr_t addr, uintptr_t *page_start, size_t *page_size) {
-    long sz = sysconf(_SC_PAGESIZE);
-    if (sz <= 0) sz = 4096;
-    *page_size = (size_t) sz;
-    *page_start = addr & ~((uintptr_t) sz - 1);
-    FILE *f = fopen("/proc/self/maps", "re");
-    if (f == nullptr) return -1;
-    char line[1024];
-    int prot = -1;
-    while (fgets(line, sizeof(line), f) != nullptr) {
-        uintptr_t start = 0, end = 0;
-        char perms[8] = {0};
-        if (sscanf(line, "%lx-%lx %7s", &start, &end, perms) != 3) continue;
-        if (addr >= start && addr < end) {
-            prot = 0;
-            if (strchr(perms, 'r')) prot |= PROT_READ;
-            if (strchr(perms, 'w')) prot |= PROT_WRITE;
-            if (strchr(perms, 'x')) prot |= PROT_EXEC;
+// Caller owns g_mu. Queue capacity bounds JNI references as well as native storage.
+void Record(JNIEnv *env, jclass clazz, const JNINativeMethod *methods, jint n) {
+    g_methods += n;
+    for (jint i = 0; i < n; ++i) {
+        if (g_count == kCapacity) { g_drops += n - i; break; }
+        jobject ref = env->NewGlobalRef(clazz);
+        if (!ref || env->ExceptionCheck()) {
+            // Entry had no pending exception; only clear an observer-created failure.
+            env->ExceptionClear();
+            if (ref) env->DeleteGlobalRef(ref);
+            g_drops += n - i;
             break;
         }
+        Entry &e = g_ring[g_head];
+        e.clazz = ref;
+        e.fn = reinterpret_cast<uintptr_t>(methods[i].fnPtr);
+        e.time_ms = NowMs();
+        e.tid = static_cast<int>(syscall(SYS_gettid));
+        snprintf(e.name, sizeof(e.name), "%s", methods[i].name ? methods[i].name : "");
+        snprintf(e.sig, sizeof(e.sig), "%s", methods[i].signature ? methods[i].signature : "");
+        g_head = (g_head + 1) % kCapacity;
+        ++g_count;
     }
-    fclose(f);
-    return prot;
 }
 
-static bool PatchTable(JNIEnv *env) {
-    g_table = env->functions;
-    auto *slot = &g_table->RegisterNatives;   // jint (*const *)(...)
-    g_slot = reinterpret_cast<void **>(
-            const_cast<void *>(reinterpret_cast<const void *>(slot)));
-    g_orig = (void *) g_table->RegisterNatives;
+jint ObserveRegister(JNIEnv *env, jclass clazz, const JNINativeMethod *methods, jint n) {
+    // The original result and pending exception belong to the host.
+    const jint result = g_patch.original()(env, clazz, methods, n);
+    if (result != JNI_OK || !clazz || !methods || n <= 0 || env->ExceptionCheck()) return result;
+    pthread_mutex_lock(&g_mu);
+    if (g_active) {
+        ++g_calls;
+        Record(env, clazz, methods, n);
+        if (g_calls >= kCallLimit) g_active = false;
+    }
+    pthread_mutex_unlock(&g_mu);
+    return result;
+}
 
-    g_page_prot_saved = PageProt((uintptr_t) g_slot, &g_page_start, &g_page_size);
-    if (g_page_prot_saved < 0) {
-        WLOGE("cannot read page prot of RegisterNatives slot");
-        return false;
+bool Pop(Entry *entry) {
+    pthread_mutex_lock(&g_mu);
+    const bool found = g_count != 0;
+    if (found) {
+        *entry = g_ring[g_tail];
+        g_tail = (g_tail + 1) % kCapacity;
+        --g_count;
     }
-    if (mprotect((void *) g_page_start, g_page_size,
-                 g_page_prot_saved | PROT_WRITE) != 0) {
-        WLOGE("mprotect RW failed: %s（降级为纯被动清单）", strerror(errno));
-        return false;
-    }
-    *g_slot = (void *) &MyRegisterNatives;
-    if (g_page_prot_saved != (PROT_READ | PROT_WRITE)) {
-        mprotect((void *) g_page_start, g_page_size, g_page_prot_saved);
+    pthread_mutex_unlock(&g_mu);
+    return found;
+}
+
+const char *Stop() {
+    pthread_mutex_lock(&g_mu);
+    g_active = false; // No producer can add refs after this lock is released.
+    const char *status = g_patch.restore();
+    pthread_mutex_unlock(&g_mu);
+    return status;
+}
+
+bool WriteAll(int fd, const char *data, size_t size) {
+    while (size) {
+        const ssize_t n = write(fd, data, size);
+        if (n < 0 && errno == EINTR) continue;
+        if (n <= 0) return false;
+        data += n;
+        size -= static_cast<size_t>(n);
     }
     return true;
 }
 
-static void RestoreTable() {
-    if (__atomic_exchange_n(&g_active, 0, __ATOMIC_SEQ_CST) == 0) {
-        // 尚未激活或已还原过
-        __atomic_store_n(&g_restored, 1, __ATOMIC_SEQ_CST);
-        __atomic_store_n(&g_done, 1, __ATOMIC_SEQ_CST);
-        pthread_mutex_lock(&g_mu);
-        pthread_cond_broadcast(&g_cv);
-        pthread_mutex_unlock(&g_mu);
-        return;
+// snprintf returns the *untruncated* size; callers must clamp before writing.
+size_t Printed(int size, size_t capacity) {
+    return size <= 0 ? 0 : (static_cast<size_t>(size) < capacity ? size : capacity - 1);
+}
+
+int OpenLog(int dir, const char *name) {
+    return openat(dir, name, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK, 0600);
+}
+
+// Resolve current maps on the writer thread, not on RegisterNatives' call path.
+// maps offset + address delta is a backing-file offset, not an ELF virtual address.
+void Location(uintptr_t fn, char *out, size_t capacity) {
+    snprintf(out, capacity, "unknown+0x%lx", fn);
+    FILE *maps = fopen("/proc/self/maps", "re");
+    if (!maps) return;
+    char line[1536], perms[5];
+    uintptr_t begin, end, offset;
+    unsigned major, minor;
+    unsigned long inode;
+    int used;
+    while (fgets(line, sizeof(line), maps)) {
+        if (sscanf(line, "%lx-%lx %4s %lx %x:%x %lu%n", &begin, &end, perms,
+                   &offset, &major, &minor, &inode, &used) != 7) continue;
+        if (fn < begin || fn >= end) continue;
+        char *path = line + used;
+        while (*path == ' ') ++path;
+        path[strcspn(path, "\r\n")] = 0;
+        const char *base = strrchr(path, '/');
+        snprintf(out, capacity, "%s+0x%lx", base ? base + 1 : (*path ? path : "anonymous"),
+                 offset + fn - begin);
+        break;
     }
-    mprotect((void *) g_page_start, g_page_size, g_page_prot_saved | PROT_WRITE);
-    *g_slot = g_orig;
-    if (g_page_prot_saved != (PROT_READ | PROT_WRITE)) {
-        mprotect((void *) g_page_start, g_page_size, g_page_prot_saved);
+    fclose(maps);
+}
+
+void Resolve(JNIEnv *env, jmethodID get_name, const Entry &entry, char *out, size_t capacity) {
+    snprintf(out, capacity, "(unresolved)");
+    if (get_name) {
+        auto name = static_cast<jstring>(env->CallObjectMethod(entry.clazz, get_name));
+        if (!env->ExceptionCheck() && name) {
+            const char *chars = env->GetStringUTFChars(name, nullptr);
+            if (chars) {
+                snprintf(out, capacity, "%s", chars);
+                env->ReleaseStringUTFChars(name, chars);
+            }
+        }
+        if (env->ExceptionCheck()) env->ExceptionClear();
+        if (name) env->DeleteLocalRef(name);
     }
-    WLOGI("RegisterNatives restored: calls=%ld methods=%ld drops=%ld",
-          g_call_count, g_method_count, g_drop_count);
-    __atomic_store_n(&g_restored, 1, __ATOMIC_SEQ_CST);
-    __atomic_store_n(&g_done, 1, __ATOMIC_SEQ_CST);
+    env->DeleteGlobalRef(entry.clazz);
+}
+
+void Snapshot(int dir) {
+    const int out = OpenLog(dir, "maps.log");
+    const int in = open("/proc/self/maps", O_RDONLY | O_CLOEXEC);
+    if (out >= 0 && in >= 0) {
+        char buf[4096];
+        size_t total = 0;
+        while (total < kLogLimit) {
+            const ssize_t n = read(in, buf, sizeof(buf));
+            if (n < 0 && errno == EINTR) continue;
+            if (n <= 0 || !WriteAll(out, buf, static_cast<size_t>(n))) break;
+            total += n;
+        }
+    }
+    if (in >= 0) close(in);
+    if (out >= 0) close(out);
+}
+
+void *Worker(void *) {
+    pthread_setname_np(pthread_self(), "satori-wx");
+    JNIEnv *env = nullptr;
+    if (g_vm->AttachCurrentThreadAsDaemon(&env, nullptr) != JNI_OK) {
+        __android_log_print(ANDROID_LOG_ERROR, "SatoriWx", "worker attach failed; no patch installed");
+        return nullptr;
+    }
+    // Bootstrap classes only; never wait for ActivityThread, load app classes or exempt hidden APIs.
+    jclass cls = env->FindClass("java/lang/Class");
+    jmethodID get_name = cls ? env->GetMethodID(cls, "getName", "()Ljava/lang/String;") : nullptr;
+    if (env->ExceptionCheck()) env->ExceptionClear();
+    if (cls) env->DeleteLocalRef(cls);
+    if (mkdir(g_dir, 0700) != 0 && errno != EEXIST) {
+        __android_log_print(ANDROID_LOG_ERROR, "SatoriWx", "cannot create probe directory: %s", strerror(errno));
+        g_vm->DetachCurrentThread();
+        return nullptr;
+    }
+    const int dir = open(g_dir, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
+    const int boundary = dir >= 0 ? OpenLog(dir, "boundary.log") : -1;
+    const int meta = dir >= 0 ? OpenLog(dir, "meta.log") : -1;
+    if (boundary < 0 || meta < 0) {
+        __android_log_print(ANDROID_LOG_ERROR, "SatoriWx", "cannot open probe logs; no patch installed");
+        if (boundary >= 0) close(boundary);
+        if (meta >= 0) close(meta);
+        if (dir >= 0) close(dir);
+        g_vm->DetachCurrentThread();
+        return nullptr;
+    }
+    g_started_ms = NowMs();
     pthread_mutex_lock(&g_mu);
-    pthread_cond_broadcast(&g_cv);
+    const bool installed = get_name && g_patch.install(g_slot, ObserveRegister);
+    g_active = installed && g_patch.protection_ok();
     pthread_mutex_unlock(&g_mu);
-}
-
-// ---- wrapper ---------------------------------------------------------------------
-//
-// 只在 g_active 时记录。注意：这里在 ART 的 RegisterNatives 调用路径上，
-// 除 NewGlobalRef（叶子级）外不做任何 JNI 调用；类名解析全部推迟到 writer 线程。
-
-static void Record(JNIEnv *env, jclass clazz, const JNINativeMethod *methods, jint n) {
-    for (jint i = 0; i < n; i++) {
-        Entry e = {};
-        e.fn = (uint64_t) methods[i].fnPtr;
-        e.tid = (int32_t) syscall(SYS_gettid);
-        e.gref = env->NewGlobalRef(clazz);   // 每条目持一个，writer 解析后 Delete
-        const char *nm = methods[i].name ? methods[i].name : "";
-        const char *sg = methods[i].signature ? methods[i].signature : "";
-        snprintf(e.name, sizeof(e.name), "%s", nm);
-        snprintf(e.sig, sizeof(e.sig), "%s", sg);
+    char line[1536];
+    int len = snprintf(line, sizeof(line), "version=" SATORI_WX_VERSION "\npid=%d\nuid=%d\npatched=%s\n"
+                       "start_monotonic_ms=%lld\nwindow_ms=%lld\ncall_limit=%ld\n",
+                       getpid(), getuid(), installed ? "yes" : "no",
+                       static_cast<long long>(g_started_ms), static_cast<long long>(kWindowMs), kCallLimit);
+    bool io_ok = WriteAll(meta, line, Printed(len, sizeof(line)));
+    bool stopping = false;
+    const char *restore = "not-installed";
+    const char *reason = "window";
+    size_t written = 0;
+    for (;;) {
         pthread_mutex_lock(&g_mu);
-        g_method_count++;
+        const bool active = g_active;
         pthread_mutex_unlock(&g_mu);
-        RingPush(e);
-    }
-}
-
-static jint MyRegisterNatives(JNIEnv *env, jclass clazz, const JNINativeMethod *methods,
-                              jint n) {
-    if (__atomic_load_n(&g_active, __ATOMIC_SEQ_CST) && n > 0) {
-        long c = __atomic_add_fetch(&g_call_count, 1, __ATOMIC_SEQ_CST);
-        if (c <= kCapCalls) {
-            Record(env, clazz, methods, n);
-            if (c == kCapCalls) RestoreTable();
+        if (!stopping && (!active || !io_ok || written >= kLogLimit || NowMs() - g_started_ms >= kWindowMs)) {
+            reason = !installed ? "passive" : !g_patch.protection_ok() ? "protection-failed" :
+                     !io_ok ? "io-error" : written >= kLogLimit ? "log-limit" : !active ? "call-limit" : "window";
+            restore = Stop();
+            stopping = true;
         }
-    }
-    using OrigFn = jint (*)(JNIEnv *, jclass, const JNINativeMethod *, jint);
-    return reinterpret_cast<OrigFn>(g_orig)(env, clazz, methods, n);
-}
-
-// ---- writer 线程 -------------------------------------------------------------------
-
-static jclass g_cls_class = nullptr;
-static jmethodID g_mid_get_name = nullptr;
-
-static bool SetupNameResolver(JNIEnv *env) {
-    g_cls_class = env->FindClass("java/lang/Class");
-    if (g_cls_class == nullptr) { env->ExceptionClear(); return false; }
-    g_cls_class = (jclass) env->NewGlobalRef(g_cls_class);
-    g_mid_get_name = env->GetMethodID(g_cls_class, "getName", "()Ljava/lang/String;");
-    if (g_mid_get_name == nullptr) { env->ExceptionClear(); return false; }
-    return true;
-}
-
-/** 解析一个 global ref 的类名到 buf；返回 false 表示解析失败（ref 已释放）。 */
-static bool ResolveClassName(JNIEnv *env, jobject gref, char *buf, size_t buf_size) {
-    jstring s = (jstring) env->CallObjectMethod(gref, g_mid_get_name);
-    if (env->ExceptionCheck()) {
-        env->ExceptionClear();
-        env->DeleteGlobalRef(gref);
-        return false;
-    }
-    bool ok = false;
-    if (s != nullptr) {
-        const char *c = env->GetStringUTFChars(s, nullptr);
-        if (c != nullptr) {
-            snprintf(buf, buf_size, "%s", c);
-            env->ReleaseStringUTFChars(s, c);
-            ok = true;
+        Entry entry{};
+        if (!Pop(&entry)) {
+            if (stopping) break;
+            usleep(10000);
+            continue;
         }
-        env->DeleteLocalRef(s);
+        char name[256];
+        Resolve(env, get_name, entry, name, sizeof(name));
+        if (!io_ok || written >= kLogLimit) continue; // Still release every queued reference.
+        char location[384];
+        Location(entry.fn, location, sizeof(location));
+        len = snprintf(line, sizeof(line), "%lld %d %s %s %s %s\n",
+                       static_cast<long long>(entry.time_ms), entry.tid, location, name, entry.name, entry.sig);
+        const size_t size = Printed(len, sizeof(line));
+        if (size > kLogLimit - written) { written = kLogLimit; continue; }
+        io_ok = WriteAll(boundary, line, size);
+        written += size;
     }
-    env->DeleteGlobalRef(gref);
-    return ok;
-}
-
-static const char *BaseName(const char *path) {
-    const char *slash = strrchr(path, '/');
-    return slash ? slash + 1 : path;
-}
-
-static void *WriterThread(void *) {
-    bool attached = false;
-    JNIEnv *env = WxGetEnv(g_vm, &attached);
-    if (env != nullptr) SetupNameResolver(env);
-
-    Entry batch[256];
-    char line[640];
-    char out[8192];
-    size_t out_len = 0;
-
-    while (true) {
-        int n = RingDrain(batch, 256);
-        if (n == 0 && __atomic_load_n(&g_done, __ATOMIC_SEQ_CST)) break;
-        for (int i = 0; i < n; i++) {
-            Entry &e = batch[i];
-            char lib[256] = "(unknown)";
-            uint64_t off = 0;
-            char loc[300];
-            if (AttributeFn(e.fn, lib, sizeof(lib), &off)) {
-                snprintf(loc, sizeof(loc), "%s+0x%llx", BaseName(lib),
-                         (unsigned long long) off);
-            } else {
-                snprintf(loc, sizeof(loc), "?+0x%llx", (unsigned long long) e.fn);
-            }
-            char cls[224] = "(unresolved)";
-            if (env != nullptr && e.gref != nullptr) {
-                if (!ResolveClassName(env, e.gref, cls, sizeof(cls))) {
-                    snprintf(cls, sizeof(cls), "(resolve-failed)");
-                }
-                CountClassName(cls);
-            } else if (e.gref != nullptr) {
-                env = WxGetEnv(g_vm, &attached);   // 重试 attach
-                if (env != nullptr && SetupNameResolver(env) &&
-                    ResolveClassName(env, e.gref, cls, sizeof(cls))) {
-                    CountClassName(cls);
-                }
-            }
-            int m = snprintf(line, sizeof(line), "%lld %d %s %s %s %s\n",
-                             (long long) NowMs(), e.tid, loc, cls, e.name, e.sig);
-            if (m > 0 && g_fd_boundary >= 0) {
-                if (out_len + (size_t) m >= sizeof(out)) {
-                    WriteAll(g_fd_boundary, out, out_len);
-                    out_len = 0;
-                }
-                memcpy(out + out_len, line, (size_t) m);
-                out_len += (size_t) m;
-            }
-        }
-        if (out_len > 0 && g_fd_boundary >= 0) {
-            WriteAll(g_fd_boundary, out, out_len);
-            out_len = 0;
-        }
-    }
-    if (out_len > 0 && g_fd_boundary >= 0) WriteAll(g_fd_boundary, out, out_len);
-
-    // 还原后：maps 快照与 meta。
-    if (g_fd_boundary >= 0) { close(g_fd_boundary); g_fd_boundary = -1; }
-    pthread_mutex_lock(&g_mu);
-    LoadMapsLocked();
-    pthread_mutex_unlock(&g_mu);
-
-    int fd_maps = OpenLog("maps.log");
-    if (fd_maps >= 0) {
-        char hdr[128];
-        int h = snprintf(hdr, sizeof(hdr), "# maps snapshot at %lld\n",
-                         (long long) NowMs());
-        WriteAll(fd_maps, hdr, (size_t) h);
-        pthread_mutex_lock(&g_mu);
-        for (int i = 0; i < g_map_count; i++) {
-            const MapRange &r = g_maps[i];
-            if (!r.has_path) continue;
-            const char *b = BaseName(r.path);
-            // 只留微信自有库与其直接依赖，日志不要全量 maps 那么大。
-            if (strncmp(b, "libwechat", 9) == 0 || strncmp(b, "libmm", 5) == 0 ||
-                strncmp(b, "libapp.", 7) == 0 || strncmp(b, "libWCDB", 7) == 0 ||
-                strncmp(b, "libMMProtocalJni", 16) == 0 ||
-                strstr(b, "cso") != nullptr) {
-                char row[512];
-                int m = snprintf(row, sizeof(row), "%08llx-%08llx +%08llx %s\n",
-                                 (unsigned long long) r.start, (unsigned long long) r.end,
-                                 (unsigned long long) r.offset, r.path);
-                WriteAll(fd_maps, row, (size_t) m);
-            }
-        }
-        pthread_mutex_unlock(&g_mu);
-        close(fd_maps);
-    }
-
-    if (g_fd_meta >= 0) {
-        char buf[1024];
-        int m = snprintf(buf, sizeof(buf),
-                         "target=%s\npatched=%s\nwindow_sec=%d cap_calls=%d\n"
-                         "calls=%ld methods=%ld unique_classes=%d drops=%ld\n"
-                         "start_ms=%lld end_ms=%lld\n",
-                         kTarget, g_orig != nullptr && g_slot != nullptr ? "yes" : "no",
-                         kWindowSec, kCapCalls, g_call_count, g_method_count,
-                         g_unique_classes, g_drop_count, 0LL, (long long) NowMs());
-        WriteAll(g_fd_meta, buf, (size_t) m);
-        close(g_fd_meta);
-        g_fd_meta = -1;
-    }
-    if (attached && env != nullptr) WxReleaseEnv(g_vm, attached);
-    WLOGI("writer finished: calls=%ld methods=%ld classes=%d drops=%ld",
-          g_call_count, g_method_count, g_unique_classes, g_drop_count);
+    Snapshot(dir);
+    len = snprintf(line, sizeof(line), "stop=%s\nrestore=%s\nprotection_ok=%s\n"
+                   "calls=%ld\nmethods=%ld\ndrops=%ld\nbytes=%zu\nio_ok=%s\nend_monotonic_ms=%lld\n",
+                   reason, restore, g_patch.protection_ok() ? "yes" : "no", g_calls, g_methods,
+                   g_drops, written, io_ok ? "yes" : "no", static_cast<long long>(NowMs()));
+    const bool meta_ok = WriteAll(meta, line, Printed(len, sizeof(line)));
+    __android_log_print(ANDROID_LOG_INFO, "SatoriWx", "probe stop=%s restore=%s methods=%ld drops=%ld meta_ok=%d",
+                        reason, restore, g_methods, g_drops, meta_ok);
+    close(boundary);
+    close(meta);
+    close(dir);
+    g_vm->DetachCurrentThread();
     return nullptr;
 }
-
-static void *TimerThread(void *) {
-    for (int i = 0; i < kWindowSec && !__atomic_load_n(&g_restored, __ATOMIC_SEQ_CST); i++) {
-        sleep(1);
-    }
-    RestoreTable();
-    return nullptr;
-}
-
-// ---- 启动 -------------------------------------------------------------------------
-
-static void Start(JNIEnv *env) {
-    int64_t t0 = NowMs();
-    EnsureDir();
-    g_fd_boundary = OpenLog("boundary.log");
-    g_fd_meta = OpenLog("meta.log");
-
-    bool patched = PatchTable(env);
-    if (patched) {
-        __atomic_store_n(&g_active, 1, __ATOMIC_SEQ_CST);
-    }
-    char buf[512];
-    if (g_fd_meta >= 0) {
-        int m = snprintf(buf, sizeof(buf),
-                         "target=%s\npatched=%s\nstart_ms=%lld\n",
-                         kTarget, patched ? "yes" : "no", (long long) t0);
-        WriteAll(g_fd_meta, buf, (size_t) m);
-    }
-    WLOGI("probe start: patched=%s log=%s", patched ? "yes" : "no", kLogDir);
-
-    pthread_t w, t;
-    if (pthread_create(&w, nullptr, WriterThread, nullptr) == 0) pthread_detach(w);
-    // TimerThread 到点调 RestoreTable：补丁成功时还原函数指针，失败时只置收尾标志
-    // （RestoreTable 走 g_active==0 分支，幂等），writer 照常跑完 maps/meta 后退出。
-    if (pthread_create(&t, nullptr, TimerThread, nullptr) == 0) pthread_detach(t);
-}
-
-// ---- Zygisk 模块 ------------------------------------------------------------------
 
 class WxProbeModule : public zygisk::ModuleBase {
 public:
-    void onLoad(zygisk::Api *api, JNIEnv *env) override {
-        (void) api;
-        env_ = env;
-        env->GetJavaVM(&g_vm);
-    }
-
+    void onLoad(zygisk::Api *api, JNIEnv *env) override { api_ = api; env_ = env; }
     void preAppSpecialize(zygisk::AppSpecializeArgs *args) override {
-        if (args == nullptr || args->nice_name == nullptr || env_ == nullptr) return;
-        const char *name = env_->GetStringUTFChars(args->nice_name, nullptr);
-        if (name == nullptr) return;
-        if (strcmp(name, kTarget) == 0) {   // 精确匹配，:push 等子进程不进
-            g_target = true;
+        if (args && args->nice_name && args->app_data_dir && !env_->ExceptionCheck()) {
+            const char *name = env_->GetStringUTFChars(args->nice_name, nullptr);
+            target_ = name && strcmp(name, kTarget) == 0;
+            if (name) env_->ReleaseStringUTFChars(args->nice_name, name);
+            if (env_->ExceptionCheck()) env_->ExceptionClear();
+            if (target_) {
+                const char *data = env_->GetStringUTFChars(args->app_data_dir, nullptr);
+                const int n = data ? snprintf(g_dir, sizeof(g_dir), "%s/files/satori-wx-probe", data) : -1;
+                target_ = n > 0 && static_cast<size_t>(n) < sizeof(g_dir);
+                if (data) env_->ReleaseStringUTFChars(args->app_data_dir, data);
+                if (env_->ExceptionCheck()) env_->ExceptionClear();
+            }
         }
-        env_->ReleaseStringUTFChars(args->nice_name, name);
+        if (!target_) api_->setOption(zygisk::DLCLOSE_MODULE_LIBRARY);
     }
-
     void postAppSpecialize(const zygisk::AppSpecializeArgs *) override {
-        if (!g_target) return;
-        // 此刻 specialize 已完成、微信的 Application/静态初始化还没跑：
-        // 它所有 JNI_OnLoad 的 RegisterNatives 都会被拦到。
-        Start(env_);
+        if (!target_ || env_->GetJavaVM(&g_vm) != JNI_OK) return;
+        // Worker attaches before patching. Some very early registrations can be missed.
+        g_slot = const_cast<RegisterFn *>(&env_->functions->RegisterNatives);
+        pthread_t thread;
+        const int error = pthread_create(&thread, nullptr, Worker, nullptr);
+        if (!error) pthread_detach(thread);
+        else __android_log_print(ANDROID_LOG_ERROR, "SatoriWx", "pthread_create: %s", strerror(error));
     }
-
+    void preServerSpecialize(zygisk::ServerSpecializeArgs *) override {
+        api_->setOption(zygisk::DLCLOSE_MODULE_LIBRARY);
+    }
 private:
+    zygisk::Api *api_ = nullptr;
     JNIEnv *env_ = nullptr;
+    bool target_ = false;
 };
+} // namespace
 
 REGISTER_ZYGISK_MODULE(WxProbeModule)

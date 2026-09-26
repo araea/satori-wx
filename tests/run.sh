@@ -1,0 +1,20 @@
+#!/data/data/com.termux/files/usr/bin/bash
+set -euo pipefail
+R=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+mkdir -p "$R/build/tests"
+clang -std=c11 -O1 -g -DCJSON_NESTING_LIMIT=16 -c "$R/native/vendor/cjson/cJSON.c" -o "$R/build/tests/cjson.o"
+clang++ -std=c++20 -O1 -g -fno-exceptions -fno-rtti -nostdinc++ -nostdlib++ -Wall -Wextra -Werror \
+    -I "$R/native" "$R/native/server.cpp" "$R/native/protocol.cpp" "$R/native/multipart.cpp" \
+    "$R/native/wx_account.cpp" "$R/native/wx_adapter.cpp" "$R/tests/server_main.cpp" "$R/build/tests/cjson.o" \
+    -o "$R/build/tests/server"
+python3 "$R/tests/server_test.py" "$R/build/tests/server"
+clang++ -std=c++20 -O1 -g -fno-exceptions -fno-rtti -fno-threadsafe-statics -nostdinc++ -nostdlib++ \
+    -Wall -Wextra -Werror -I "$R/native" "$R/tests/probe_test.cpp" -llog -o "$R/build/tests/probe-test"
+"$R/build/tests/probe-test"
+clang++ -std=c++20 -O1 -g -fno-exceptions -fno-rtti -fno-threadsafe-statics -nostdinc++ -nostdlib++ \
+    -Wall -Wextra -Werror -I "$R/native" "$R/tests/account_test.cpp" "$R/native/wx_account.cpp" "$R/native/wx_adapter.cpp" \
+    "$R/native/protocol.cpp" "$R/build/tests/cjson.o" -o "$R/build/tests/account-test"
+mkdir -p "$R/build/tests/tmp"
+SATORI_ACCOUNT_TMP="$R/build/tests/tmp" "$R/build/tests/account-test"
+python3 "$R/tests/protocol_test.py" "$R/build/tests/server"
+python3 "$R/tests/account_e2e_test.py" "$R/build/tests/server"

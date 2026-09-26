@@ -1,2 +1,4 @@
 build/
 *.keystore
+__pycache__/
+*.pyc

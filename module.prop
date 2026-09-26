@@ -1,0 +1,6 @@
+id=satori_wx
+name=知言 native 实验版
+version=v0.5.0
+versionCode=16
+author=araea
+description=纯 native Satori v1 HTTP/WebSocket 服务端；只读微信偏好文件接入账号身份，消息后端尚未接入。

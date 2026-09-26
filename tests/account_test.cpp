@@ -1,0 +1,298 @@
+// Host-side tests for the read-only WeChat account identity source.
+// They build fixture SharedPreferences files and never touch a real device.
+#include "wx_account.h"
+#include "wx_adapter.h"
+#include "protocol.h"
+#include "vendor/cjson/cJSON.h"
+#include <fcntl.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/stat.h>
+#include <unistd.h>
+
+namespace {
+int failures = 0;
+
+void Check(bool ok, const char *what) {
+    if (!ok) { fprintf(stderr, "FAIL: %s\n", what); ++failures; }
+}
+
+bool WriteFile(const char *path, const char *data) {
+    const int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
+    if (fd < 0) return false;
+    const size_t size = strlen(data);
+    const ssize_t written = write(fd, data, size);
+    close(fd);
+    return written == static_cast<ssize_t>(size);
+}
+
+struct Fixture {
+    char dir[256];
+    explicit Fixture() {
+        const char *base = getenv("SATORI_ACCOUNT_TMP");
+        if (!base || !*base) base = getenv("TMPDIR");
+        if (!base || !*base) base = ".";
+        char pattern[512];
+        snprintf(pattern, sizeof(pattern), "%s/satori-account-XXXXXX", base);
+        const char *made = mkdtemp(pattern);
+        if (!made) { fprintf(stderr, "mkdtemp failed in %s\n", base); exit(2); }
+        snprintf(dir, sizeof(dir), "%s", made);
+        char path[512];
+        snprintf(path, sizeof(path), "%s/shared_prefs", dir);
+        if (mkdir(path, 0700)) { fprintf(stderr, "mkdir failed\n"); exit(2); }
+    }
+    ~Fixture() {
+        char path[512];
+        Path(path, sizeof(path), "com.tencent.mm_preferences.xml");
+        remove(path);
+        Path(path, sizeof(path), "auth_info_key_prefs.xml");
+        remove(path);
+        snprintf(path, sizeof(path), "%s/shared_prefs", dir);
+        rmdir(path);
+        rmdir(dir);
+    }
+    void Path(char *out, size_t capacity, const char *name) const {
+        snprintf(out, capacity, "%s/shared_prefs/%s", dir, name);
+    }
+    bool Main(const char *body) const {
+        char path[512], xml[8192];
+        Path(path, sizeof(path), "com.tencent.mm_preferences.xml");
+        snprintf(xml, sizeof(xml), "<?xml version='1.0' encoding='utf-8' standalone='yes' ?>\n<map>\n%s</map>\n", body);
+        return WriteFile(path, xml);
+    }
+    bool Auth(const char *body) const {
+        char path[512], xml[2048];
+        Path(path, sizeof(path), "auth_info_key_prefs.xml");
+        snprintf(xml, sizeof(xml), "<?xml version='1.0' encoding='utf-8' standalone='yes' ?>\n<map>\n%s</map>\n", body);
+        return WriteFile(path, xml);
+    }
+};
+
+const char *String(const cJSON *object, const char *key) {
+    const cJSON *item = cJSON_GetObjectItemCaseSensitive(object, key);
+    return cJSON_IsString(item) ? item->valuestring : "";
+}
+double Number(const cJSON *object, const char *key) {
+    const cJSON *item = cJSON_GetObjectItemCaseSensitive(object, key);
+    return cJSON_IsNumber(item) ? item->valuedouble : -1;
+}
+const char *Nested(const cJSON *object, const char *first, const char *second) {
+    const cJSON *child = cJSON_GetObjectItemCaseSensitive(object, first);
+    return String(child, second);
+}
+
+const char *kMain = "<string name=\"login_weixin_username\">wxid_8zxjsghrk8vz41</string>\n"
+                    "<string name=\"last_login_uin\">1114861342</string>\n"
+                    "<boolean name=\"isLogin\" value=\"true\" />\n"
+                    "<boolean name=\"init_success\" value=\"true\" />\n"
+                    "<string name=\"last_login_alias\">nawyjx</string>\n"
+                    "<string name=\"last_login_nick_name\">知言</string>\n"
+                    "<string name=\"last_login_bind_mobile\">19558338697</string>\n";
+
+void TestOnlineAccount() {
+    Fixture fixture;
+    Check(fixture.Main(kMain), "write main prefs");
+    satori::Account account;
+    Check(satori::ReadAccount(fixture.dir, &account), "read account");
+    Check(account.exists, "account exists");
+    Check(account.online, "account online");
+    Check(!strcmp(account.wxid, "wxid_8zxjsghrk8vz41"), "wxid");
+    Check(!strcmp(account.uin, "1114861342"), "uin");
+    Check(!strcmp(account.alias, "nawyjx"), "alias");
+    Check(!strcmp(account.nickname, "知言"), "nickname");
+    Check(!strcmp(account.mobile, "19558338697"), "mobile");
+    char *json = satori::AccountEvent("login-added", account, 7);
+    Check(json != nullptr, "event printed");
+    if (json) {
+        cJSON *root = cJSON_Parse(json);
+        Check(root != nullptr, "event is json");
+        if (root) {
+            Check(!strcmp(String(root, "type"), "login-added"), "event type");
+            const cJSON *login = cJSON_GetObjectItemCaseSensitive(root, "login");
+            Check(login != nullptr, "login object");
+            Check(Number(login, "sn") == 7, "login sn");
+            Check(Number(login, "status") == 1, "status online");
+            Check(!strcmp(String(login, "adapter"), "satori-wx"), "adapter name");
+            Check(!strcmp(String(login, "platform"), "wechat"), "platform");
+            Check(!strcmp(Nested(login, "user", "id"), "wxid_8zxjsghrk8vz41"), "user id");
+            Check(!strcmp(Nested(login, "user", "nick"), "知言"), "user nick");
+            Check(!strcmp(Nested(login, "user", "name"), "nawyjx"), "user name");
+            const cJSON *features = cJSON_GetObjectItemCaseSensitive(login, "features");
+            Check(cJSON_IsArray(features) && cJSON_GetArraySize(features) == 0, "empty features");
+            cJSON_Delete(root);
+        }
+        free(json);
+    }
+}
+
+void TestOfflineAndRemoval() {
+    Fixture fixture;
+    Check(fixture.Main("<string name=\"login_weixin_username\">wxid_a</string>\n"
+                       "<string name=\"last_login_uin\">42</string>\n"
+                       "<boolean name=\"isLogin\" value=\"false\" />\n"), "write offline prefs");
+    satori::Account account;
+    Check(satori::ReadAccount(fixture.dir, &account), "read offline");
+    Check(account.exists && !account.online, "offline login still exists");
+    char *json = satori::AccountEvent("login-updated", account, 1);
+    Check(json && strstr(json, "\"status\":0"), "offline status is 0");
+    free(json);
+    json = satori::AccountEvent("login-removed", account, 1);
+    Check(json && strstr(json, "\"status\":0") && !strstr(json, "\"user\""), "removed event has no user");
+    free(json);
+}
+
+void TestAuthFallback() {
+    Fixture fixture;
+    Check(fixture.Main("<string name=\"login_weixin_username\">wxid_b</string>\n"
+                       "<boolean name=\"isLogin\" value=\"true\" />\n"), "main without uin");
+    Check(fixture.Auth("<int name=\"_auth_uin\" value=\"12345\" />\n"), "auth prefs");
+    satori::Account account;
+    Check(satori::ReadAccount(fixture.dir, &account), "read with fallback");
+    Check(!strcmp(account.uin, "12345"), "uin from auth prefs");
+    Check(account.exists, "exists via fallback");
+}
+
+void TestEntitiesAndInvalidUtf8() {
+    Fixture fixture;
+    Check(fixture.Main("<string name=\"login_weixin_username\">wxid_c</string>\n"
+                       "<string name=\"last_login_uin\">7</string>\n"
+                       "<boolean name=\"isLogin\" value=\"true\" />\n"
+                       "<string name=\"last_login_nick_name\">A&amp;B&lt;C&gt;D&#x4e2d;&#25991;</string>\n"),
+          "entity prefs");
+    satori::Account account;
+    Check(satori::ReadAccount(fixture.dir, &account), "read entities");
+    Check(!strcmp(account.nickname, "A&B<C>D中文"), "entities decoded");
+    Check(fixture.Main("<string name=\"login_weixin_username\">wxid_c</string>\n"
+                       "<string name=\"last_login_uin\">7</string>\n"
+                       "<boolean name=\"isLogin\" value=\"true\" />\n"
+                       "<string name=\"last_login_nick_name\">bad\xff" "byte</string>\n"),
+          "invalid utf8 prefs");
+    Check(satori::ReadAccount(fixture.dir, &account), "read invalid utf8");
+    Check(account.nickname[0] == 0, "invalid utf8 field dropped");
+    Check(account.exists, "identity kept when a cosmetic field is corrupt");
+}
+
+void TestMissingAndMalformed() {
+    Fixture fixture;
+    satori::Account account;
+    Check(!satori::ReadAccount(fixture.dir, &account), "missing prefs reported unreadable");
+    Check(fixture.Main(""), "empty map");
+    Check(satori::ReadAccount(fixture.dir, &account), "empty map readable");
+    Check(!account.exists, "empty map has no account");
+    // Truncated XML must not crash and must not invent an account.
+    Check(fixture.Main("<string name=\"login_weixin_username\">wxid_d"), "truncated prefs");
+    Check(satori::ReadAccount(fixture.dir, &account), "truncated readable");
+    Check(!account.exists, "truncated has no complete identity");
+    Check(fixture.Main("<string name=\"login_weixin_username\">wxid_d</string>\n"
+                       "<string name=\"last_login_uin\">8</string>\n"
+                       "<string name=\"long_value\">"), "unterminated string");
+    Check(satori::ReadAccount(fixture.dir, &account), "unterminated readable");
+    Check(!account.exists || account.online == false, "no online claim without isLogin");
+}
+
+bool TakeEvent(satori::EventBus *bus, char *out) {
+    bool meta = false;
+    return satori::Take(bus, out, &meta);
+}
+
+void TestAdapterTransitions() {
+    Fixture fixture;
+    Check(fixture.Main(kMain), "write main prefs");
+    satori::EventBus *bus = satori::CreateBus();
+    Check(bus != nullptr, "create bus");
+    satori::Adapter *adapter = satori::CreateAdapter(fixture.dir, bus);
+    Check(adapter != nullptr, "create adapter");
+    char event[satori::kEventSize];
+    Check(satori::AdapterRefresh(adapter), "first refresh");
+    Check(TakeEvent(bus, event), "added event published");
+    cJSON *root = cJSON_Parse(event);
+    Check(root && !strcmp(String(root, "type"), "login-added"), "first event is login-added");
+    cJSON_Delete(root);
+    Check(!TakeEvent(bus, event), "no duplicate while unchanged");
+    Check(satori::AdapterRefresh(adapter), "no-op refresh");
+    Check(!TakeEvent(bus, event), "unchanged publishes nothing");
+    // Cosmetic change -> update on the same sn.
+    Check(fixture.Main("<string name=\"login_weixin_username\">wxid_8zxjsghrk8vz41</string>\n"
+                       "<string name=\"last_login_uin\">1114861342</string>\n"
+                       "<boolean name=\"isLogin\" value=\"true\" />\n"
+                       "<string name=\"last_login_nick_name\">改名</string>\n"), "rename");
+    Check(satori::AdapterRefresh(adapter), "refresh after rename");
+    Check(TakeEvent(bus, event), "update event published");
+    root = cJSON_Parse(event);
+    Check(root && !strcmp(String(root, "type"), "login-updated"), "second event is login-updated");
+    cJSON_Delete(root);
+    // Identity change -> remove then add with a new sn.
+    Check(fixture.Main("<string name=\"login_weixin_username\">wxid_other</string>\n"
+                       "<string name=\"last_login_uin\">99</string>\n"
+                       "<boolean name=\"isLogin\" value=\"true\" />\n"), "switch account");
+    Check(satori::AdapterRefresh(adapter), "refresh after switch");
+    Check(TakeEvent(bus, event), "removal published");
+    root = cJSON_Parse(event);
+    Check(root && !strcmp(String(root, "type"), "login-removed"), "switch removes old identity");
+    cJSON_Delete(root);
+    Check(satori::AdapterRefresh(adapter), "refresh adds new identity");
+    Check(TakeEvent(bus, event), "addition published");
+    root = cJSON_Parse(event);
+    Check(root && !strcmp(String(root, "type"), "login-added"), "switch adds new identity");
+    Check(root && Number(cJSON_GetObjectItemCaseSensitive(root, "login"), "sn") == 2, "new sn allocated");
+    cJSON_Delete(root);
+    // Logout clears the identity -> removal.
+    Check(fixture.Main("<boolean name=\"isLogin\" value=\"false\" />\n"), "logout");
+    Check(satori::AdapterRefresh(adapter), "refresh after logout");
+    Check(TakeEvent(bus, event), "logout removal published");
+    root = cJSON_Parse(event);
+    Check(root && !strcmp(String(root, "type"), "login-removed"), "logout removes login");
+    cJSON_Delete(root);
+    satori::DestroyAdapter(adapter);
+    satori::DestroyBus(bus);
+}
+void TestHubIntegration() {
+    Fixture fixture;
+    Check(fixture.Main(kMain), "write main prefs");
+    satori::Account account;
+    Check(satori::ReadAccount(fixture.dir, &account), "read for hub");
+    satori::Hub *hub = satori::CreateHub();
+    Check(hub != nullptr, "create hub");
+    char *added = satori::AccountEvent("login-added", account, 1);
+    Check(added != nullptr, "added json");
+    char *signal = satori::Apply(hub, added, false);
+    Check(signal != nullptr, "apply accepts the adapter's added event");
+    free(signal);
+    free(added);
+    Check(satori::FindLogin(hub, "wechat", "wxid_8zxjsghrk8vz41") != nullptr, "login now in meta");
+    account.online = false;
+    char *updated = satori::AccountEvent("login-updated", account, 1);
+    Check(updated != nullptr, "updated json");
+    signal = satori::Apply(hub, updated, false);
+    Check(signal != nullptr, "apply accepts the adapter's updated event");
+    free(signal);
+    free(updated);
+    const cJSON *login = satori::FindLogin(hub, "wechat", "wxid_8zxjsghrk8vz41");
+    Check(login != nullptr && Number(login, "status") == 0, "offline update reflected in meta");
+    char *removed = satori::AccountEvent("login-removed", account, 1);
+    Check(removed != nullptr, "removed json");
+    signal = satori::Apply(hub, removed, false);
+    Check(signal != nullptr, "apply accepts the adapter's removed event");
+    free(signal);
+    free(removed);
+    Check(satori::FindLogin(hub, "wechat", "wxid_8zxjsghrk8vz41") == nullptr, "login removed from meta");
+    satori::DestroyHub(hub);
+}
+} // namespace
+
+int main() {
+    TestOnlineAccount();
+    TestOfflineAndRemoval();
+    TestAuthFallback();
+    TestEntitiesAndInvalidUtf8();
+    TestMissingAndMalformed();
+    TestAdapterTransitions();
+    TestHubIntegration();
+    if (failures) {
+        fprintf(stderr, "%d account test(s) failed\n", failures);
+        return 1;
+    }
+    printf("account tests: PASS\n");
+    return 0;
+}
