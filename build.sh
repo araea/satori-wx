@@ -33,8 +33,8 @@ if [ "$MODE" = server ]; then
     mkdir -p "$WORK/module/licenses"
     cp "$R/native/vendor/cjson/LICENSE" "$WORK/module/licenses/cJSON.txt"
 else
-    "$CXX" "${FLAGS[@]}" -shared "$R/native/probe.cpp" "$R/native/wcdb.cpp" -Wl,--no-undefined,-z,relro,-z,now \
-        -llog -ldl -o "$WORK/module/zygisk/arm64-v8a.so"
+    "$CXX" "${FLAGS[@]}" -shared "$R/native/probe.cpp" -Wl,--no-undefined,-z,relro,-z,now \
+        -llog -o "$WORK/module/zygisk/arm64-v8a.so"
     sed 's/^id=.*/id=satori_wx_probe/; s/^name=.*/name=知言 native 边界探针/; s/^description=.*/description=可选 JNI 注册观测实验，不提供 Satori 服务。/' \
         "$R/module.prop" > "$WORK/module/module.prop"
 fi

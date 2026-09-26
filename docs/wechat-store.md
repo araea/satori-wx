@@ -4,6 +4,21 @@
 微信 8.0.78 的消息库是加密的，且没有像 QQ-NT `IKernelMsgService` 那样稳定的接口，所以需要
 一个受控的进入点，但**不需要 hook 引擎、不需要改写微信代码、不需要 Java 助手**。
 
+## 安全边界（重要教训）
+
+**不要在 probe 里用候选密钥去打开微信正在使用的活库。** 2026-09-27 的一次实验就是这样做：
+捕获 spec 后立即用 libWCDB 反复 `sqlite3_open_v2` + `sqlite3_key` 打开 `EnMicroMsg.db` 试读，
+结果微信主进程在 WCDB 内部 `__memset_aarch64_nt` 触发 `SIGBUS BUS_ADRERR` 崩溃（多个 mmap 页面失效）。
+原因：错误密钥会让 SQLite 把库当成损坏库，而第二个连接与微信共享 WAL/`-shm`，并发下导致 mmap 失效。
+
+修正后的原则：
+
+- probe **只捕获 spec**（`(key, page, version)`）并写入应用私有的 0600 `key.log`，**不打开任何活库**。
+- 解密验证、参数匹配全部在**离线副本**上做（先 `cp` 出 `EnMicroMsg.db`/`-wal`/`-shm`，再试）。
+- 只有拿到**确定的**正确密钥与参数后，主模块才去开一个只读连接；且打开后先 `PRAGMA query_only`，
+  只发 `SELECT`。
+- 任何能写 WAL/`-shm` 或让 SQLite 进入恢复/回滚路径的操作都不允许出现在常驻进程里。
+
 ## 已验证的事实
 
 - `EnMicroMsg.db` 是 SQLCipher/WCDB 加密库：文件头是随机 salt，不是 `SQLite format 3`；
@@ -70,8 +85,9 @@
 
 | 步骤 | 内容 | 验证 |
 | --- | --- | --- |
-| M3.1 | probe 里实现对 `nativeSetKey` 的单点指针替换，真机拿到密钥 | probe 日志出现密钥长度/首字节（不落盘密钥明文），且微信功能不受影响 |
-| M3.2 | 只读连接读 `message`，接成 `message-created` 事件 | 真机收到真实消息事件，WebHook/WS 都能看到 |
+| M3.1 | probe 在 RegisterNatives 边界替换 nativeSetKey/setCipherKey 函数指针，只把 spec 写进私有 key.log，**不打开活库** | 微信正常运行；key.log 出现全部 spec（含 page/version） |
+| M3.1b | **离线**用副本（.db/-wal/-shm）匹配正确密钥与参数 | 副本上能 `SELECT count(*) FROM message`，微信不受影响 |
+| M3.2 | 用确定后的密钥开只读连接（或读副本）接成 `message-created` 事件 | 真机收到真实消息事件，WebHook/WS 都能看到 |
 | M3.3 | 读 `rcontact`/`chatroom`，实现 user/friend/guild/channel/message.list/get | 按 37 方法逐个打开 `features` |
 | M3.4 | 反射微信发送 API，实现 `message.create` 等写操作 | 真机发出真实消息，并做失败回滚 |
 

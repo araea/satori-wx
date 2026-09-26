@@ -9,7 +9,7 @@ clang++ -std=c++20 -O1 -g -fno-exceptions -fno-rtti -nostdinc++ -nostdlib++ -Wal
     "$R/build/tests/cjson.o" -o "$R/build/tests/server"
 python3 "$R/tests/server_test.py" "$R/build/tests/server"
 clang++ -std=c++20 -O1 -g -fno-exceptions -fno-rtti -fno-threadsafe-statics -nostdinc++ -nostdlib++ \
-    -Wall -Wextra -Werror -I "$R/native" "$R/tests/probe_test.cpp" "$R/native/wcdb.cpp" -llog -ldl -o "$R/build/tests/probe-test"
+    -Wall -Wextra -Werror -I "$R/native" "$R/tests/probe_test.cpp" -llog -o "$R/build/tests/probe-test"
 "$R/build/tests/probe-test"
 clang++ -std=c++20 -O1 -g -fno-exceptions -fno-rtti -fno-threadsafe-statics -nostdinc++ -nostdlib++ \
     -Wall -Wextra -Werror -I "$R/native" "$R/tests/account_test.cpp" "$R/native/wx_account.cpp" "$R/native/wx_adapter.cpp" \

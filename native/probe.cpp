@@ -13,8 +13,6 @@
 #include "zygisk.hpp"
 #include "version.h"
 #include "data_slot.h"
-#include "wcdb.h"
-#include <dirent.h>
 #include <unistd.h>
 
 namespace {
@@ -37,7 +35,6 @@ JavaVM *g_vm = nullptr;
 wx::DataSlot<RegisterFn> g_patch;
 RegisterFn *g_slot = nullptr;
 char g_dir[1024];
-char g_app_data[1024];
 pthread_mutex_t g_mu = PTHREAD_MUTEX_INITIALIZER;
 
 // M3.1: capture WCDB cipher specs at the app's own RegisterNatives boundary.
@@ -258,14 +255,10 @@ void Resolve(JNIEnv *env, jmethodID get_name, const Entry &entry, char *out, siz
 
 char g_key_summary[512] = "key_captured=no";
 
-bool CountRow(satori::Wcdb *db, void *stmt, void *context) {
-    *static_cast<int *>(context) = static_cast<int>(satori::WcdbInt(db, stmt, 0));
-    return false;
-}
-
-// Opens the account database read-only with each captured cipher spec and a bounded set of
-// SQLCipher parameters, stopping at the first that decrypts. Keys are never logged.
-void VerifyKey() {
+// Dumps the captured cipher specs to a private 0600 file and nothing else.
+// The live WeChat database is deliberately never opened here: opening it with candidate
+// keys while WeChat uses it can corrupt a WAL mmap and crash the host (observed SIGBUS).
+void DumpSpecs() {
     if (__atomic_exchange_n(&g_verify_needed, 0, __ATOMIC_ACQ_REL) == 0) return;
     CipherSpec specs[kSpecMax];
     int count = 0;
@@ -273,58 +266,20 @@ void VerifyKey() {
     count = g_spec_count;
     for (int i = 0; i < count; ++i) specs[i] = g_specs[i];
     pthread_mutex_unlock(&g_key_mu);
-    if (count == 0) return;
-    char micro[1200];
-    snprintf(micro, sizeof(micro), "%s/MicroMsg", g_app_data);
-    char path[1600] = {};
-    DIR *dir = opendir(micro);
-    if (dir) {
-        for (dirent *entry; (entry = readdir(dir)); ) {
-            if (entry->d_name[0] == '.') continue;
-            char candidate[1600];
-            snprintf(candidate, sizeof(candidate), "%s/%s/EnMicroMsg.db", micro, entry->d_name);
-            if (!access(candidate, R_OK)) { snprintf(path, sizeof(path), "%s", candidate); break; }
-        }
-        closedir(dir);
+    char path[1300];
+    snprintf(path, sizeof(path), "%s/key.log", g_dir);
+    FILE *file = fopen(path, "w");
+    if (!file) {
+        snprintf(g_key_summary, sizeof(g_key_summary), "key_captured=yes specs=%d write_failed", count);
+        return;
     }
-    if (!path[0]) {
-        snprintf(g_key_summary, sizeof(g_key_summary), "key_captured=yes specs=%d db_found=no", count);
-    } else {
-        const int pages[] = {0, 1024, 4096, 8192};
-        const int versions[] = {0, 1, 2, 3, 4};
-        constexpr int kAttemptLimit = 256;
-        int attempts = 0;
-        bool done = false;
-        bool limited = false;
-        for (int i = 0; i < count && !done; ++i) {
-            for (int c = -1; c < 20 && !done; ++c) {
-                const int page = c < 0 ? specs[i].page_size : pages[c % 4];
-                const int version = c < 0 ? specs[i].version : versions[c / 4];
-                if (c < 0 && page <= 0 && version <= 0) continue;
-                for (int before = 0; before < 2 && !done; ++before) {
-                    if (++attempts > kAttemptLimit) { done = true; limited = true; break; }
-                    satori::Wcdb *db = satori::WcdbOpenEx("libWCDB.so", path, specs[i].key, specs[i].key_size, page, version, before, 1);
-                    if (!db) continue;
-                    int rows = 0;
-                    const bool ok = satori::WcdbQuery(db, "SELECT count(*) FROM message", CountRow, &rows);
-                    satori::WcdbClose(db);
-                    if (ok) {
-                        snprintf(g_key_summary, sizeof(g_key_summary),
-                                 "key_captured=yes specs=%d db_readable=yes spec=%d len=%d page=%d ver=%d before=%d rows=%d",
-                                 count, i, specs[i].key_size, page, version, before, rows);
-                        done = true;
-                    }
-                }
-            }
-        }
-        if (!done) snprintf(g_key_summary, sizeof(g_key_summary), "key_captured=yes specs=%d db_found=yes db_readable=no attempts=%d%s",
-                            count, attempts, limited ? " limited" : "");
+    for (int i = 0; i < count; ++i) {
+        fprintf(file, "spec=%d len=%d page=%d ver=%d hex=", i, specs[i].key_size, specs[i].page_size, specs[i].version);
+        for (int j = 0; j < specs[i].key_size; ++j) fprintf(file, "%02x", specs[i].key[j]);
+        fprintf(file, "\n");
     }
-    // Write the result (never the key) immediately so an on-boot check can read it.
-    char keylog[1300];
-    snprintf(keylog, sizeof(keylog), "%s/key.log", g_dir);
-    FILE *file = fopen(keylog, "w");
-    if (file) { fprintf(file, "%s\n", g_key_summary); fclose(file); }
+    fclose(file);
+    snprintf(g_key_summary, sizeof(g_key_summary), "key_captured=yes specs=%d dumped=yes", count);
 }
 
 void Snapshot(int dir) {
@@ -398,7 +353,7 @@ void *Worker(void *) {
             stopping = true;
         }
         if (__atomic_load_n(&g_verify_needed, __ATOMIC_ACQUIRE)) {
-            VerifyKey();
+            DumpSpecs();
             if (io_ok) {
                 char verify[768];
                 const int length = snprintf(verify, sizeof(verify), "%lld %d %s\n",
@@ -451,7 +406,6 @@ public:
             if (target_) {
                 const char *data = env_->GetStringUTFChars(args->app_data_dir, nullptr);
                 const int n = data ? snprintf(g_dir, sizeof(g_dir), "%s/files/satori-wx-probe", data) : -1;
-                if (data) snprintf(g_app_data, sizeof(g_app_data), "%s", data);
                 target_ = n > 0 && static_cast<size_t>(n) < sizeof(g_dir);
                 if (data) env_->ReleaseStringUTFChars(args->app_data_dir, data);
                 if (env_->ExceptionCheck()) env_->ExceptionClear();
