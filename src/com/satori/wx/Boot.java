@@ -79,6 +79,8 @@ public final class Boot {
             L.e("flush pending failed", t);
         }
         verifyLoop();
+        // WCDB 全局 SQL 追踪（公开 API）：接收侧的干净路线。
+        com.satori.wx.SqlTrace.install(host);
     }
 
     /**
