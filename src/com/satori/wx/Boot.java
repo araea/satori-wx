@@ -26,7 +26,32 @@ public final class Boot {
         Xp.attach(host, process);
         L.i("zygisk bootstrap in " + process);
         Observe.log("boot: process=" + process);
+        // 关键护栏（v0.2.5 事故）：等主线程把启动序列走完再做 Java 工作。
+        // 否则引导线程在启动窗口里做类初始化，会和主线程的「类初始化 + System.loadLibrary」
+        // 互相咬死（真机回溯：主线程卡在 Runtime.loadLibrary0 的 Monitor::Lock，我们卡在
+        // installHooksLoop）。知弦的 Boot.awaitApplicationBound 就是这个作用，别删。
+        awaitMainIdle();
         installHooksLoop(host);
+    }
+
+    /**
+     * 往主线程 looper 投一个空任务再等它跑完：任务只会在主线程启动序列（handleBindApplication
+     * 与首轮 Looper.loop）之后执行，跑完即证明主线程已空闲。
+     */
+    private static void awaitMainIdle() {
+        final java.util.concurrent.CountDownLatch latch =
+                new java.util.concurrent.CountDownLatch(1);
+        try {
+            new android.os.Handler(android.os.Looper.getMainLooper()).post(latch::countDown);
+            if (!latch.await(15, java.util.concurrent.TimeUnit.SECONDS)) {
+                L.e("main looper did not come up in 15s", null);
+                Observe.log("boot: awaitMainIdle timeout");
+            } else {
+                Observe.log("boot: main idle");
+            }
+        } catch (Throwable t) {
+            L.e("awaitMainIdle failed", t);
+        }
     }
 
     /**
