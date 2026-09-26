@@ -26,6 +26,7 @@
 - `build/satori-wx-server-v0.5.0.zip`，模块 ID `satori_wx`。
 - `build/module-server/`，服务端模块目录。
 - `build/satori-wx-account`，读取某个微信数据目录并打印推导出的登录事件（诊断用，不联网）。
+- `build/satori-wx-wcdb`，只读 SQLCipher/SQLite 客户端，用微信自己的 libWCDB 读导出数据库（诊断用）。
 - `build/satori-wx-probe-v0.5.0.zip`，模块 ID `satori_wx_probe`。
 
 构建检查 AArch64、Zygisk 导出入口、动态依赖白名单及 DEX/旧引导标记。
@@ -148,8 +149,10 @@ JNI 表来自主线程；CheckJNI 或其他模块使用不同表时，不保证�
 - [Satori HTTP API](https://satori.chat/zh-CN/protocol/api.html)、[事件](https://satori.chat/zh-CN/protocol/events.html)、[元信息](https://satori.chat/zh-CN/advanced/meta.html)。
 - [研究记录与已知边界](docs/native-server.md)。
 - [只读账号身份说明](docs/wechat-account.md)。
+- [消息后端设计（native、低特征）](docs/wechat-store.md)。
 - [v0.5.0 协议覆盖矩阵](docs/satori-conformance.md)。
 - [v0.4.0 安装与重启验收记录](docs/deployment-v0.4.0.md)。
 
-下一步是在账号身份之上实现微信 native 业务适配层：先用现有 native 事件总线接入真实消息事件，
-再开放消息发送；每个方法只有在后端真正实现后才写入账号 `features`。
+下一步是在账号身份之上实现微信 native 业务适配层。设计（消息库加密、只用微信自己的 libWCDB
+做只读客户端的干净路线、密钥的单点捕获、分步计划）见 [消息后端设计](docs/wechat-store.md)；
+每个方法只有在后端真正实现后才写入账号 `features`。

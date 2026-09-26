@@ -1,0 +1,85 @@
+# 微信消息后端设计（native、低特征）
+
+目标：在**尽量少留下特征**的前提下，原生地实现消息接收/发送与其余业务方法。前提结论是：
+微信 8.0.78 的消息库是加密的，且没有像 QQ-NT `IKernelMsgService` 那样稳定的接口，所以需要
+一个受控的进入点，但**不需要 hook 引擎、不需要改写微信代码、不需要 Java 助手**。
+
+## 已验证的事实
+
+- `EnMicroMsg.db` 是 SQLCipher/WCDB 加密库：文件头是随机 salt，不是 `SQLite format 3`；
+  `.li` 只索引明文表名（`message`、`appattach`、`ImgInfo2`…）。
+- 旧推导（`md5(imei+uin)[:7]`＝账号目录名）在 8.0.78 上**不成立**：用 `aef9488`、
+  `createmd5`、uin、完整目录 hash 分别配合 PBKDF2-HMAC-SHA1/SHA512、4000/64000/256000 次、
+  page 1024/4096 都解不出 SQLite 头。密钥必须运行期获取。
+- 微信通过 `RegisterNatives` 注册了 `com.tencent.wcdb.database.SQLiteConnection nativeSetKey (J[B)V`，
+  第二个参数就是密钥字节数组（见 probe 的 `boundary.log`）。
+- `libWCDB.so` **导出了完整的 SQLCipher C API**：`sqlite3_key`、`sqlite3_key_v2`、
+  `sqlite3_open_v2`、`sqlite3_prepare_v2`、`sqlite3_step`、`sqlite3_exec`，以及
+  `WCDB::Database::setCipherKey`。Termux 进程可以直接 `dlopen` 它。
+- 因此可以只取一次密钥，然后用微信**自己的库**开一个**只读的第二连接**读库。
+  `native/wcdb.cpp` 已实现并在真机做过加密往返验证：正确密钥能读出内容，错误/缺失密钥干净失败。
+
+## 三层结构
+
+```
+[1] 密钥捕获（唯一进入点，只换函数指针）
+        │
+        ▼
+[2] 只读 WCDB 客户端（dlopen libWCDB + sqlite3_key + SELECT）
+        │
+        ▼
+[3] 轮询/游标 → 现有 EventBus → Satori message-created 等事件
+```
+
+### 1. 密钥捕获：只替换 RegisterNatives 里的一个函数指针
+
+微信自己调用 `RegisterNatives` 时会把 `nativeSetKey` 的 `fnPtr` 传进来。我们只在
+**注册的那一刻**把这一项的 `fnPtr` 换成我们的透传包装：记录一次密钥，然后**原样转发**给
+微信的实现。要点：
+
+- 不改微信代码段、不写 `mprotect`、无 trampoline、不碰 ArtMethod、不做 inline hook。
+- 包装函数行为与微信原实现一致，只是多复制一份密钥；捕获一次后不再记录。
+- 密钥只留在内存，不写盘、不进日志、不出现在任何 HTTP 响应里。
+- 这比 JNI 表 CAS（probe 已有）、GOT 改写、inline hook 的特征都低。
+
+### 2. 只读客户端：`native/wcdb.cpp`
+
+- `dlopen("libWCDB.so")` 拿到微信已加载的库，`dlsym` 出 SQLCipher API。
+- `sqlite3_open_v2` 打开 `EnMicroMsg.db`，`sqlite3_key` 传捕获到的密钥。
+- 只发 `SELECT`；不碰微信自己的连接、页缓存和写路径。
+- 已验证：`tests/wcdb_test.cpp`（明文库读写与错误处理）；真机上用 WeChat 的 `libWCDB.so`
+  做了加密库往返：正确密钥读出、错误密钥与无密钥干净失败。
+
+### 3. 事件与业务方法
+
+- 接收：按 `message.rowid`/`createTime` 维护水位，轮询新行（或观察 `-wal` mtime），
+  转成 `message-created` 投递到现有 native 总线。**不 hook 消息路径**，因此没有包解析、没有网络改写。
+- 数据：`rcontact`（用户/群）、`chatroom`（群成员）、`message` 等表都能从同一只读连接读取，
+  用于 `user.get`、`friend.list`、`guild.*`、`channel.*`、`message.list/get`。
+- 群 ID 直接用 `<数字>@chatroom`，作为 `guild_id` / `channel_id`。
+
+## 发送（后续，风险最高）
+
+发送不能只写库（写了不会发出去）。两条路，都不需要 hook 引擎：
+
+1. **反射微信自己的发送 API**（宿主 ClassLoader；WCDB/部分类必须走宿主 classloader，
+   native `FindClass` 会 method-missing）。这是"应用调用自己的代码"，无代码改写，但类/方法随版本变。
+2. **投递 mars 任务**（`StnManager`）：特征更高，放到最后再评估。
+
+## 分步计划
+
+| 步骤 | 内容 | 验证 |
+| --- | --- | --- |
+| M3.1 | probe 里实现对 `nativeSetKey` 的单点指针替换，真机拿到密钥 | probe 日志出现密钥长度/首字节（不落盘密钥明文），且微信功能不受影响 |
+| M3.2 | 只读连接读 `message`，接成 `message-created` 事件 | 真机收到真实消息事件，WebHook/WS 都能看到 |
+| M3.3 | 读 `rcontact`/`chatroom`，实现 user/friend/guild/channel/message.list/get | 按 37 方法逐个打开 `features` |
+| M3.4 | 反射微信发送 API，实现 `message.create` 等写操作 | 真机发出真实消息，并做失败回滚 |
+
+M3.1 先在**可选 probe**（独立模块，不影响已上线的 v0.5.0）里做，确认真机可行且无副作用后，
+再把同一个小包装接进主模块。
+
+## 与已上线版本的关系
+
+- v0.5.0 服务端（纯 native、无 hook）保持不变；本设计的第 1 步只进可选 probe。
+- 主模块引入密钥捕获后，仍应保持"只在取到密钥时启用消息层、失败即降级为空 features"，
+  不让消息后端影响协议层稳定性。

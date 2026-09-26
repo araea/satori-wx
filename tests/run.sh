@@ -16,6 +16,10 @@ clang++ -std=c++20 -O1 -g -fno-exceptions -fno-rtti -fno-threadsafe-statics -nos
     "$R/native/protocol.cpp" "$R/build/tests/cjson.o" -o "$R/build/tests/account-test"
 mkdir -p "$R/build/tests/tmp"
 SATORI_ACCOUNT_TMP="$R/build/tests/tmp" "$R/build/tests/account-test"
+clang++ -std=c++20 -O1 -g -fno-exceptions -fno-rtti -nostdinc++ -nostdlib++ \
+    -Wall -Wextra -Werror -I "$R/native" "$R/tests/wcdb_test.cpp" "$R/native/wcdb.cpp" -ldl -o "$R/build/tests/wcdb-test"
+SATORI_WCDB_LIB="${SATORI_WCDB_LIB:-/data/data/com.termux/files/usr/lib/libsqlite3.so}" \
+SATORI_ACCOUNT_TMP="$R/build/tests/tmp" "$R/build/tests/wcdb-test"
 python3 "$R/tests/protocol_test.py" "$R/build/tests/server"
 python3 "$R/tests/account_e2e_test.py" "$R/build/tests/server"
 python3 "$R/tests/webhook_test.py" "$R/build/tests/server"
