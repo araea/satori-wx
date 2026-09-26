@@ -43,6 +43,15 @@ static jmethodID g_mid_on_set_cb = nullptr;    // static Object onSetCallback(Ob
 static jmethodID g_mid_on_start_task = nullptr;// static void onStartTask(Object, Object)
 static jmethodID g_mid_on_pkg = nullptr;       // static void onPkg(String, Object)
 
+// Java 助手就绪前的 setCallback 调用暂存（早钩在 natives 注册瞬间就位，而 Java 侧要等
+// Application；这半秒窗口内的调用先记下，等 Boot 装好钩后补做包装并回注原实现）。
+struct Target;
+static jobject g_pending_thiz = nullptr;
+static jobject g_pending_cb = nullptr;
+static Target *g_pending_t = nullptr;
+static pthread_mutex_t g_pending_mu = PTHREAD_MUTEX_INITIALIZER;
+static volatile int g_java_ready = 0;
+
 // ---- 日志 -------------------------------------------------------------------------
 
 static void NLog(const char *fmt, ...) {
@@ -144,6 +153,23 @@ static constexpr int kTargetCount = sizeof(kTargets) / sizeof(kTargets[0]);
 // ---- 替换实现 ----------------------------------------------------------------------
 
 static void MySetCallback(JNIEnv *env, jobject thiz, jobject callback, Target *t) {
+    if (!__atomic_load_n(&g_java_ready, __ATOMIC_SEQ_CST)) {
+        // Java 助手未就绪：暂存最新的 (thiz, callback)，原样放行（微信行为不变）。
+        pthread_mutex_lock(&g_pending_mu);
+        if (g_pending_thiz != nullptr) env->DeleteGlobalRef(g_pending_thiz);
+        if (g_pending_cb != nullptr) env->DeleteGlobalRef(g_pending_cb);
+        g_pending_thiz = thiz ? env->NewGlobalRef(thiz) : nullptr;
+        g_pending_cb = callback ? env->NewGlobalRef(callback) : nullptr;
+        g_pending_t = t;
+        pthread_mutex_unlock(&g_pending_mu);
+        NLog("setcb pre-ready: stashed cb=%p thiz=%p (%s)", (void *) callback, (void *) thiz,
+             t->method);
+        using OrigFn0 = void (*)(JNIEnv *, jobject, jobject);
+        if (t->orig != nullptr) {
+            reinterpret_cast<OrigFn0>(t->orig)(env, thiz, callback);
+        }
+        return;
+    }
     jobject forward = callback;
     if (g_mid_on_set_cb != nullptr) {
         forward = env->CallStaticObjectMethod(g_xp_class, g_mid_on_set_cb, thiz, callback);
@@ -360,6 +386,43 @@ static jstring NativeInstallHooks(JNIEnv *env, jclass, jobject loader) {
     char out[600];
     snprintf(out, sizeof(out), "%s%s", all_required ? "ok " : "retry:", status);
     return env->NewStringUTF(out);
+}
+
+/**
+ * 补做暂存期 setCallback 的包装：Java 就绪后由 Boot 调一次。取暂存的 (thiz, callback)，
+ * 走一遍正常包装，再把包装后的对象回注给原实现（native 侧的回调被替换成我们的 Proxy，
+ * 原回调被包在里面，行为不变）。
+ */
+static jstring NativeFlushPending(JNIEnv *env, jclass) {
+    pthread_mutex_lock(&g_pending_mu);
+    jobject thiz = g_pending_thiz;
+    jobject cb = g_pending_cb;
+    Target *t = g_pending_t;
+    g_pending_thiz = nullptr;
+    g_pending_cb = nullptr;
+    g_pending_t = nullptr;
+    pthread_mutex_unlock(&g_pending_mu);
+    if (thiz == nullptr || cb == nullptr || t == nullptr || t->orig == nullptr) {
+        if (thiz != nullptr) env->DeleteGlobalRef(thiz);
+        if (cb != nullptr) env->DeleteGlobalRef(cb);
+        return env->NewStringUTF("flush: nothing pending");
+    }
+    jobject wrapped = cb;
+    if (g_mid_on_set_cb != nullptr) {
+        wrapped = env->CallStaticObjectMethod(g_xp_class, g_mid_on_set_cb, thiz, cb);
+        if (env->ExceptionCheck()) {
+            env->ExceptionDescribe();
+            env->ExceptionClear();
+            wrapped = cb;
+        }
+    }
+    using OrigFn = void (*)(JNIEnv *, jobject, jobject);
+    reinterpret_cast<OrigFn>(t->orig)(env, thiz, wrapped);
+    env->DeleteGlobalRef(thiz);
+    env->DeleteGlobalRef(cb);
+    NLog("pending setcb flushed via %s (wrapped=%s)", t->method,
+         wrapped != cb ? "yes" : "no");
+    return env->NewStringUTF(wrapped != cb ? "flush: wrapped" : "flush: passthrough");
 }
 
 /**
@@ -612,8 +675,10 @@ static bool StartJava(JNIEnv *env, jobject loader, const char *process) {
              reinterpret_cast<void *>(&NativeHookInfo)},
             {"nativeVerifyHooks", "()Ljava/lang/String;",
              reinterpret_cast<void *>(&NativeVerifyHooks)},
+            {"nativeFlushPending", "()Ljava/lang/String;",
+             reinterpret_cast<void *>(&NativeFlushPending)},
     };
-    if (env->RegisterNatives(xp, kXpMethods, 3) != JNI_OK) {
+    if (env->RegisterNatives(xp, kXpMethods, 4) != JNI_OK) {
         env->ExceptionDescribe();
         env->ExceptionClear();
         NLog("RegisterNatives(Xp) failed");
@@ -631,6 +696,7 @@ static bool StartJava(JNIEnv *env, jobject loader, const char *process) {
         env->ExceptionDescribe();
         env->ExceptionClear();
     }
+    __atomic_store_n(&g_java_ready, 1, __ATOMIC_SEQ_CST);
 
     jstring proc = env->NewStringUTF(process);
     env->CallStaticVoidMethod(boot, start, proc, loader);

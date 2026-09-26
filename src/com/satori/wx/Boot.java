@@ -71,6 +71,13 @@ public final class Boot {
             L.e("mars hooks not fully installed: " + status, null);
             return;
         }
+        // 早钩在 natives 注册瞬间就位，但那半秒里 Java 助手还没好——被暂存的那次
+        // setCallback 在这里补做包装并回注。
+        try {
+            Observe.log("flush: " + Xp.nativeFlushPending());
+        } catch (Throwable t) {
+            L.e("flush pending failed", t);
+        }
         verifyLoop();
     }
 

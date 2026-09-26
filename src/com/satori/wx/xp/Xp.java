@@ -64,6 +64,9 @@ public final class Xp {
      */
     public static native String nativeVerifyHooks();
 
+    /** 补做暂存期 setCallback 的包装（Java 就绪前错过的那次），Boot 装好钩后调一次。 */
+    public static native String nativeFlushPending();
+
     public static String verifyHooks() {
         try {
             return nativeVerifyHooks();
