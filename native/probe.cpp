@@ -263,6 +263,11 @@ void VerifyKey() {
     closedir(dir);
     snprintf(g_key_summary, sizeof(g_key_summary), "key_captured=yes len=%d db_found=%s db_readable=%s",
              size, found ? "yes" : "no", readable ? "yes" : "no");
+    // Write the result (never the key) immediately so an on-boot check can read it.
+    char path[1300];
+    snprintf(path, sizeof(path), "%s/key.log", g_dir);
+    FILE *file = fopen(path, "w");
+    if (file) { fprintf(file, "%s\n", g_key_summary); fclose(file); }
 }
 
 void Snapshot(int dir) {
