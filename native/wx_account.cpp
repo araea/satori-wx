@@ -310,7 +310,12 @@ char *AccountEvent(const char *type, const Account &account, int sn) {
     if (!features) { cJSON_Delete(root); return nullptr; }
     cJSON_AddItemToObject(login, "features", features);
     // Must match satori::WeChatFeatures() in wx_backend.cpp.
-    static const char *const kFeatures[] = {"message.get", "message.list"};
+    static const char *const kFeatures[] = {
+        "message.get", "message.list",
+        "user.get", "friend.list",
+        "guild.get", "guild.list",
+        "channel.get", "channel.list",
+    };
     for (const char *feature : kFeatures) cJSON_AddItemToArray(features, cJSON_CreateString(feature));
     if (!removed) {
         cJSON_AddStringToObject(login, "platform", "wechat");

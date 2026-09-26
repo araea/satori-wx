@@ -265,4 +265,187 @@ cJSON *StoreMessageGet(Store *store, const char *channel_id, const char *message
     pthread_mutex_unlock(&store->mutex);
     return context.message;
 }
+
+namespace {
+cJSON *UserObject(const char *username, const char *alias, const char *remark, const char *nickname) {
+    cJSON *user = cJSON_CreateObject();
+    if (!user) return nullptr;
+    cJSON_AddStringToObject(user, "id", username ? username : "");
+    const char *name = (remark && *remark) ? remark : alias;
+    if (name && *name) cJSON_AddStringToObject(user, "name", name);
+    if (nickname && *nickname) cJSON_AddStringToObject(user, "nick", nickname);
+    return user;
+}
+
+const char *ContactName(const char *alias, const char *remark, const char *nickname) {
+    if (remark && *remark) return remark;
+    if (nickname && *nickname) return nickname;
+    return alias ? alias : "";
+}
+
+// kind: 1 = friend List<Friend>, 0 = guild, 2 = channel.
+struct ContactContext {
+    cJSON *data;
+    long long rowids[64];
+    int rows;
+    int limit;
+    int kind;
+};
+
+bool ContactRow(Wcdb *db, void *stmt, void *context) {
+    auto *list = static_cast<ContactContext *>(context);
+    const char *username = WcdbText(db, stmt, 0);
+    const char *alias = WcdbText(db, stmt, 1);
+    const char *remark = WcdbText(db, stmt, 2);
+    const char *nickname = WcdbText(db, stmt, 3);
+    if (list->rows < list->limit + 1) list->rowids[list->rows] = WcdbInt(db, stmt, 4);
+    if (list->kind == 1) {
+        cJSON *entry = cJSON_CreateObject();
+        cJSON *user = UserObject(username, alias, remark, nickname);
+        if (entry && user) {
+            cJSON_AddItemToObject(entry, "user", user);
+            if (nickname && *nickname) cJSON_AddStringToObject(entry, "nick", nickname);
+            cJSON_AddItemToArray(list->data, entry);
+        } else { cJSON_Delete(entry); cJSON_Delete(user); }
+    } else {
+        cJSON *object = cJSON_CreateObject();
+        if (object) {
+            cJSON_AddStringToObject(object, "id", username ? username : "");
+            const char *name = ContactName(alias, remark, nickname);
+            if (name && *name) cJSON_AddStringToObject(object, "name", name);
+            if (list->kind == 2) cJSON_AddNumberToObject(object, "type",
+                username && strstr(username, "@chatroom") ? 0 : 1);
+            cJSON_AddItemToArray(list->data, object);
+        }
+    }
+    ++list->rows;
+    return list->rows <= list->limit;
+}
+
+cJSON *ContactList(Store *store, const char *sql, int kind, int limit) {
+    cJSON *result = cJSON_CreateObject();
+    cJSON *data = cJSON_CreateArray();
+    if (!result || !data) { cJSON_Delete(result); cJSON_Delete(data); return nullptr; }
+    cJSON_AddItemToObject(result, "data", data);
+    if (limit < 1) limit = 50;
+    if (limit > 60) limit = 60;
+    ContactContext list{data, {}, 0, limit, kind};
+    const bool ok = WcdbQuery(store->db, sql, ContactRow, &list);
+    if (ok && list.rows > limit) {
+        const int index = cJSON_GetArraySize(data);
+        if (index > 0) cJSON_DeleteItemFromArray(data, index - 1);
+        char buffer[32];
+        snprintf(buffer, sizeof(buffer), "%lld", list.rowids[limit - 1]);
+        cJSON_AddStringToObject(result, "next", buffer);
+    }
+    return result;
+}
+
+struct OneContext { cJSON *object; int kind; };
+
+bool OneRow(Wcdb *db, void *stmt, void *context) {
+    auto *one = static_cast<OneContext *>(context);
+    const char *username = WcdbText(db, stmt, 0);
+    const char *alias = WcdbText(db, stmt, 1);
+    const char *remark = WcdbText(db, stmt, 2);
+    const char *nickname = WcdbText(db, stmt, 3);
+    if (one->kind == 1) {
+        one->object = UserObject(username, alias, remark, nickname);
+    } else {
+        cJSON *object = cJSON_CreateObject();
+        if (object) {
+            cJSON_AddStringToObject(object, "id", username ? username : "");
+            const char *name = ContactName(alias, remark, nickname);
+            if (name && *name) cJSON_AddStringToObject(object, "name", name);
+            if (one->kind == 2) cJSON_AddNumberToObject(object, "type",
+                username && strstr(username, "@chatroom") ? 0 : 1);
+        }
+        one->object = object;
+    }
+    return false;
+}
+
+cJSON *OneContact(Store *store, const char *id, int kind) {
+    if (!store || !store->db || !SafeSql(id)) return nullptr;
+    pthread_mutex_lock(&store->mutex);
+    char sql[400];
+    snprintf(sql, sizeof(sql), "SELECT username, alias, conRemark, nickname FROM rcontact WHERE username = '%s' LIMIT 1", id);
+    OneContext context{nullptr, kind};
+    WcdbQuery(store->db, sql, OneRow, &context);
+    pthread_mutex_unlock(&store->mutex);
+    return context.object;
+}
+
+bool Cursor(const char *next, long long *cursor) {
+    *cursor = 0;
+    if (!next || !*next) return true;
+    char *end = nullptr;
+    *cursor = strtoll(next, &end, 10);
+    return end && !*end && *cursor > 0;
+}
+} // namespace
+
+cJSON *StoreUserGet(Store *store, const char *user_id) { return OneContact(store, user_id, 1); }
+cJSON *StoreGuildGet(Store *store, const char *guild_id) { return OneContact(store, guild_id, 0); }
+
+cJSON *StoreChannelGet(Store *store, const char *channel_id) {
+    cJSON *channel = OneContact(store, channel_id, 2);
+    if (channel) return channel;
+    // Unknown id: still describe it as a direct channel rather than failing.
+    if (!store || !store->db || !SafeSql(channel_id)) return nullptr;
+    cJSON *object = cJSON_CreateObject();
+    if (!object) return nullptr;
+    cJSON_AddStringToObject(object, "id", channel_id);
+    cJSON_AddNumberToObject(object, "type", strstr(channel_id, "@chatroom") ? 0 : 1);
+    return object;
+}
+
+cJSON *StoreFriendList(Store *store, const char *next, int limit) {
+    if (!store || !store->db) return nullptr;
+    long long cursor = 0;
+    if (!Cursor(next, &cursor)) return nullptr;
+    pthread_mutex_lock(&store->mutex);
+    char sql[640];
+    if (cursor > 0)
+        snprintf(sql, sizeof(sql), "SELECT username, alias, conRemark, nickname, rowid FROM rcontact "
+                 "WHERE (type & 1) AND deleteFlag = 0 AND username NOT LIKE '%%@chatroom' AND username NOT LIKE 'gh_%%' "
+                 "AND rowid < %lld ORDER BY rowid LIMIT %d", cursor, limit + 1);
+    else
+        snprintf(sql, sizeof(sql), "SELECT username, alias, conRemark, nickname, rowid FROM rcontact "
+                 "WHERE (type & 1) AND deleteFlag = 0 AND username NOT LIKE '%%@chatroom' AND username NOT LIKE 'gh_%%' "
+                 "ORDER BY rowid LIMIT %d", limit + 1);
+    cJSON *result = ContactList(store, sql, 1, limit);
+    pthread_mutex_unlock(&store->mutex);
+    return result;
+}
+
+cJSON *StoreGuildList(Store *store, const char *next, int limit) {
+    if (!store || !store->db) return nullptr;
+    long long cursor = 0;
+    if (!Cursor(next, &cursor)) return nullptr;
+    pthread_mutex_lock(&store->mutex);
+    char sql[640];
+    if (cursor > 0)
+        snprintf(sql, sizeof(sql), "SELECT username, alias, conRemark, nickname, rowid FROM rcontact "
+                 "WHERE (type & 2) AND deleteFlag = 0 AND rowid < %lld ORDER BY rowid LIMIT %d", cursor, limit + 1);
+    else
+        snprintf(sql, sizeof(sql), "SELECT username, alias, conRemark, nickname, rowid FROM rcontact "
+                 "WHERE (type & 2) AND deleteFlag = 0 ORDER BY rowid LIMIT %d", limit + 1);
+    cJSON *result = ContactList(store, sql, 0, limit);
+    pthread_mutex_unlock(&store->mutex);
+    return result;
+}
+
+cJSON *StoreChannelList(Store *store, const char *guild_id, const char *next, int limit) {
+    (void)next;
+    (void)limit;
+    cJSON *channel = StoreChannelGet(store, guild_id);
+    if (!channel) return nullptr;
+    cJSON *result = cJSON_CreateObject();
+    cJSON *data = cJSON_CreateArray();
+    if (!result || !data) { cJSON_Delete(result); cJSON_Delete(data); cJSON_Delete(channel); return nullptr; }
+    cJSON_AddItemToObject(result, "data", data);
+    cJSON_AddItemToArray(data, channel);
+    return result;
+}
 } // namespace satori

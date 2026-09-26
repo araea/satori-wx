@@ -119,7 +119,7 @@ void TestOnlineAccount() {
             Check(!strcmp(Nested(login, "user", "nick"), "知言"), "user nick");
             Check(!strcmp(Nested(login, "user", "name"), "nawyjx"), "user name");
             const cJSON *features = cJSON_GetObjectItemCaseSensitive(login, "features");
-            Check(cJSON_IsArray(features) && cJSON_GetArraySize(features) == 2, "features listed");
+            Check(cJSON_IsArray(features) && cJSON_GetArraySize(features) == 8, "features listed");
             Check(cJSON_IsArray(features) && cJSON_GetArrayItem(features, 0) &&
                   !strcmp(cJSON_GetArrayItem(features, 0)->valuestring, "message.get"), "feature message.get");
             cJSON_Delete(root);

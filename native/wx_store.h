@@ -25,4 +25,11 @@ long long StorePoll(Store *store, long long since, int login_sn, bool (*emit)(vo
 cJSON *StoreMessageList(Store *store, const char *channel_id, const char *next, int limit);
 // One message by platform id within a channel. Caller frees.
 cJSON *StoreMessageGet(Store *store, const char *channel_id, const char *message_id);
+// Contacts from rcontact. Satori User / Friend / Guild / Channel shapes. Caller frees.
+cJSON *StoreUserGet(Store *store, const char *user_id);
+cJSON *StoreFriendList(Store *store, const char *next, int limit);
+cJSON *StoreGuildList(Store *store, const char *next, int limit);
+cJSON *StoreGuildGet(Store *store, const char *guild_id);
+cJSON *StoreChannelGet(Store *store, const char *channel_id);
+cJSON *StoreChannelList(Store *store, const char *guild_id, const char *next, int limit);
 } // namespace satori

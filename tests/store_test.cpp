@@ -52,6 +52,10 @@ int main() {
     Check(satori::WcdbExec(writer, "INSERT INTO message VALUES(3,1,1,1700000002000,'123@chatroom','self says')"), "insert sent");
     Check(satori::WcdbExec(writer, "INSERT INTO message VALUES(4,3,0,1700000003000,'wxid_xyz','')"), "insert image");
     Check(satori::WcdbExec(writer, "INSERT INTO message VALUES(5,1,0,1700000004000,'wxid_xyz','a<b>&c')"), "insert markup");
+    Check(satori::WcdbExec(writer, "CREATE TABLE rcontact(username TEXT PRIMARY KEY, alias TEXT, conRemark TEXT, nickname TEXT, type INTEGER, deleteFlag INTEGER)"), "create rcontact");
+    Check(satori::WcdbExec(writer, "INSERT INTO rcontact VALUES('wxid_friend','fri','好友备注','昵称',1,0)"), "insert friend");
+    Check(satori::WcdbExec(writer, "INSERT INTO rcontact VALUES('123@chatroom','','群备注','群名',2,0)"), "insert group contact");
+    Check(satori::WcdbExec(writer, "INSERT INTO rcontact VALUES('gh_abc','','','公众号',1,0)"), "insert service");
     satori::WcdbClose(writer);
 
     satori::Store *store = satori::CreateStoreEx(library, path, nullptr, 0, 0, "self_wxid");
@@ -117,6 +121,27 @@ int main() {
     Check(one && !strcmp(Nested(one, "user", "id"), "self_wxid"), "message.get author");
     cJSON_Delete(one);
     Check(satori::StoreMessageGet(store, "123@chatroom", "99999") == nullptr, "message.get missing");
+    // Contacts: friends exclude groups and services; groups map to guild/channel.
+    cJSON *user = satori::StoreUserGet(store, "wxid_friend");
+    Check(user && !strcmp(Str(user, "id"), "wxid_friend") && !strcmp(Str(user, "name"), "好友备注"), "user.get");
+    cJSON_Delete(user);
+    cJSON *friends = satori::StoreFriendList(store, nullptr, 50);
+    Check(friends && cJSON_GetArraySize(Item(friends, "data")) == 1, "friend.list excludes groups/services");
+    cJSON_Delete(friends);
+    cJSON *guilds = satori::StoreGuildList(store, nullptr, 50);
+    Check(guilds && cJSON_GetArraySize(Item(guilds, "data")) == 1, "guild.list");
+    cJSON *guild = guilds ? cJSON_GetArrayItem(Item(guilds, "data"), 0) : nullptr;
+    Check(guild && !strcmp(Str(guild, "id"), "123@chatroom") && !strcmp(Str(guild, "name"), "群备注"), "guild name");
+    cJSON_Delete(guilds);
+    cJSON *group_channel = satori::StoreChannelGet(store, "123@chatroom");
+    Check(group_channel && Num(group_channel, "type") == 0, "group channel type");
+    cJSON_Delete(group_channel);
+    cJSON *direct = satori::StoreChannelGet(store, "wxid_friend");
+    Check(direct && Num(direct, "type") == 1, "direct channel type");
+    cJSON_Delete(direct);
+    cJSON *channels = satori::StoreChannelList(store, "123@chatroom", nullptr, 50);
+    Check(channels && cJSON_GetArraySize(Item(channels, "data")) == 1, "channel.list");
+    cJSON_Delete(channels);
     satori::DestroyStore(store);
     unlink(path);
     rmdir(directory);

@@ -7,7 +7,7 @@
 账号身份来自微信自己持久化的 SharedPreferences（同 uid 直接读文件，不 hook、不改写、
 不访问数据库）。已登录时 `READY` / `/v1/meta` 会带真实 `logins`；退出登录或清除身份后
 快照随事件总线更新。**消息接收、发送以及其余 37 个业务方法尚未接入**：账号快照的
-`features` 为空，这些请求返回 404，不会伪造成功。
+当前账号 `features` 已声明 8 个真正实现的方法（见下表）；未实现的方法返回 404，不会伪造成功。
 旧 v0.2.x 的 `native/wx.cpp`、`native/jni_helpers.h`、`src/`、`AndroidManifest.xml` 和 `libs/`
 保留作研究资料，不参与任何当前构建。版本来源改为根目录 `module.prop`。
 
@@ -69,7 +69,7 @@ Satori 客户端填写：
 | `POST /v1/meta/webhook.create` / `webhook.delete` | 注册/注销 WebHook（`url` 必填、`token` 可选）；标准可选功能 |
 | `POST /v1/internal/status` | 实验版版本、native 状态、backend unavailable；项目自定义诊断接口 |
 | `POST /v1/login.get` | 返回已登记账号快照；未登录或身份不匹配时返回 403 |
-| `POST /v1/{resource}.{method}` | 37 个标准方法的参数校验及 native 后端分发；当前账号 `features` 为空而返回 404 |
+| `POST /v1/{resource}.{method}` | 37 个标准方法的参数校验及 native 后端分发；已实现 `message.get/list`、`user.get`、`friend.list`、`guild.get/list`、`channel.get/list`（读只读库），其余返回 404 |
 | `GET /v1/events` | WebSocket upgrade；10 秒内 IDENTIFY；READY、登录事件与 PING/PONG |
 
 HTTP 使用 `Authorization: Bearer <token>`。缺失 token 返回 401，错误 token 返回 403。
