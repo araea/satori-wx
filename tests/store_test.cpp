@@ -53,7 +53,7 @@ int main() {
     Check(satori::WcdbExec(writer, "INSERT INTO message VALUES(4,3,0,1700000003000,'wxid_xyz','')"), "insert image");
     Check(satori::WcdbExec(writer, "INSERT INTO message VALUES(5,1,0,1700000004000,'wxid_xyz','a<b>&c')"), "insert markup");
     Check(satori::WcdbExec(writer, "CREATE TABLE rcontact(username TEXT PRIMARY KEY, alias TEXT, conRemark TEXT, nickname TEXT, type INTEGER, deleteFlag INTEGER)"), "create rcontact");
-    Check(satori::WcdbExec(writer, "INSERT INTO rcontact VALUES('wxid_friend','fri','好友备注','昵称',1,0)"), "insert friend");
+    Check(satori::WcdbExec(writer, "INSERT INTO rcontact VALUES('wxid_friend','fri','好友备注','昵称',3,0)"), "insert friend");
     Check(satori::WcdbExec(writer, "INSERT INTO rcontact VALUES('123@chatroom','','群备注','群名',2,0)"), "insert group contact");
     Check(satori::WcdbExec(writer, "INSERT INTO rcontact VALUES('gh_abc','','','公众号',1,0)"), "insert service");
     satori::WcdbClose(writer);

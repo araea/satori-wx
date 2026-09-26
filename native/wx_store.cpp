@@ -408,12 +408,12 @@ cJSON *StoreFriendList(Store *store, const char *next, int limit) {
     char sql[640];
     if (cursor > 0)
         snprintf(sql, sizeof(sql), "SELECT username, alias, conRemark, nickname, rowid FROM rcontact "
-                 "WHERE (type & 1) AND deleteFlag = 0 AND username NOT LIKE '%%@chatroom' AND username NOT LIKE 'gh_%%' "
-                 "AND rowid < %lld ORDER BY rowid LIMIT %d", cursor, limit + 1);
+                 "WHERE type = 3 AND deleteFlag = 0 AND username NOT LIKE '%%@chatroom' AND username NOT LIKE 'gh_%%' "
+                 "AND username != '%s' AND rowid < %lld ORDER BY rowid LIMIT %d", store->self_id, cursor, limit + 1);
     else
         snprintf(sql, sizeof(sql), "SELECT username, alias, conRemark, nickname, rowid FROM rcontact "
-                 "WHERE (type & 1) AND deleteFlag = 0 AND username NOT LIKE '%%@chatroom' AND username NOT LIKE 'gh_%%' "
-                 "ORDER BY rowid LIMIT %d", limit + 1);
+                 "WHERE type = 3 AND deleteFlag = 0 AND username NOT LIKE '%%@chatroom' AND username NOT LIKE 'gh_%%' "
+                 "AND username != '%s' ORDER BY rowid LIMIT %d", store->self_id, limit + 1);
     cJSON *result = ContactList(store, sql, 1, limit);
     pthread_mutex_unlock(&store->mutex);
     return result;
@@ -427,10 +427,10 @@ cJSON *StoreGuildList(Store *store, const char *next, int limit) {
     char sql[640];
     if (cursor > 0)
         snprintf(sql, sizeof(sql), "SELECT username, alias, conRemark, nickname, rowid FROM rcontact "
-                 "WHERE (type & 2) AND deleteFlag = 0 AND rowid < %lld ORDER BY rowid LIMIT %d", cursor, limit + 1);
+                 "WHERE username LIKE '%%@chatroom' AND deleteFlag = 0 AND rowid < %lld ORDER BY rowid LIMIT %d", cursor, limit + 1);
     else
         snprintf(sql, sizeof(sql), "SELECT username, alias, conRemark, nickname, rowid FROM rcontact "
-                 "WHERE (type & 2) AND deleteFlag = 0 ORDER BY rowid LIMIT %d", limit + 1);
+                 "WHERE username LIKE '%%@chatroom' AND deleteFlag = 0 ORDER BY rowid LIMIT %d", limit + 1);
     cJSON *result = ContactList(store, sql, 0, limit);
     pthread_mutex_unlock(&store->mutex);
     return result;
