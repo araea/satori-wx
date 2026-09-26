@@ -1,9 +1,9 @@
 #include "wx_live.h"
 #include "wx_store.h"
 #include "wx_account.h"
-#include <android/log.h>
 #include <dirent.h>
 #include <pthread.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -31,6 +31,23 @@ bool Emit(void *context, const char *event) {
     auto *live = static_cast<Live *>(context);
     ++live->emitted;
     return Publish(live->bus, event);
+}
+
+// File diagnostics: logcat is unreliable for an injected module tag, so status goes to
+// <app>/files/satori-wx-store.log (same uid, overwritten each process start).
+void Log(const char *app_data, const char *format, ...) {
+    static bool started = false;
+    char path[1200];
+    snprintf(path, sizeof(path), "%s/files/satori-wx-store.log", app_data);
+    FILE *file = fopen(path, started ? "a" : "w");
+    started = true;
+    if (!file) return;
+    va_list arguments;
+    va_start(arguments, format);
+    vfprintf(file, format, arguments);
+    va_end(arguments);
+    fputc('\n', file);
+    fclose(file);
 }
 
 int HexDigit(char c) {
@@ -95,14 +112,16 @@ bool LoadCipherSpec(const char *app_data, Spec *spec) {
 
 bool TryOpen(Live *live, Store **out) {
     Spec spec{};
-    if (!LoadCipherSpec(live->app_data, &spec)) return false;
+    if (!LoadCipherSpec(live->app_data, &spec)) { Log(live->app_data, "open: no cipher spec yet"); return false; }
     char database[1600];
-    if (!FindDatabase(live->app_data, database, sizeof(database))) return false;
+    if (!FindDatabase(live->app_data, database, sizeof(database))) { Log(live->app_data, "open: no database found"); return false; }
     Account account;
     const char *self_id = ReadAccount(live->app_data, &account) && account.exists ? account.wxid : nullptr;
     Store *store = CreateStore(database, spec.key, spec.size, spec.version, self_id);
-    if (!store) return false;
-    if (StoreWatermark(store) < 0) { DestroyStore(store); return false; }
+    if (!store) { Log(live->app_data, "open: failed (%s) compat=%d len=%d", StoreError(nullptr), spec.version, spec.size); return false; }
+    const long long watermark = StoreWatermark(store);
+    if (watermark < 0) { Log(live->app_data, "open: watermark failed (%s)", StoreError(store)); DestroyStore(store); return false; }
+    Log(live->app_data, "opened: compat=%d len=%d watermark=%lld", spec.version, spec.size, watermark);
     *out = store;
     return true;
 }
@@ -115,21 +134,19 @@ void *Loop(void *argument) {
         const timespec delay{2, 0};
         nanosleep(&delay, nullptr);
     }
-    if (!live->store) return nullptr;
+    if (!live->store) { Log(live->app_data, "gave up: no store after retries"); return nullptr; }
     // Emit only new rows: history comes from message.list, which reads the database directly.
     // This also avoids emitting before the account login reaches the hub (those are dropped).
     live->watermark = StoreWatermark(live->store);
-    __android_log_print(ANDROID_LOG_INFO, "SatoriWx", "live message store opened at watermark=%lld",
-                        static_cast<long long>(live->watermark));
+    Log(live->app_data, "polling from watermark=%lld", live->watermark);
     const timespec grace{5, 0};
     nanosleep(&grace, nullptr);
-    long long logged = 0;
+    long long logged = -1;
     for (;;) {
         live->watermark = StorePoll(live->store, live->watermark, live->login_sn, Emit, live);
         if (live->emitted != logged) {
             logged = live->emitted;
-            __android_log_print(ANDROID_LOG_INFO, "SatoriWx", "live store emitted=%lld watermark=%lld",
-                                static_cast<long long>(live->emitted), static_cast<long long>(live->watermark));
+            Log(live->app_data, "emitted=%lld watermark=%lld", live->emitted, live->watermark);
         }
         const timespec delay{2, 0};
         nanosleep(&delay, nullptr);
