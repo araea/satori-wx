@@ -147,10 +147,12 @@ jint ObserveRegister(JNIEnv *env, jclass clazz, const JNINativeMethod *methods, 
         memcpy(copy, methods, static_cast<size_t>(n) * sizeof(JNINativeMethod));
         for (jint i = 0; i < n; ++i) {
             if (!copy[i].name || !copy[i].signature) continue;
-            if (!strcmp(copy[i].name, "nativeSetKey") && !strcmp(copy[i].signature, "(J[B)V")) {
+            // Substitute each target only once: if two classes register the same name/signature,
+            // a shared original pointer would make one class call the other's implementation.
+            if (!g_original_set_key && !strcmp(copy[i].name, "nativeSetKey") && !strcmp(copy[i].signature, "(J[B)V")) {
                 g_original_set_key = reinterpret_cast<SetKeyFn>(copy[i].fnPtr);
                 copy[i].fnPtr = reinterpret_cast<void *>(CaptureSetKey);
-            } else if (!strcmp(copy[i].name, "setCipherKey") && !strcmp(copy[i].signature, "(J[BII)V")) {
+            } else if (!g_original_cipher_key && !strcmp(copy[i].name, "setCipherKey") && !strcmp(copy[i].signature, "(J[BII)V")) {
                 g_original_cipher_key = reinterpret_cast<SetCipherKeyFn>(copy[i].fnPtr);
                 copy[i].fnPtr = reinterpret_cast<void *>(CaptureCipherKey);
             }
