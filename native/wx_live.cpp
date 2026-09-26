@@ -42,6 +42,7 @@ void Log(const char *app_data, const char *format, ...) {
     FILE *file = fopen(path, started ? "a" : "w");
     started = true;
     if (!file) return;
+    fprintf(file, "%ld ", static_cast<long>(time(nullptr)));
     va_list arguments;
     va_start(arguments, format);
     vfprintf(file, format, arguments);
@@ -135,8 +136,13 @@ void *Loop(void *argument) {
         nanosleep(&delay, nullptr);
     }
     if (!live->store) { Log(live->app_data, "gave up: no store after retries"); return nullptr; }
+    // Wait for the hub to hold an online login; otherwise Apply drops every event we publish.
+    for (int i = 0; i < 150 && g_login_count <= 0; ++i) {
+        const timespec second{1, 0};
+        nanosleep(&second, nullptr);
+    }
+    Log(live->app_data, "login_count=%d", g_login_count);
     // Emit only new rows: history comes from message.list, which reads the database directly.
-    // This also avoids emitting before the account login reaches the hub (those are dropped).
     live->watermark = StoreWatermark(live->store);
     Log(live->app_data, "polling from watermark=%lld", live->watermark);
     const timespec grace{5, 0};

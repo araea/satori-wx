@@ -10,6 +10,7 @@
 #include <unistd.h>
 
 namespace satori {
+volatile int g_login_count = 0;
 bool Utf8(const char *data, size_t size) {
     for (size_t i = 0; i < size;) {
         uint32_t c = static_cast<unsigned char>(data[i++]);
@@ -364,6 +365,11 @@ char *Apply(Hub *hub, const char *json, bool meta) {
         free(snapshot);
         if (!ok) { cJSON_Delete(next_meta); free(signal); cJSON_Delete(body); return nullptr; }
         cJSON_Delete(hub->meta); hub->meta = next_meta;
+        int online = 0;
+        const cJSON *logins_now = Item(next_meta, "logins");
+        for (const cJSON *p = logins_now ? logins_now->child : nullptr; p; p = p->next)
+            if (Item(p, "status") && Item(p, "status")->valuedouble == 1) ++online;
+        g_login_count = online;
     }
     ++hub->latest;
     if (hub->count == kHistory) {

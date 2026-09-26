@@ -30,6 +30,9 @@ struct Hub;
 Hub *CreateHub();
 void DestroyHub(Hub *hub);
 const cJSON *Meta(Hub *hub);
+// Number of ONLINE logins currently in the hub snapshot. Updated by Apply; the message
+// store waits for this so it does not publish before the login is known (events are dropped).
+extern volatile int g_login_count;
 const cJSON *FindLogin(Hub *hub, const char *platform, const char *user);
 uint64_t Latest(Hub *hub);
 bool CanResume(Hub *hub, uint64_t sn);
