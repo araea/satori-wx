@@ -39,6 +39,7 @@ static bool g_bootstrap_started = false;
 static jclass g_xp_class = nullptr;            // 全局引用
 static jmethodID g_mid_on_set_cb = nullptr;    // static Object onSetCallback(Object, Object)
 static jmethodID g_mid_on_start_task = nullptr;// static void onStartTask(Object, Object)
+static jmethodID g_mid_on_pkg = nullptr;       // static void onPkg(String, Object)
 
 // ---- 日志 -------------------------------------------------------------------------
 
@@ -99,7 +100,7 @@ static bool MappingOf(const void *p, MapInfo *info) {
 
 // ---- 换点表 -------------------------------------------------------------------------
 
-enum Kind { K_SET_CB, K_START_TASK };
+enum Kind { K_SET_CB, K_START_TASK, K_ENCODE, K_DECODE };
 
 struct Target {
     const char *cls;
@@ -128,6 +129,12 @@ static Target kTargets[] = {
          false, nullptr, nullptr, "class-missing"},
         {"com.tencent.mars.account.AccountManager", "OnJniSetCallback",
          "(Ljava/lang/Object;)V", K_SET_CB, false,
+         false, nullptr, nullptr, "class-missing"},
+        {"com.tencent.mars.account.AccountManager", "OnJniEncodeWxPkg",
+         "([BI)[B", K_ENCODE, true,
+         false, nullptr, nullptr, "class-missing"},
+        {"com.tencent.mars.account.AccountManager", "OnJniDecodeWxPkg",
+         "([B[I[I)[B", K_DECODE, true,
          false, nullptr, nullptr, "class-missing"},
 };
 static constexpr int kTargetCount = sizeof(kTargets) / sizeof(kTargets[0]);
@@ -164,6 +171,39 @@ static void MyStartTask(JNIEnv *env, jobject thiz, jobject task, Target *t) {
     }
 }
 
+// 逐包编解码：OnJniEncodeWxPkg/OnJniDecodeWxPkg 每个网络包都会经过（不像 SetCallback 只在
+// 启动时调一次），装晚了也赶得上；decode 出来的就是解密载荷。记进出，原样转发。
+static void LogPkg(JNIEnv *env, const char *tag, jobject payload) {
+    if (g_mid_on_pkg == nullptr) return;
+    jstring s = env->NewStringUTF(tag);
+    if (s == nullptr) { env->ExceptionClear(); return; }
+    env->CallStaticVoidMethod(g_xp_class, g_mid_on_pkg, s, payload);
+    env->DeleteLocalRef(s);
+    if (env->ExceptionCheck()) {
+        env->ExceptionDescribe();
+        env->ExceptionClear();
+    }
+}
+
+static jbyteArray MyEncode(JNIEnv *env, jobject thiz, jbyteArray in, jint len, Target *t) {
+    LogPkg(env, "encode.in", in);
+    using OrigFn = jbyteArray (*)(JNIEnv *, jobject, jbyteArray, jint);
+    jbyteArray out = t->orig != nullptr
+        ? reinterpret_cast<OrigFn>(t->orig)(env, thiz, in, len) : nullptr;
+    LogPkg(env, "encode.out", out);
+    return out;
+}
+
+static jbyteArray MyDecode(JNIEnv *env, jobject thiz, jbyteArray in, jintArray a1,
+                           jintArray a2, Target *t) {
+    LogPkg(env, "decode.in", in);
+    using OrigFn = jbyteArray (*)(JNIEnv *, jobject, jbyteArray, jintArray, jintArray);
+    jbyteArray out = t->orig != nullptr
+        ? reinterpret_cast<OrigFn>(t->orig)(env, thiz, in, a1, a2) : nullptr;
+    LogPkg(env, "decode.out", out);
+    return out;
+}
+
 // 为每个 Target 生成一个具名 JNI 函数（JNINativeMethod 需要独立地址）。
 static void WxSetCb0(JNIEnv *env, jobject thiz, jobject a0) {
     MySetCallback(env, thiz, a0, &kTargets[0]);
@@ -177,6 +217,13 @@ static void WxSetCb2(JNIEnv *env, jobject thiz, jobject a0) {
 static void WxSetCb3(JNIEnv *env, jobject thiz, jobject a0) {
     MySetCallback(env, thiz, a0, &kTargets[3]);
 }
+static jbyteArray WxEncode4(JNIEnv *env, jobject thiz, jbyteArray a0, jint a1) {
+    return MyEncode(env, thiz, a0, a1, &kTargets[4]);
+}
+static jbyteArray WxDecode5(JNIEnv *env, jobject thiz, jbyteArray a0, jintArray a1,
+                            jintArray a2) {
+    return MyDecode(env, thiz, a0, a1, a2, &kTargets[5]);
+}
 
 static void *TargetFnFor(int idx) {
     switch (idx) {
@@ -184,6 +231,8 @@ static void *TargetFnFor(int idx) {
         case 1: return (void *) &WxStartTask1;
         case 2: return (void *) &WxSetCb2;
         case 3: return (void *) &WxSetCb3;
+        case 4: return (void *) &WxEncode4;
+        case 5: return (void *) &WxDecode5;
     }
     return nullptr;
 }
@@ -442,6 +491,8 @@ static bool StartJava(JNIEnv *env, jobject loader, const char *process) {
             "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;");
     g_mid_on_start_task = env->GetStaticMethodID(xp, "onStartTask",
                                                  "(Ljava/lang/Object;Ljava/lang/Object;)V");
+    g_mid_on_pkg = env->GetStaticMethodID(xp, "onPkg",
+                                          "(Ljava/lang/String;Ljava/lang/Object;)V");
     if (env->ExceptionCheck()) {
         env->ExceptionDescribe();
         env->ExceptionClear();

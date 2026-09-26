@@ -74,7 +74,7 @@ public final class Observe {
         }
     }
 
-    /** 摘要一个参数：byte[] 给长度+头部 hex，String 截断，其余 toString 截断。 */
+    /** 摘要一个参数：byte[] 给长度+头部 hex，int[] 给前 16 个值，String 截断，其余 toString。 */
     public static String summarize(Object v) {
         if (v == null) return "null";
         if (v instanceof byte[]) {
@@ -84,6 +84,14 @@ public final class Observe {
                 hex.append(String.format(Locale.US, "%02x", b[i]));
             }
             return "bytes(" + b.length + ")[" + hex + (b.length > 24 ? "…" : "") + ']';
+        }
+        if (v instanceof int[]) {
+            int[] a = (int[]) v;
+            StringBuilder sb = new StringBuilder("ints(").append(a.length).append(")[");
+            for (int i = 0; i < a.length && i < 16; i++) {
+                sb.append(i > 0 ? ',' : "").append(a[i]);
+            }
+            return sb.append(a.length > 16 ? "…" : "").append(']').toString();
         }
         String s = String.valueOf(v);
         return s.length() > 300 ? s.substring(0, 300) + "…" : s;

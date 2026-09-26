@@ -109,9 +109,16 @@ public final class Xp {
         }
     }
 
-    /** {@code OnJniStartTask} 的前置：记录出站 Task 的字段形状，然后原样放行。 */
+    /** {@code OnJniStartTask} 的前置：记录出站 Task 的字段形状、顺手捕获管理器实例，
+     *  然后原样放行。 */
     public static void onStartTask(Object manager, Object task) {
         try {
+            if (manager != null && mmStnManager == null) {
+                mmStnManager = manager;
+                Observe.log("manager: captured " + manager.getClass().getName()
+                        + " @" + Integer.toHexString(System.identityHashCode(manager)));
+                dumpInstanceFields(manager);
+            }
             if (task == null) return;
             StringBuilder sb = new StringBuilder("startTask ").append(shape(task)).append(" {");
             for (Class<?> c = task.getClass(); c != null && c != Object.class; c = c.getSuperclass()) {
@@ -124,6 +131,33 @@ public final class Xp {
             Observe.log(sb.append('}').toString());
         } catch (Throwable t) {
             L.e("onStartTask dump failed", t);
+        }
+    }
+
+    /** 逐包编解码的观测口（encode/decode 的进出载荷）。native 侧每包调两次。 */
+    public static void onPkg(String tag, Object payload) {
+        try {
+            Observe.log("pkg " + tag + ' ' + Observe.summarize(payload));
+        } catch (Throwable ignored) {
+            // 记录失败绝不影响委托
+        }
+    }
+
+    /** 一次性 dump 实例字段（找回调可能存在的 Java 侧落脚点）。 */
+    private static void dumpInstanceFields(Object o) {
+        try {
+            StringBuilder sb = new StringBuilder("manager fields {");
+            for (Class<?> c = o.getClass(); c != null && c != Object.class; c = c.getSuperclass()) {
+                for (Field f : c.getDeclaredFields()) {
+                    if (java.lang.reflect.Modifier.isStatic(f.getModifiers())) continue;
+                    f.setAccessible(true);
+                    sb.append(f.getType().getSimpleName()).append(' ').append(f.getName())
+                      .append('=').append(Observe.summarize(f.get(o))).append(' ');
+                }
+            }
+            Observe.log(sb.append('}').toString());
+        } catch (Throwable t) {
+            L.e("dumpInstanceFields failed", t);
         }
     }
 
