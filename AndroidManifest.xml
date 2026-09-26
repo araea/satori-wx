@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 知言（satori-wx）。探针里程碑不打包 APK；本清单给里程碑 2 的管理页占位，
+     versionCode/versionName 届时与 SatoriHub.APP_VERSION 同步（见 satori-qq 的规则）。 -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="com.satori.wx"
+    android:versionCode="1"
+    android:versionName="0.1.0">
+
+    <uses-sdk android:minSdkVersion="26" android:targetSdkVersion="34"/>
+
+    <uses-permission android:name="android.permission.INTERNET"/>
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
+
+    <application
+        android:label="知言"
+        android:allowBackup="false"
+        android:forceQueryable="true">
+        <!-- 里程碑 2 再加 Activity / Provider / Service 声明 -->
+    </application>
+
+    <queries>
+        <package android:name="com.tencent.mm"/>
+    </queries>
+</manifest>
