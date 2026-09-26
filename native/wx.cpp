@@ -162,6 +162,13 @@ static Target kTargets[] = {
         {"com.tencent.wcdb.core.Handle", "executeSQL",
          "(JLjava/lang/String;)Z", K_LOG, false,
          false, nullptr, nullptr, "class-missing"},
+        // 密钥捕获：只读 args 的 byte[]，绝不回调 WCDB（v0.2.2 的教训——回调内碰库会崩）。
+        {"com.tencent.wcdb.core.Database", "setCipherKey",
+         "(J[BII)V", K_LOG, false,
+         false, nullptr, nullptr, "class-missing"},
+        {"com.tencent.wcdb.database.SQLiteConnection", "nativeSetKey",
+         "(J[B)V", K_LOG, false,
+         false, nullptr, nullptr, "class-missing"},
 };
 static constexpr int kTargetCount = sizeof(kTargets) / sizeof(kTargets[0]);
 
@@ -315,6 +322,38 @@ static jboolean WxExecSql9(JNIEnv *env, jobject thiz, jlong h, jstring s) {
     return kTargets[9].orig ? reinterpret_cast<F>(kTargets[9].orig)(env, thiz, h, s) : JNI_FALSE;
 }
 
+/** 把 byte[] 编成 hex（最多 64 字节，密钥一般 32 字节）。只读参数，不碰 WCDB。 */
+static void HexOf(JNIEnv *env, jbyteArray a, char *out, size_t out_size) {
+    out[0] = '\0';
+    if (a == nullptr) return;
+    jsize n = env->GetArrayLength(a);
+    jsize cap = n < 64 ? n : 64;
+    jbyte tmp[64] = {0};
+    env->GetByteArrayRegion(a, 0, cap, tmp);
+    size_t off = 0;
+    for (jsize i = 0; i < cap && off + 3 < out_size; i++) {
+        off += (size_t) snprintf(out + off, out_size - off, "%02x", (unsigned char) tmp[i]);
+    }
+}
+
+// 均为静态原生：JNI 第二参是 jclass。
+static void WxSetCipher10(JNIEnv *env, jclass, jlong h, jbyteArray key, jint page,
+                          jint ver) {
+    char hex[160];
+    HexOf(env, key, hex, sizeof(hex));
+    LogArgs(env, "setCipherKey", "h=%lld page=%d ver=%d key=%s", (long long) h, page, ver,
+            hex[0] ? hex : "(null)");
+    using F = void (*)(JNIEnv *, jclass, jlong, jbyteArray, jint, jint);
+    if (kTargets[10].orig) reinterpret_cast<F>(kTargets[10].orig)(env, nullptr, h, key, page, ver);
+}
+static void WxNativeSetKey11(JNIEnv *env, jclass, jlong h, jbyteArray key) {
+    char hex[160];
+    HexOf(env, key, hex, sizeof(hex));
+    LogArgs(env, "nativeSetKey", "h=%lld key=%s", (long long) h, hex[0] ? hex : "(null)");
+    using F = void (*)(JNIEnv *, jclass, jlong, jbyteArray);
+    if (kTargets[11].orig) reinterpret_cast<F>(kTargets[11].orig)(env, nullptr, h, key);
+}
+
 static void *TargetFnFor(int idx) {
     switch (idx) {
         case 0: return (void *) &WxSetCb0;
@@ -327,6 +366,8 @@ static void *TargetFnFor(int idx) {
         case 7: return (void *) &WxBindText7;
         case 8: return (void *) &WxBindBlob8;
         case 9: return (void *) &WxExecSql9;
+        case 10: return (void *) &WxSetCipher10;
+        case 11: return (void *) &WxNativeSetKey11;
     }
     return nullptr;
 }
