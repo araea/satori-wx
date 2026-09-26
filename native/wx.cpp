@@ -433,7 +433,7 @@ static int InstallOne(JNIEnv *env, jobject loader, Target *t, int idx) {
 
 /** 装全部目标；返回给 Java 的状态串（required 没全装上则带 retry: 前缀）。 */
 static jstring NativeInstallHooks(JNIEnv *env, jclass, jobject loader) {
-    char status[512] = {0};
+    char status[1500] = {0};
     size_t off = 0;
     bool all_required = true;
     for (int i = 0; i < kTargetCount; i++) {
@@ -444,12 +444,12 @@ static jstring NativeInstallHooks(JNIEnv *env, jclass, jobject loader) {
         if (off >= sizeof(status) - 1) break;
     }
     // 状态没变化就不重复落盘（重试循环每 500ms 一次，全量打会把 native.log 刷成几百 KB）。
-    static char last_status[600] = {0};
+    static char last_status[1600] = {0};
     if (strncmp(last_status, status, sizeof(last_status) - 1) != 0) {
         snprintf(last_status, sizeof(last_status), "%s", status);
         NLog("installHooks: %s", status);
     }
-    char out[600];
+    char out[1600];
     snprintf(out, sizeof(out), "%s%s", all_required ? "ok " : "retry:", status);
     return env->NewStringUTF(out);
 }
@@ -497,7 +497,7 @@ static jstring NativeFlushPending(JNIEnv *env, jclass) {
  */
 static jstring NativeVerifyHooks(JNIEnv *env, jclass) {
     static int g_flips = 0;
-    char status[512] = {0};
+    char status[1500] = {0};
     size_t off = 0;
     for (int i = 0; i < kTargetCount && off < sizeof(status) - 1; i++) {
         Target *t = &kTargets[i];
@@ -513,7 +513,7 @@ static jstring NativeVerifyHooks(JNIEnv *env, jclass) {
                                      off ? "; " : "", t->method, g_flips);
         }
     }
-    char out[600];
+    char out[1600];
     snprintf(out, sizeof(out), "stable flips=%d %s", g_flips, status);
     return env->NewStringUTF(out);
 }

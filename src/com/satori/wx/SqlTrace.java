@@ -16,6 +16,7 @@ import java.lang.reflect.Proxy;
 public final class SqlTrace {
 
     private static volatile boolean installed;
+    private static final java.util.Set<Long> fullTraced = new java.util.HashSet<>();
 
     private SqlTrace() {}
 
@@ -26,9 +27,37 @@ public final class SqlTrace {
             Class<?> dbCls = host.loadClass("com.tencent.wcdb.core.Database");
             Class<?> tracerIf = host.loadClass("com.tencent.wcdb.core.Database$SQLTracer");
             dumpShape(tracerIf);
+            Method full = null;
+            try {
+                full = dbCls.getDeclaredMethod("setFullSQLTraceEnable", long.class, boolean.class);
+                full.setAccessible(true);
+                Observe.log("sqltrace: setFullSQLTraceEnable static=" + isStatic(full));
+            } catch (Throwable t) {
+                Observe.log("sqltrace: setFullSQLTraceEnable not found: " + t);
+            }
+            Method fullF = full;
             Object tracer = Proxy.newProxyInstance(SqlTrace.class.getClassLoader(),
                     new Class<?>[]{tracerIf}, (proxy, method, args) -> {
                         try {
+                            // 第 1 参=tag，第 2=路径，第 3=库句柄，第 4=SQL，第 5=展开信息
+                            if (fullF != null && args != null && args.length >= 3
+                                    && args[2] instanceof Long) {
+                                long h = (Long) args[2];
+                                boolean fresh;
+                                synchronized (SqlTrace.class) {
+                                    fresh = fullTraced.add(h);
+                                }
+                                if (fresh) {
+                                    try {
+                                        fullF.invoke(isStatic(fullF) ? null : args[2], h, true);
+                                        Observe.log("sqltrace: full enabled for handle=" + h);
+                                    } catch (Throwable t) {
+                                        Observe.log("sqltrace: full enable failed h=" + h
+                                                + " " + t);
+                                        synchronized (SqlTrace.class) { fullTraced.remove(h); }
+                                    }
+                                }
+                            }
                             StringBuilder sb = new StringBuilder("sql ");
                             sb.append(method.getName()).append('(');
                             if (args != null) {
@@ -51,6 +80,10 @@ public final class SqlTrace {
             L.e("sqltrace install failed", t);
             Observe.log("sqltrace: install FAILED " + t);
         }
+    }
+
+    private static boolean isStatic(Method m) {
+        return java.lang.reflect.Modifier.isStatic(m.getModifiers());
     }
 
     /** 一次性 dump 接口形状（确认回调方法名与参数）。 */
