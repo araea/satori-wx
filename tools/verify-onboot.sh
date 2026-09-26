@@ -22,6 +22,11 @@ while [ "$i" -lt 90 ]; do
         "$TASK/satori-wx-check" "$MOD/satori-wx.conf" --soak --expect-login
         rc=$?
         logcat -d -s SatoriWx:I '*:S' | tail -n 40
+        PROBE=/data/data/com.tencent.mm/files/satori-wx-probe
+        echo "--- probe key ---"
+        cat "$PROBE/key.log" 2>/dev/null || echo "(none)"
+        echo "--- probe meta ---"
+        cat "$PROBE/meta.log" 2>/dev/null || echo "(none)"
         printf 'END exit=%s time=%s boot_id=%s\n' "$rc" "$(date -u +%FT%TZ)" "$(cat /proc/sys/kernel/random/boot_id)"
         if [ "$rc" -eq 0 ]; then mv "$TASK/running" "$TASK/done"; else mv "$TASK/running" "$TASK/failed"; fi
         exit "$rc"
