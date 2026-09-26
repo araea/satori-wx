@@ -19,6 +19,9 @@ typedef bool (*WcdbRow)(Wcdb *db, void *stmt, void *context);
 // read_only selects SQLITE_OPEN_READONLY; WAL readers may need read-write instead.
 // Returns null on dlopen/symbol/open failure.
 Wcdb *WcdbOpen(const char *library, const char *path, const void *key, int key_size, int read_only);
+// Same, but configures the SQLCipher page size / compatibility version around the key.
+Wcdb *WcdbOpenEx(const char *library, const char *path, const void *key, int key_size,
+                 int page_size, int cipher_version, int pragmas_before_key, int read_only);
 void WcdbClose(Wcdb *db);
 // Runs one prepared statement over all rows.
 bool WcdbQuery(Wcdb *db, const char *sql, WcdbRow callback, void *context);

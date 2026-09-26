@@ -46,6 +46,11 @@ void Release(Wcdb *db) {
 } // namespace
 
 Wcdb *WcdbOpen(const char *library, const char *path, const void *key, int key_size, int read_only) {
+    return WcdbOpenEx(library, path, key, key_size, 0, 0, 0, read_only);
+}
+
+Wcdb *WcdbOpenEx(const char *library, const char *path, const void *key, int key_size,
+                 int page_size, int cipher_version, int pragmas_before_key, int read_only) {
     if (!library || !path) return nullptr;
     auto *db = static_cast<Wcdb *>(calloc(1, sizeof(Wcdb)));
     if (!db) return nullptr;
@@ -81,10 +86,21 @@ Wcdb *WcdbOpen(const char *library, const char *path, const void *key, int key_s
             Release(db);
             return nullptr;
         }
+        // SQLCipher accepts cipher_page_size/cipher_compatibility before or after the key;
+        // callers try both orders when matching an unknown database.
+        char pragma[96];
+        if (pragmas_before_key) {
+            if (page_size > 0) { snprintf(pragma, sizeof(pragma), "PRAGMA cipher_page_size=%d", page_size); db->exec(db->connection, pragma, nullptr, nullptr, nullptr); }
+            if (cipher_version > 0) { snprintf(pragma, sizeof(pragma), "PRAGMA cipher_compatibility=%d", cipher_version); db->exec(db->connection, pragma, nullptr, nullptr, nullptr); }
+        }
         if (db->key(db->connection, key, key_size) != 0) {
             Fail(db, "sqlite3_key failed");
             Release(db);
             return nullptr;
+        }
+        if (!pragmas_before_key) {
+            if (page_size > 0) { snprintf(pragma, sizeof(pragma), "PRAGMA cipher_page_size=%d", page_size); db->exec(db->connection, pragma, nullptr, nullptr, nullptr); }
+            if (cipher_version > 0) { snprintf(pragma, sizeof(pragma), "PRAGMA cipher_compatibility=%d", cipher_version); db->exec(db->connection, pragma, nullptr, nullptr, nullptr); }
         }
     }
     return db;

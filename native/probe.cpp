@@ -40,16 +40,25 @@ char g_dir[1024];
 char g_app_data[1024];
 pthread_mutex_t g_mu = PTHREAD_MUTEX_INITIALIZER;
 
-// M3.1: capture the WCDB cipher key at the app's own RegisterNatives boundary.
-// Only the fnPtr of nativeSetKey is swapped in a writable copy of the array the app
-// passes; the app's array and code are never written. The wrapper forwards unchanged.
-constexpr size_t kKeyMax = 128;
+// M3.1: capture WCDB cipher specs at the app's own RegisterNatives boundary.
+// Only the fnPtrs of nativeSetKey/setCipherKey are swapped in a writable copy of the array
+// the app passes; the app's array and code are never written. Wrappers forward unchanged.
+constexpr size_t kKeyMax = 64;
+constexpr int kSpecMax = 16;
 constexpr jint kMethodCopyLimit = 256;
 using SetKeyFn = void (*)(JNIEnv *, jobject, jlong, jbyteArray);
+using SetCipherKeyFn = void (*)(JNIEnv *, jobject, jlong, jbyteArray, jint, jint);
+struct CipherSpec {
+    unsigned char key[kKeyMax];
+    int key_size;
+    int page_size;
+    int version;
+};
 SetKeyFn g_original_set_key = nullptr;
+SetCipherKeyFn g_original_cipher_key = nullptr;
 pthread_mutex_t g_key_mu = PTHREAD_MUTEX_INITIALIZER;
-unsigned char g_db_key[kKeyMax];
-int g_db_key_size = 0;
+CipherSpec g_specs[kSpecMax];
+int g_spec_count = 0;
 int g_verify_needed = 0;
 Entry g_ring[kCapacity];
 int g_head = 0, g_tail = 0, g_count = 0;
@@ -88,24 +97,49 @@ void Record(JNIEnv *env, jclass clazz, const JNINativeMethod *methods, jint n) {
     }
 }
 
-void CaptureSetKey(JNIEnv *env, jobject thiz, jlong handle, jbyteArray key) {
-    if (key && !env->ExceptionCheck()) {
-        pthread_mutex_lock(&g_key_mu);
-        if (g_db_key_size == 0) {
-            const jsize size = env->GetArrayLength(key);
-            if (size > 0 && static_cast<size_t>(size) <= kKeyMax) {
-                env->GetByteArrayRegion(key, 0, size, reinterpret_cast<jbyte *>(g_db_key));
-                if (!env->ExceptionCheck()) {
-                    g_db_key_size = static_cast<int>(size);
-                    __atomic_store_n(&g_verify_needed, 1, __ATOMIC_RELEASE);
-                } else {
-                    env->ExceptionClear();
-                }
-            }
+int ReadKey(JNIEnv *env, jbyteArray array, unsigned char *out) {
+    if (!array || env->ExceptionCheck()) return 0;
+    const jsize size = env->GetArrayLength(array);
+    if (size <= 0 || static_cast<size_t>(size) > kKeyMax) return 0;
+    env->GetByteArrayRegion(array, 0, size, reinterpret_cast<jbyte *>(out));
+    if (env->ExceptionCheck()) { env->ExceptionClear(); return 0; }
+    return static_cast<int>(size);
+}
+
+void AddSpec(const unsigned char *key, int size, int page, int version) {
+    if (!key || size <= 0) return;
+    pthread_mutex_lock(&g_key_mu);
+    bool duplicate = false;
+    for (int i = 0; i < g_spec_count && !duplicate; ++i) {
+        if (g_specs[i].key_size == size && !memcmp(g_specs[i].key, key, static_cast<size_t>(size))) {
+            if (page > 0) g_specs[i].page_size = page;
+            if (version > 0) g_specs[i].version = version;
+            duplicate = true;
         }
-        pthread_mutex_unlock(&g_key_mu);
     }
+    if (!duplicate && g_spec_count < kSpecMax) {
+        CipherSpec &spec = g_specs[g_spec_count++];
+        memcpy(spec.key, key, static_cast<size_t>(size));
+        spec.key_size = size;
+        spec.page_size = page;
+        spec.version = version;
+    }
+    pthread_mutex_unlock(&g_key_mu);
+    __atomic_store_n(&g_verify_needed, 1, __ATOMIC_RELEASE);
+}
+
+void CaptureSetKey(JNIEnv *env, jobject thiz, jlong handle, jbyteArray key) {
+    unsigned char buffer[kKeyMax];
+    const int size = ReadKey(env, key, buffer);
+    if (size > 0) AddSpec(buffer, size, 0, -1);
     if (g_original_set_key) g_original_set_key(env, thiz, handle, key);
+}
+
+void CaptureCipherKey(JNIEnv *env, jobject thiz, jlong handle, jbyteArray key, jint page_size, jint version) {
+    unsigned char buffer[kKeyMax];
+    const int size = ReadKey(env, key, buffer);
+    if (size > 0) AddSpec(buffer, size, page_size, version);
+    if (g_original_cipher_key) g_original_cipher_key(env, thiz, handle, key, page_size, version);
 }
 
 jint ObserveRegister(JNIEnv *env, jclass clazz, const JNINativeMethod *methods, jint n) {
@@ -115,10 +149,13 @@ jint ObserveRegister(JNIEnv *env, jclass clazz, const JNINativeMethod *methods, 
     if (methods && n > 0 && n <= kMethodCopyLimit) {
         memcpy(copy, methods, static_cast<size_t>(n) * sizeof(JNINativeMethod));
         for (jint i = 0; i < n; ++i) {
-            if (copy[i].name && copy[i].signature && !strcmp(copy[i].name, "nativeSetKey") &&
-                !strcmp(copy[i].signature, "(J[B)V")) {
+            if (!copy[i].name || !copy[i].signature) continue;
+            if (!strcmp(copy[i].name, "nativeSetKey") && !strcmp(copy[i].signature, "(J[B)V")) {
                 g_original_set_key = reinterpret_cast<SetKeyFn>(copy[i].fnPtr);
                 copy[i].fnPtr = reinterpret_cast<void *>(CaptureSetKey);
+            } else if (!strcmp(copy[i].name, "setCipherKey") && !strcmp(copy[i].signature, "(J[BII)V")) {
+                g_original_cipher_key = reinterpret_cast<SetCipherKeyFn>(copy[i].fnPtr);
+                copy[i].fnPtr = reinterpret_cast<void *>(CaptureCipherKey);
             }
         }
         argument = copy;
@@ -226,47 +263,67 @@ bool CountRow(satori::Wcdb *db, void *stmt, void *context) {
     return false;
 }
 
-// Opens the account database read-only with the captured key and proves it decrypts.
-// The key itself is never logged; only its length and whether the read succeeded.
+// Opens the account database read-only with each captured cipher spec and a bounded set of
+// SQLCipher parameters, stopping at the first that decrypts. Keys are never logged.
 void VerifyKey() {
     if (__atomic_exchange_n(&g_verify_needed, 0, __ATOMIC_ACQ_REL) == 0) return;
-    unsigned char key[kKeyMax];
-    int size = 0;
+    CipherSpec specs[kSpecMax];
+    int count = 0;
     pthread_mutex_lock(&g_key_mu);
-    size = g_db_key_size;
-    if (size > 0) memcpy(key, g_db_key, static_cast<size_t>(size));
+    count = g_spec_count;
+    for (int i = 0; i < count; ++i) specs[i] = g_specs[i];
     pthread_mutex_unlock(&g_key_mu);
-    if (size <= 0) return;
+    if (count == 0) return;
     char micro[1200];
     snprintf(micro, sizeof(micro), "%s/MicroMsg", g_app_data);
+    char path[1600] = {};
     DIR *dir = opendir(micro);
-    if (!dir) {
-        snprintf(g_key_summary, sizeof(g_key_summary), "key_captured=yes len=%d db_readable=no opendir", size);
-        return;
-    }
-    bool readable = false;
-    bool found = false;
-    for (dirent *entry; (entry = readdir(dir)); ) {
-        if (entry->d_name[0] == '.') continue;
-        char path[1600];
-        snprintf(path, sizeof(path), "%s/%s/EnMicroMsg.db", micro, entry->d_name);
-        if (access(path, R_OK)) continue;
-        found = true;
-        satori::Wcdb *db = satori::WcdbOpen("libWCDB.so", path, key, size, 1);
-        if (db) {
-            int count = 0;
-            readable = satori::WcdbQuery(db, "SELECT count(*) FROM message", CountRow, &count);
-            satori::WcdbClose(db);
+    if (dir) {
+        for (dirent *entry; (entry = readdir(dir)); ) {
+            if (entry->d_name[0] == '.') continue;
+            char candidate[1600];
+            snprintf(candidate, sizeof(candidate), "%s/%s/EnMicroMsg.db", micro, entry->d_name);
+            if (!access(candidate, R_OK)) { snprintf(path, sizeof(path), "%s", candidate); break; }
         }
-        break;
+        closedir(dir);
     }
-    closedir(dir);
-    snprintf(g_key_summary, sizeof(g_key_summary), "key_captured=yes len=%d db_found=%s db_readable=%s",
-             size, found ? "yes" : "no", readable ? "yes" : "no");
+    if (!path[0]) {
+        snprintf(g_key_summary, sizeof(g_key_summary), "key_captured=yes specs=%d db_found=no", count);
+    } else {
+        const int pages[] = {0, 1024, 4096, 8192};
+        const int versions[] = {0, 1, 2, 3, 4};
+        constexpr int kAttemptLimit = 256;
+        int attempts = 0;
+        bool done = false;
+        bool limited = false;
+        for (int i = 0; i < count && !done; ++i) {
+            for (int c = -1; c < 20 && !done; ++c) {
+                const int page = c < 0 ? specs[i].page_size : pages[c % 4];
+                const int version = c < 0 ? specs[i].version : versions[c / 4];
+                if (c < 0 && page <= 0 && version <= 0) continue;
+                for (int before = 0; before < 2 && !done; ++before) {
+                    if (++attempts > kAttemptLimit) { done = true; limited = true; break; }
+                    satori::Wcdb *db = satori::WcdbOpenEx("libWCDB.so", path, specs[i].key, specs[i].key_size, page, version, before, 1);
+                    if (!db) continue;
+                    int rows = 0;
+                    const bool ok = satori::WcdbQuery(db, "SELECT count(*) FROM message", CountRow, &rows);
+                    satori::WcdbClose(db);
+                    if (ok) {
+                        snprintf(g_key_summary, sizeof(g_key_summary),
+                                 "key_captured=yes specs=%d db_readable=yes spec=%d len=%d page=%d ver=%d before=%d rows=%d",
+                                 count, i, specs[i].key_size, page, version, before, rows);
+                        done = true;
+                    }
+                }
+            }
+        }
+        if (!done) snprintf(g_key_summary, sizeof(g_key_summary), "key_captured=yes specs=%d db_found=yes db_readable=no attempts=%d%s",
+                            count, attempts, limited ? " limited" : "");
+    }
     // Write the result (never the key) immediately so an on-boot check can read it.
-    char path[1300];
-    snprintf(path, sizeof(path), "%s/key.log", g_dir);
-    FILE *file = fopen(path, "w");
+    char keylog[1300];
+    snprintf(keylog, sizeof(keylog), "%s/key.log", g_dir);
+    FILE *file = fopen(keylog, "w");
     if (file) { fprintf(file, "%s\n", g_key_summary); fclose(file); }
 }
 
