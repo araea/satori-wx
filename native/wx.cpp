@@ -111,7 +111,7 @@ static bool MappingOf(const void *p, MapInfo *info) {
 
 // ---- 换点表 -------------------------------------------------------------------------
 
-enum Kind { K_SET_CB, K_START_TASK, K_ENCODE, K_DECODE };
+enum Kind { K_SET_CB, K_START_TASK, K_ENCODE, K_DECODE, K_LOG };
 
 struct Target {
     const char *cls;
@@ -151,6 +151,16 @@ static Target kTargets[] = {
         // 经它注册回调，v0.1.4 之前一直没挂钩。
         {"com.tencent.mars.app.AppManager", "OnJniSetCallback",
          "(Ljava/lang/Object;)V", K_SET_CB, true,
+         false, nullptr, nullptr, "class-missing"},
+        // WCDB 的值侧：INSERT 的 SQL 只有 ?N 占位符，值在 bind 调用里。聊天内容是 TEXT 列。
+        {"com.tencent.wcdb.core.PreparedStatement", "bindText",
+         "(JLjava/lang/String;I)V", K_LOG, false,
+         false, nullptr, nullptr, "class-missing"},
+        {"com.tencent.wcdb.core.PreparedStatement", "bindBLOB",
+         "(J[BI)V", K_LOG, false,
+         false, nullptr, nullptr, "class-missing"},
+        {"com.tencent.wcdb.core.Handle", "executeSQL",
+         "(JLjava/lang/String;)Z", K_LOG, false,
          false, nullptr, nullptr, "class-missing"},
 };
 static constexpr int kTargetCount = sizeof(kTargets) / sizeof(kTargets[0]);
@@ -261,6 +271,50 @@ static void WxSetCb6(JNIEnv *env, jobject thiz, jobject a0) {
     MySetCallback(env, thiz, a0, &kTargets[6]);
 }
 
+// WCDB 值侧：参数在 native 侧就地格式化（不走 Java 助手，随时可用），经 onPkg 落盘。
+static void LogArgs(JNIEnv *env, const char *tag, const char *fmt, ...) {
+    char buf[560] = {0};
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(buf, sizeof(buf), fmt, ap);
+    va_end(ap);
+    jstring s = env->NewStringUTF(buf);
+    if (s == nullptr) { env->ExceptionClear(); return; }
+    LogPkg(env, tag, s);
+    env->DeleteLocalRef(s);
+}
+
+static void WxBindText7(JNIEnv *env, jobject thiz, jlong h, jstring s, jint i) {
+    const char *c = s ? env->GetStringUTFChars(s, nullptr) : nullptr;
+    LogArgs(env, "bindText", "h=%lld i=%d text=%s", (long long) h, i, c ? c : "null");
+    if (c) env->ReleaseStringUTFChars(s, c);
+    using F = void (*)(JNIEnv *, jobject, jlong, jstring, jint);
+    if (kTargets[7].orig) reinterpret_cast<F>(kTargets[7].orig)(env, thiz, h, s, i);
+}
+static void WxBindBlob8(JNIEnv *env, jobject thiz, jlong h, jbyteArray a, jint i) {
+    char buf[160] = {0};
+    if (a) {
+        jsize n = env->GetArrayLength(a);
+        jbyte tmp[16] = {0};
+        env->GetByteArrayRegion(a, 0, n < 16 ? n : 16, tmp);
+        int off = snprintf(buf, sizeof(buf), "h=%lld i=%d blob(%d)[", (long long) h, i, n);
+        for (int k = 0; k < n && k < 8 && off < (int) sizeof(buf) - 4; k++) {
+            off += snprintf(buf + off, sizeof(buf) - off, "%02x", (unsigned char) tmp[k]);
+        }
+        snprintf(buf + off, sizeof(buf) - off, "%s]", n > 8 ? "…" : "");
+    }
+    LogArgs(env, "bindBlob", "%s", buf);
+    using F = void (*)(JNIEnv *, jobject, jlong, jbyteArray, jint);
+    if (kTargets[8].orig) reinterpret_cast<F>(kTargets[8].orig)(env, thiz, h, a, i);
+}
+static jboolean WxExecSql9(JNIEnv *env, jobject thiz, jlong h, jstring s) {
+    const char *c = s ? env->GetStringUTFChars(s, nullptr) : nullptr;
+    LogArgs(env, "execSQL", "h=%lld sql=%s", (long long) h, c ? c : "null");
+    if (c) env->ReleaseStringUTFChars(s, c);
+    using F = jboolean (*)(JNIEnv *, jobject, jlong, jstring);
+    return kTargets[9].orig ? reinterpret_cast<F>(kTargets[9].orig)(env, thiz, h, s) : JNI_FALSE;
+}
+
 static void *TargetFnFor(int idx) {
     switch (idx) {
         case 0: return (void *) &WxSetCb0;
@@ -270,6 +324,9 @@ static void *TargetFnFor(int idx) {
         case 4: return (void *) &WxEncode4;
         case 5: return (void *) &WxDecode5;
         case 6: return (void *) &WxSetCb6;
+        case 7: return (void *) &WxBindText7;
+        case 8: return (void *) &WxBindBlob8;
+        case 9: return (void *) &WxExecSql9;
     }
     return nullptr;
 }
