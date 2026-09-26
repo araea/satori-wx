@@ -21,7 +21,7 @@
 | META | op=5，当前仅广播空 proxy_urls；不在 META 中传 logins |
 | 会话恢复 | 64 条有界历史、按客户端游标发送；登录事件不回放；过期或未来序号拒绝恢复 |
 | 背压 | 32 条生产队列；满时 Publish 返回 false；单客户端发送缓冲有界；回放超出缓存时关闭 |
-| WebHook（标准可选） | 未实现，相关路由 404 |
+| WebHook（标准可选） | 完成：`/v1/meta/webhook.create` / `webhook.delete`，EVENT/META 以 `Satori-Opcode` 推送，可选 `Authorization`；仅 http，无 TLS |
 | 资源代理 | 未实现，proxy_urls 保持空，相关路由 404 |
 
 序号以进程启动时的 Unix 微秒为基线，在进程内递增，并限制在 JSON/JavaScript 安全整数范围。
@@ -56,7 +56,8 @@ HTTP 请求体 / WS 消息最大 16 KiB、HTTP 头 8 KiB、单事件 4 KiB、最
 协议测试遍历 37 个方法，并验证上传二进制、标记保留、分页、广播、登录状态、元信息、
 历史窗口淘汰以及超过发送缓冲容量的分段回放。
 账号端到端测试用夹具偏好文件驱动真实适配层，验证 meta / login.get / READY 的一致快照、
-离线状态与账号切换；详情见 [只读账号身份说明](wechat-account.md)。
+离线状态与账号切换；WebHook 测试用本地接收端验证 `Satori-Opcode`、`Authorization` 与
+信号体，以及登记上限/注销；详情见 [只读账号身份说明](wechat-account.md)。
 
 测试后端和事件输入管道仅编译到 `build/tests/server`，不在 Zygisk 模块内。
 真机检查器 `build/satori-wx-check` 只读 meta/status 和 WebSocket 信令，不发送微信消息。

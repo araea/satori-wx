@@ -27,6 +27,7 @@ ZygiskNext 的 `zygisk_next_api.h` 是另一套公开接口，有自己的 `zn_m
 | `native/vendor/cjson/` | cJSON 1.7.19，固定版本源码及 MIT 许可，最大 JSON 深度 16 |
 | `native/wx_account.{h,cpp}` | v0.5.0：只读解析微信偏好，生成 Satori 登录事件 |
 | `native/wx_adapter.{h,cpp}` | v0.5.0：每 3 秒扫描一次并做身份状态机（added/updated/removed） |
+| `native/webhook.{h,cpp}` | v0.5.0：可选 WebHook 推送，独立线程 + 有界队列，仅 http |
 | `native/probe.cpp`、`native/data_slot.h` | 单独构建的可选 JNI 观测实验 |
 
 ## 协议边界

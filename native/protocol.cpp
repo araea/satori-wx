@@ -274,6 +274,15 @@ char *Envelope(int op, const cJSON *body) {
     }
     char *text = cJSON_PrintUnformatted(root); cJSON_Delete(root); return text;
 }
+char *EnvelopeBody(const char *signal) {
+    if (!signal) return nullptr;
+    cJSON *root = cJSON_Parse(signal);
+    if (!root) return nullptr;
+    const cJSON *body = Item(root, "body");
+    char *text = body ? cJSON_PrintUnformatted(body) : nullptr;
+    cJSON_Delete(root);
+    return text;
+}
 static bool StringArray(const cJSON *value) {
     if (!cJSON_IsArray(value)) return false;
     for (const cJSON *p = value->child; p; p = p->next) if (!cJSON_IsString(p)) return false;

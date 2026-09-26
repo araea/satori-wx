@@ -93,7 +93,7 @@ bool Op(cJSON *root, int op) {
     const cJSON *value = cJSON_GetObjectItemCaseSensitive(root, "op");
     return cJSON_IsNumber(value) && value->valuedouble == op;
 }
-bool Check(const satori::Config &config, bool soak) {
+bool Check(const satori::Config &config, bool soak, bool expect_login) {
     cJSON *unauthorized = Http(config, "/v1/meta", 401, false);
     if (!unauthorized) { puts("FAIL http_missing_auth"); return false; } cJSON_Delete(unauthorized);
     cJSON *status = Http(config, "/v1/internal/status", 200);
@@ -107,7 +107,26 @@ bool Check(const satori::Config &config, bool soak) {
     cJSON *meta = Http(config, "/v1/meta", 200);
     const cJSON *logins = cJSON_GetObjectItemCaseSensitive(meta, "logins");
     if (!cJSON_IsArray(logins)) { cJSON_Delete(meta); puts("FAIL meta"); return false; }
-    printf("PASS http_meta logins=%d\n", cJSON_GetArraySize(logins)); cJSON_Delete(meta);
+    bool have_login = false;
+    char login_id[96] = {};
+    int login_status = -1;
+    for (const cJSON *p = logins->child; p; p = p->next) {
+        const cJSON *platform = cJSON_GetObjectItemCaseSensitive(p, "platform");
+        const cJSON *user = cJSON_GetObjectItemCaseSensitive(p, "user");
+        const cJSON *id = user ? cJSON_GetObjectItemCaseSensitive(user, "id") : nullptr;
+        const cJSON *status = cJSON_GetObjectItemCaseSensitive(p, "status");
+        if (cJSON_IsString(platform) && !strcmp(platform->valuestring, "wechat") && cJSON_IsString(id) && *id->valuestring) {
+            have_login = true;
+            snprintf(login_id, sizeof(login_id), "%s", id->valuestring);
+            login_status = cJSON_IsNumber(status) ? status->valueint : -1;
+            break;
+        }
+    }
+    printf("PASS http_meta logins=%d\n", cJSON_GetArraySize(logins));
+    if (have_login) printf("PASS account_identity user=%s status=%d\n", login_id, login_status);
+    else if (expect_login) { cJSON_Delete(meta); puts("FAIL account_identity"); return false; }
+    else puts("SKIP account_identity (no login in snapshot)");
+    cJSON_Delete(meta);
     const int fd = Connect(config.port); if (fd < 0) return false;
     const char *upgrade = "GET /v1/events HTTP/1.1\r\nHost: localhost\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
                           "Sec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n";
@@ -131,15 +150,22 @@ bool Check(const satori::Config &config, bool soak) {
     ok = cJSON_IsNumber(pid) && pid->valueint == app_pid; cJSON_Delete(status);
     if (!ok) { puts("FAIL process_changed"); return false; }
     printf("PASS websocket_ready_heartbeat stable_seconds=%d\n", soak ? 40 : 0);
-    puts("VERDICT: PASS native_protocol_live; WeChat account/message backend remains unavailable");
+    if (have_login) printf("VERDICT: PASS native_protocol_live + wechat_identity user=%s; message backend unavailable\n", login_id);
+    else puts("VERDICT: PASS native_protocol_live; no wechat identity in snapshot");
     return true;
 }
 }
 int main(int argc, char **argv) {
-    if (argc < 2) { fprintf(stderr, "usage: %s config [--soak]\n", argv[0]); return 2; }
+    if (argc < 2) { fprintf(stderr, "usage: %s config [--soak] [--expect-login]\n", argv[0]); return 2; }
+    bool soak = false, expect_login = false;
+    for (int i = 2; i < argc; ++i) {
+        if (!strcmp(argv[i], "--soak")) soak = true;
+        else if (!strcmp(argv[i], "--expect-login")) expect_login = true;
+        else { fprintf(stderr, "unknown flag: %s\n", argv[i]); return 2; }
+    }
     const int fd = open(argv[1], O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
     satori::Config config;
     const bool ok = fd >= 0 && satori::ReadConfig(fd, &config); if (fd >= 0) close(fd);
     if (!ok) { puts("FAIL config"); return 2; }
-    return Check(config, argc > 2 && !strcmp(argv[2], "--soak")) ? 0 : 1;
+    return Check(config, soak, expect_login) ? 0 : 1;
 }

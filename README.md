@@ -65,6 +65,7 @@ Satori 客户端填写：
 | 接口 | 当前行为 |
 | --- | --- |
 | `POST /v1/meta` | 已登录时返回只读身份快照 `{"logins":[...],"proxy_urls":[]}`；无账号时 `logins` 为空 |
+| `POST /v1/meta/webhook.create` / `webhook.delete` | 注册/注销 WebHook（`url` 必填、`token` 可选）；标准可选功能 |
 | `POST /v1/internal/status` | 实验版版本、native 状态、backend unavailable；项目自定义诊断接口 |
 | `POST /v1/login.get` | 返回已登记账号快照；未登录或身份不匹配时返回 403 |
 | `POST /v1/{resource}.{method}` | 37 个标准方法的参数校验及 native 后端分发；当前账号 `features` 为空而返回 404 |
@@ -86,7 +87,18 @@ WebSocket 按 Satori 的 `op=3` + `body.token` 鉴权；成功后 `op=4`，`op=1
 
 资源限制：8 个并发连接、8 KiB HTTP 头、16 KiB 请求体/WS 消息、有界发送缓冲。
 单个 `poll` 线程处理读写、背压和单调时钟超时；空闲时阻塞等待。
-HTTP 每次响应后关闭连接；暂不提供 TLS、chunked 请求体、WebHook、资源代理或真实微信消息事件。
+HTTP 每次响应后关闭连接；暂不提供 TLS、chunked 请求体、资源代理或真实微信消息事件。
+
+## WebHook（标准可选）
+
+除 WebSocket 外，服务端实现 Satori 的可选 WebHook 推送：应用通过已鉴权的
+`POST /v1/meta/webhook.create`（`{"url":"http://...", "token":"..."}`）登记地址，
+最多 4 个；每个 EVENT / META 信号都会以 POST 推送到所有登记地址，请求头带
+`Satori-Opcode`（EVENT=0，META=5），有 token 时带 `Authorization: Bearer <token>`，
+请求体就是信号 body（Event / Meta 对象），与标准一致。`webhook.delete` 按 `url` 注销。
+推送在独立线程、有界队列上进行，事件循环永不阻塞；队列满或推送失败只计数不重试。
+没有 TLS 客户端，因此只接受 `http://`，`https://` 在登记时返回 400；只有持有服务端 token
+的应用才能登记。`/v1/internal/capabilities` 的 `webhook` 为 true，并报告当前登记数。
 
 停用或卸载模块后，结束已有微信进程并按模块管理器要求重启；已有进程中的线程不会因删除模块目录自行退出。
 

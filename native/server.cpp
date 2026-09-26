@@ -2,6 +2,7 @@
 #include "protocol.h"
 #include "multipart.h"
 #include "version.h"
+#include "webhook.h"
 #include "ws_crypto.h"
 #include "vendor/cjson/cJSON.h"
 #include <arpa/inet.h>
@@ -182,7 +183,7 @@ bool HeaderToken(const char *list, const char *token) {
     }
     return false;
 }
-void Http(Client &c, const Config &config, Hub *hub, const Backend *backend) {
+void Http(Client &c, const Config &config, Hub *hub, const Backend *backend, WebHooks *hooks) {
     c.input[c.used] = 0;
     const char *end = static_cast<const char *>(memmem(c.input, c.used, "\r\n\r\n", 4));
     if (!end) {
@@ -258,8 +259,10 @@ void Http(Client &c, const Config &config, Hub *hub, const Backend *backend) {
     const bool meta = !strcmp(path, "/v1/meta");
     const bool status = !strcmp(path, "/v1/internal/status");
     const bool capabilities = !strcmp(path, "/v1/internal/capabilities");
+    const bool webhook_create = !strcmp(path, "/v1/meta/webhook.create");
+    const bool webhook_delete = !strcmp(path, "/v1/meta/webhook.delete");
     const Method *rpc = !strncmp(path, "/v1/", 4) ? FindMethod(path + 4) : nullptr;
-    if (!meta && !status && !capabilities && !rpc) { Reply(c, 404, "Not Found", "{\"error\":\"unknown_api\"}"); return; }
+    if (!meta && !status && !capabilities && !webhook_create && !webhook_delete && !rpc) { Reply(c, 404, "Not Found", "{\"error\":\"unknown_api\"}"); return; }
     if (strcmp(method, "POST")) { Reply(c, 405, "Method Not Allowed", "{}"); return; }
     cJSON *body = nullptr;
     Multipart uploads{};
@@ -290,7 +293,8 @@ void Http(Client &c, const Config &config, Hub *hub, const Backend *backend) {
         if (result && methods && cJSON_AddItemToObject(result, "standard_methods", methods)) {
             for (const auto *m = kMethods; m != kMethods + kMethodCount; ++m) cJSON_AddItemToArray(methods, cJSON_CreateString(m->name));
             cJSON_AddBoolToObject(result, "wechat_backend", backend != nullptr);
-            cJSON_AddBoolToObject(result, "webhook", false);
+            cJSON_AddBoolToObject(result, "webhook", true);
+            cJSON_AddNumberToObject(result, "webhooks", static_cast<double>(WebHookCount(hooks)));
             cJSON_AddBoolToObject(result, "proxy", false);
             char *text = cJSON_PrintUnformatted(result);
             Reply(c, text ? 200 : 500, text ? "OK" : "Internal Server Error", text ? text : "{}"); free(text);
@@ -298,6 +302,15 @@ void Http(Client &c, const Config &config, Hub *hub, const Backend *backend) {
         } else {
             cJSON_Delete(result); cJSON_Delete(methods); Reply(c, 500, "Internal Server Error", "{}");
         }
+    } else if (webhook_create || webhook_delete) {
+        const cJSON *url = cJSON_GetObjectItemCaseSensitive(body, "url");
+        const cJSON *token = cJSON_GetObjectItemCaseSensitive(body, "token");
+        bool ok = cJSON_IsString(url) && *url->valuestring && (!token || cJSON_IsString(token));
+        if (ok) {
+            if (webhook_create) ok = AddWebHook(hooks, url->valuestring, token ? token->valuestring : "");
+            else ok = RemoveWebHook(hooks, url->valuestring);
+        }
+        Reply(c, ok ? 200 : 400, ok ? "OK" : "Bad Request", ok ? "{}" : "{\"error\":\"invalid_webhook\"}");
     } else if (!*header("Satori-Platform") || !*header("Satori-User-ID")) {
         Reply(c, 400, "Bad Request", "{\"error\":\"missing_login_headers\"}");
     } else {
@@ -378,6 +391,8 @@ int Listen(const Config &config) {
 void Run(int listener, const Config &config, EventBus *bus, const Backend *backend) {
     Hub *hub = CreateHub();
     if (!hub) { close(listener); return; }
+    WebHooks *hooks = CreateWebHooks();
+    if (!hooks) { DestroyHub(hub); close(listener); return; }
     auto *clients = static_cast<Client *>(calloc(kClients, sizeof(Client)));
     if (!clients) { DestroyHub(hub); close(listener); return; }
     for (int i = 0; i < kClients; ++i) clients[i].fd = -1;
@@ -395,6 +410,11 @@ void Run(int listener, const Config &config, EventBus *bus, const Backend *backe
                     Client &c = clients[i];
                     if (c.fd >= 0 && c.identified && !c.closing) Frame(c, 1, signal, strlen(signal));
                 }
+            }
+            // Optional WebHook delivery is best-effort and never blocks the poll loop.
+            if (WebHookCount(hooks)) {
+                char *body = EnvelopeBody(signal);
+                if (body) { PushWebHook(hooks, immediate ? 5 : 0, body); free(body); }
             }
             free(signal);
         }
@@ -450,7 +470,7 @@ void Run(int listener, const Config &config, EventBus *bus, const Backend *backe
                 const ssize_t n = recv(c.fd, c.input + c.used, kInput - c.used, 0);
                 if (n > 0) {
                     c.used += n;
-                    if (c.ws) WebSocket(c, config, hub); else Http(c, config, hub, backend);
+                    if (c.ws) WebSocket(c, config, hub); else Http(c, config, hub, backend, hooks);
                     if (c.used == kInput && !c.closing) { if (c.ws) Close(c, 1009); else Reply(c, 413, "Content Too Large", "{}"); }
                 } else if (!n || (errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR)) { Drop(c); continue; }
             }
@@ -464,6 +484,6 @@ void Run(int listener, const Config &config, EventBus *bus, const Backend *backe
         }
     }
     for (int i = 0; i < kClients; ++i) Drop(clients[i]);
-    free(clients); DestroyHub(hub); close(listener);
+    free(clients); DestroyHub(hub); DestroyWebHooks(hooks); close(listener);
 }
 } // namespace satori

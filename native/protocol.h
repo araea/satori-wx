@@ -38,6 +38,8 @@ const char *NextEvent(Hub *hub, uint64_t *cursor, uint64_t replay_until);
 // Mutates the snapshot, stamps sequence/time and returns an owned signal, or null on invalid input.
 char *Apply(Hub *hub, const char *json, bool meta);
 char *Envelope(int op, const cJSON *body);
+// Extracts the "body" value from an {"op":N,"body":...} envelope as a malloc'd JSON string.
+char *EnvelopeBody(const char *signal);
 
 struct Request {
     const Method *method;
