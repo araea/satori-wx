@@ -1,6 +1,7 @@
 #include "wx_live.h"
 #include "wx_store.h"
 #include "wx_account.h"
+#include <android/log.h>
 #include <dirent.h>
 #include <pthread.h>
 #include <stdio.h>
@@ -23,9 +24,14 @@ struct Live {
     int login_sn;
     Store *store;
     long long watermark;
+    long long emitted;
 };
 
-bool Emit(void *context, const char *event) { return Publish(static_cast<EventBus *>(context), event); }
+bool Emit(void *context, const char *event) {
+    auto *live = static_cast<Live *>(context);
+    ++live->emitted;
+    return Publish(live->bus, event);
+}
 
 int HexDigit(char c) {
     if (c >= '0' && c <= '9') return c - '0';
@@ -110,11 +116,21 @@ void *Loop(void *argument) {
         nanosleep(&delay, nullptr);
     }
     if (!live->store) return nullptr;
-    // Replay a short tail so messages that arrived just before the store opened are seen.
-    const long long watermark = StoreWatermark(live->store);
-    live->watermark = watermark > 20 ? watermark - 20 : 0;
+    // Emit only new rows: history comes from message.list, which reads the database directly.
+    // This also avoids emitting before the account login reaches the hub (those are dropped).
+    live->watermark = StoreWatermark(live->store);
+    __android_log_print(ANDROID_LOG_INFO, "SatoriWx", "live message store opened at watermark=%lld",
+                        static_cast<long long>(live->watermark));
+    const timespec grace{5, 0};
+    nanosleep(&grace, nullptr);
+    long long logged = 0;
     for (;;) {
-        live->watermark = StorePoll(live->store, live->watermark, live->login_sn, Emit, live->bus);
+        live->watermark = StorePoll(live->store, live->watermark, live->login_sn, Emit, live);
+        if (live->emitted != logged) {
+            logged = live->emitted;
+            __android_log_print(ANDROID_LOG_INFO, "SatoriWx", "live store emitted=%lld watermark=%lld",
+                                static_cast<long long>(live->emitted), static_cast<long long>(live->watermark));
+        }
         const timespec delay{2, 0};
         nanosleep(&delay, nullptr);
     }

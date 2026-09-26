@@ -2,6 +2,7 @@
 // A plaintext SQLite file stands in for EnMicroMsg.db; rows are mapped to Satori events.
 #include "wx_store.h"
 #include "wcdb.h"
+#include "protocol.h"
 #include "vendor/cjson/cJSON.h"
 #include <fcntl.h>
 #include <stdio.h>
@@ -58,14 +59,14 @@ int main() {
     if (!store) { fprintf(stderr, "store error: %s\n", satori::StoreError(nullptr)); return 1; }
     Check(satori::StoreWatermark(store) == 5, "watermark before poll");
     Sink sink;
-    const long long watermark = satori::StorePoll(store, 0, 7, Emit, &sink);
+    const long long watermark = satori::StorePoll(store, 0, 1, Emit, &sink);
     Check(watermark == 5, "poll returns watermark");
     Check(sink.count == 4, "media row skipped");
     if (sink.count == 4) {
         cJSON *group = cJSON_Parse(sink.events[0]);
         Check(!strcmp(Str(group, "type"), "message-created"), "event type");
         Check(Num(group, "timestamp") == 1700000000000.0, "timestamp");
-        Check(Num(Item(group, "login"), "sn") == 7, "login sn");
+        Check(Num(Item(group, "login"), "sn") == 1, "login sn");
         Check(!strcmp(Nested(group, "user", "id"), "wxid_abc"), "group sender from prefix");
         Check(!strcmp(Nested(group, "message", "content"), "你好"), "group text without prefix");
         Check(!strcmp(Nested(group, "channel", "id"), "123@chatroom"), "group channel id");
@@ -84,7 +85,19 @@ int main() {
         cJSON_Delete(markup);
     }
     Sink again;
-    Check(satori::StorePoll(store, watermark, 7, Emit, &again) == 5 && again.count == 0, "no replay");
+    Check(satori::StorePoll(store, watermark, 1, Emit, &again) == 5 && again.count == 0, "no replay");
+    // The hub must accept the generated events once the login is known.
+    satori::Hub *hub = satori::CreateHub();
+    char *login = satori::Apply(hub, "{\"type\":\"login-added\",\"login\":{\"sn\":1,\"status\":1,\"adapter\":\"t\",\"platform\":\"wechat\",\"user\":{\"id\":\"self_wxid\"},\"features\":[]}}", false);
+    Check(login != nullptr, "login applied");
+    free(login);
+    for (int i = 0; i < sink.count; ++i) {
+        char *applied = satori::Apply(hub, sink.events[i], false);
+        Check(applied != nullptr, "store event accepted by hub");
+        free(applied);
+    }
+    Check(satori::Latest(hub) > 0, "hub sequence advanced");
+    satori::DestroyHub(hub);
     satori::DestroyStore(store);
     unlink(path);
     rmdir(directory);
