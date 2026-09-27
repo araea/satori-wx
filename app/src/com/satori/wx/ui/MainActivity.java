@@ -97,6 +97,8 @@ public final class MainActivity extends Activity
         twoPane = layout.twoPane();
         prefs = getSharedPreferences("zhiyan", MODE_PRIVATE);
         model.appVersion = appVersion();
+        // 先记下重建前的状态：双栏时设置页在下面就会建好，它要在构造时恢复草稿。
+        pendingState = state;
 
         frame = new FrameLayout(this);
         frame.setBackgroundColor(t.surface);
@@ -119,7 +121,6 @@ public final class MainActivity extends Activity
 
         if (state != null) {
             page = twoPane ? HOME : state.getInt("page", HOME);
-            pendingState = state;
             if (state.containsKey("draft_port") || page == SETTINGS) ensureSettings();
             if (state.getBoolean("picker_open")) {
                 ensurePicker().restoreState(state);
@@ -210,7 +211,7 @@ public final class MainActivity extends Activity
             stage.addView(settings.root, new FrameLayout.LayoutParams(-1, -1));
         }
         Status.Snapshot s = model.snapshot;
-        if (s.device != null && s.device.granted) settings.load(s.conf, fallbackConf(), true);
+        if (s.device != null && s.device.granted && s.device.module) settings.load(s.conf, fallbackConf(), true);
         if (pendingState != null && pendingState.containsKey("draft_port")) settings.restoreState(pendingState);
         if (contacts != null) settings.contacts(contacts);
         if (Build.VERSION.SDK_INT >= 28) settings.root.setAccessibilityPaneTitle("设置");
@@ -441,8 +442,10 @@ public final class MainActivity extends Activity
         model.probing = true;
         home.render(model);
         final Status.Snapshot previous = model.snapshot;
+        // 没有授权时不自己重试：Magisk 会为每次 su 弹一次授权框。只在「重试」或回到前台时再请求。
+        boolean denied = previous.device != null && !previous.device.granted;
         final boolean needRoot = forceRoot || previous.device == null
-                || (previous.http != 200 && System.currentTimeMillis() - deviceAt > ROOT_STALE / 3);
+                || (!denied && previous.http != 200 && System.currentTimeMillis() - deviceAt > ROOT_STALE / 3);
         forceRoot = false;
         final String previousPort = prefs.getString("previous_port", null);
         final String previousToken = prefs.getString("previous_token", null);
@@ -531,7 +534,7 @@ public final class MainActivity extends Activity
         boolean confChanged = old.device == null || old.conf == null != (s.conf == null)
                 || (s.conf != null && !s.conf.sameAs(old.conf)) || !java.util.Objects.equals(old.confError, s.confError);
         copyInto(model.snapshot, s);
-        if (settings != null && s.device != null && s.device.granted && (confChanged || first)) {
+        if (settings != null && s.device != null && s.device.granted && s.device.module && (confChanged || first)) {
             settings.load(s.conf, fallbackConf(), false);
         }
         renderSettings();
