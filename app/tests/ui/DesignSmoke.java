@@ -195,7 +195,7 @@ public final class DesignSmoke extends Instrumentation {
         HomePage page = new HomePage(ui, stub(HomePage.Actions.class), true);
         HomePage.Model model = new HomePage.Model();
         model.appVersion = "1.0.0";
-        copy(s, model.snapshot);
+        model.snapshot.copyFrom(s);
         Map<String, String> names = new HashMap<>();
         for (Api.Contact c : contacts()) names.put(c.id, c.name);
         model.names = names;
@@ -246,7 +246,7 @@ public final class DesignSmoke extends Instrumentation {
         if (!ui.layout.twoPane()) failures.add(name + ": " + widthDp + "dp 应为双栏");
         HomePage home = new HomePage(ui, stub(HomePage.Actions.class), false);
         HomePage.Model model = new HomePage.Model();
-        copy(ready(false), model.snapshot);
+        model.snapshot.copyFrom(ready(false));
         home.render(model);
         SettingsPage settings = new SettingsPage(ui, stub(SettingsPage.Actions.class), true);
         Status.Snapshot s = ready(false);
@@ -260,20 +260,6 @@ public final class DesignSmoke extends Instrumentation {
         check(name, panes, ui.t);
     }
 
-    private static void copy(Status.Snapshot from, Status.Snapshot to) {
-        to.checked = from.checked;
-        to.restarting = from.restarting;
-        to.device = from.device;
-        to.conf = from.conf;
-        to.confError = from.confError;
-        to.wechatInstalled = from.wechatInstalled;
-        to.wechatVersion = from.wechatVersion;
-        to.http = from.http;
-        to.status = from.status;
-        to.meta = from.meta;
-        to.viaPrevious = from.viaPrevious;
-        to.port = from.port;
-    }
 
     // ------------------------------------------------------------------ 渲染与检查
 

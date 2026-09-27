@@ -68,6 +68,22 @@ public final class Status {
         /** 服务是用改动之前的端口 / 令牌应答的：新配置已保存、尚未生效。 */
         public boolean viaPrevious;
         public int port = Conf.DEFAULT_PORT;
+
+        /** 整体替换成另一次检查的结果：界面只认完整的一次，绝不半新半旧。 */
+        public void copyFrom(Snapshot s) {
+            checked = s.checked;
+            restarting = s.restarting;
+            device = s.device;
+            conf = s.conf;
+            confError = s.confError;
+            wechatInstalled = s.wechatInstalled;
+            wechatVersion = s.wechatVersion;
+            http = s.http;
+            status = s.status;
+            meta = s.meta;
+            viaPrevious = s.viaPrevious;
+            port = s.port;
+        }
     }
 
     /** 一句结论：语调、标题、说明、下一步及其按钮文字。 */
@@ -181,6 +197,14 @@ public final class Status {
     }
 
     /** 已登录（status = 1）的那个账号；没有则 null。 */
+    /**
+     * 客户端要填的服务地址：不带 {@code /v1}。Satori 把版本写进路径（{@code /v1/{资源}.{方法}}、{@code /v1/events}），
+     * 标准客户端都是拿基础地址自己拼版本段——把 /v1 也复制进去反而会拼成 /v1/v1。
+     */
+    public static String endpoint(Snapshot s) {
+        return "http://127.0.0.1:" + (s.conf != null ? s.conf.port : s.port);
+    }
+
     public static JSONObject login(Snapshot s) {
         JSONArray logins = s.meta == null ? null : s.meta.optJSONArray("logins");
         for (int i = 0; logins != null && i < logins.length(); i++) {

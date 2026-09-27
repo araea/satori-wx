@@ -25,7 +25,16 @@ apksigner sign --ks "$KS" --ks-pass pass:zhiyan-local --key-pass pass:zhiyan-loc
 
 echo "== 4. 安装并运行 =="
 su -c "cp '$OUT/DesignSmoke.apk' /data/local/tmp/zhiyan-smoke.apk && pm install -r -d /data/local/tmp/zhiyan-smoke.apk >/dev/null && rm /data/local/tmp/zhiyan-smoke.apk"
-su -c "am instrument -w -r com.satori.wx.test/com.satori.wx.ui.DesignSmoke" | tee "$OUT/instrument.log" | grep -E "shot|PASS|FAIL|at com|    " || true
+# ColorOS 的 Hans 会冻结在后台停留几秒的应用进程，测试进程也不例外；被冻住时 am instrument 会一直等下去。
+# 给它一个上限，并说清原因，而不是无声挂起。
+if ! su -c "timeout 150 am instrument -w -r com.satori.wx.test/com.satori.wx.ui.DesignSmoke" > "$OUT/instrument.log"; then
+  pid=$(su -c "pidof com.satori.wx" || true)
+  if [ -n "$pid" ] && su -c "grep -q freezer /proc/$pid/wchan"; then
+    echo "测试进程被系统冻结（ColorOS Hans），测试没能跑完。息屏后重跑，或在系统设置里允许「知言」后台运行。" >&2
+  fi
+  su -c "am force-stop com.satori.wx" || true
+fi
+grep -E "shot|PASS|FAIL|at com" "$OUT/instrument.log" || true
 grep -q 'PASS: 知言界面设计冒烟' "$OUT/instrument.log" || { echo "设计冒烟未通过，见 $OUT/instrument.log" >&2; exit 1; }
 
 echo "== 5. 取回截图 =="

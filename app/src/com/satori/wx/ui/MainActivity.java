@@ -465,7 +465,9 @@ public final class MainActivity extends Activity
             int http = Api.UNREACHABLE;
             org.json.JSONObject status = null, meta = null;
             boolean viaPrevious = false;
-            if (conf != null) {
+            // 刚探测到微信没在运行或被冻结：服务不可能应答，不必再等满读超时。
+            boolean hopeless = needRoot && device.granted && (device.wechatPid <= 0 || device.wechatFrozen);
+            if (conf != null && !hopeless) {
                 Api.Reply reply = new Api(conf.port, conf.token).status();
                 http = reply.code;
                 if (reply.ok()) {
@@ -533,27 +535,13 @@ public final class MainActivity extends Activity
         boolean first = !old.checked;
         boolean confChanged = old.device == null || old.conf == null != (s.conf == null)
                 || (s.conf != null && !s.conf.sameAs(old.conf)) || !java.util.Objects.equals(old.confError, s.confError);
-        copyInto(model.snapshot, s);
+        model.snapshot.copyFrom(s);
         if (settings != null && s.device != null && s.device.granted && s.device.module && (confChanged || first)) {
             settings.load(s.conf, fallbackConf(), false);
         }
         renderSettings();
     }
 
-    private static void copyInto(Status.Snapshot target, Status.Snapshot s) {
-        target.checked = s.checked;
-        target.restarting = s.restarting;
-        target.device = s.device;
-        target.conf = s.conf;
-        target.confError = s.confError;
-        target.wechatInstalled = s.wechatInstalled;
-        target.wechatVersion = s.wechatVersion;
-        target.http = s.http;
-        target.status = s.status;
-        target.meta = s.meta;
-        target.viaPrevious = s.viaPrevious;
-        target.port = s.port;
-    }
 
     /** 配置文件无效时给设置页填表用：尽量保留文件里还能认出的端口与令牌，认不出的用默认值。 */
     private Conf fallbackConf() {
@@ -714,10 +702,8 @@ public final class MainActivity extends Activity
         });
     }
 
-    @Override public void copyEndpoint(boolean events) {
-        int port = model.snapshot.conf != null ? model.snapshot.conf.port : model.snapshot.port;
-        if (events) copy("事件推送地址", "ws://127.0.0.1:" + port + "/v1/events", false);
-        else copy("HTTP 接口地址", "http://127.0.0.1:" + port + "/v1", false);
+    @Override public void copyEndpoint() {
+        copy("服务地址", Status.endpoint(model.snapshot), false);
     }
 
     @Override public void copyToken() {

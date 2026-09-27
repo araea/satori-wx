@@ -27,7 +27,7 @@ final class HomePage {
         void heroAction(int action);
         void openWeChat();
         void restartWeChat();
-        void copyEndpoint(boolean events);
+        void copyEndpoint();
         void copyToken();
         void copyReport();
         void shareReport();
@@ -58,7 +58,7 @@ final class HomePage {
     private final Notice blocked;
     private final TextView sent, rejected;
     private final Item[] chain = new Item[4];
-    private final Item http, events, token, openWeChat, restartWeChat;
+    private final Item endpoint, token, openWeChat, restartWeChat;
     private final Item[] data;
     private final ImageButton refresh;
     private int heroTone = -1;
@@ -185,21 +185,17 @@ final class HomePage {
         // ---- 客户端接入 ----
         content.addView(ui.sectionTitle("客户端接入"), Ui.stack(t.space2xl));
         Ui.Group connect = ui.group();
-        ImageButton copyHttp = ui.iconButton(Icon.COPY, "复制 HTTP 接口地址", t.onSurfaceVariant);
-        copyHttp.setOnClickListener(v -> actions.copyEndpoint(false));
-        http = connect.add(new Item(t, Item.STATIC, "http://127.0.0.1:5601/v1", "HTTP 接口 · 只供本机客户端")
-                .leading(Icon.LINK, t.onSurfaceVariant).trailing(copyHttp));
-        http.setId(R.id.endpoint);
-        ImageButton copyEvents = ui.iconButton(Icon.COPY, "复制事件推送地址", t.onSurfaceVariant);
-        copyEvents.setOnClickListener(v -> actions.copyEndpoint(true));
-        events = connect.add(new Item(t, Item.STATIC, "ws://127.0.0.1:5601/v1/events", "事件推送 · WebSocket")
-                .leading(Icon.STREAM, t.onSurfaceVariant).trailing(copyEvents));
+        ImageButton copyEndpoint = ui.iconButton(Icon.COPY, "复制服务地址", t.onSurfaceVariant);
+        copyEndpoint.setOnClickListener(v -> actions.copyEndpoint());
+        endpoint = connect.add(new Item(t, Item.STATIC, "http://127.0.0.1:5601", "服务地址 · 只供本机客户端")
+                .leading(Icon.LINK, t.onSurfaceVariant).trailing(copyEndpoint));
+        endpoint.setId(R.id.endpoint);
         ImageButton copyToken = ui.iconButton(Icon.COPY, "复制令牌", t.onSurfaceVariant);
         copyToken.setId(R.id.copy_token);
         copyToken.setOnClickListener(v -> actions.copyToken());
         token = connect.add(new Item(t, Item.STATIC, "令牌", "读取中").leading(Icon.KEY, t.onSurfaceVariant).trailing(copyToken));
         content.addView(connect, Ui.stack(0));
-        content.addView(ui.text("客户端的 Satori 适配器填这两个地址，令牌作为 Bearer 鉴权。",
+        content.addView(ui.text("Satori 客户端填这个地址即可，版本段 /v1 由客户端自己拼上（接口 /v1/…，事件 /v1/events）；令牌作为 Bearer 鉴权。",
                 Tokens.BODY_SMALL, t.onSurfaceVariant), Pages.note(t));
 
         // ---- 微信 ----
@@ -303,9 +299,7 @@ final class HomePage {
         }
 
         // ---- 接入 ----
-        int port = s.conf != null ? s.conf.port : s.port;
-        http.setHeadline("http://127.0.0.1:" + port + "/v1");
-        events.setHeadline("ws://127.0.0.1:" + port + "/v1/events");
+        endpoint.setHeadline(Status.endpoint(s));
         token.setSupporting(s.conf == null ? (s.device == null ? "读取中" : "不可用") : "已设置 · " + s.conf.token.length() + " 位");
 
         boolean root = s.device != null && s.device.granted;

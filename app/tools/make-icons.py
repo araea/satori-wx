@@ -51,7 +51,6 @@ ICONS = {
     "group": ("group", "default"),
     "edit": ("edit", "default"),
     "link": ("link", "default"),
-    "stream": ("stream", "default"),
     "block": ("block", "default"),
     "folder": ("folder", "default"),
 }

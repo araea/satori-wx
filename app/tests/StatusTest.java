@@ -110,6 +110,7 @@ public final class StatusTest {
 
         check(Status.ago(30_000).equals("刚刚") && Status.ago(5 * 60_000).equals("5 分钟前") && Status.ago(3 * 3600_000L).equals("3 小时前"), "时间描述");
         check(Status.reason("rate limited").contains("限速"), "原因翻译");
+        check(Status.endpoint(s).equals("http://127.0.0.1:5601"), "服务地址不带 /v1，客户端自己拼版本段");
         System.out.println("StatusTest: " + checks + " checks");
     }
 
