@@ -142,6 +142,19 @@ void CaptureCipherKey(JNIEnv *env, jobject thiz, jlong handle, jbyteArray key, j
     if (g_original_cipher_key) g_original_cipher_key(env, thiz, handle, key, page_size, version);
 }
 
+bool ContainsCI(const char *text, const char *needle);
+void DumpJavaStack(JNIEnv *env, const char *reason);
+
+using EncodeFn = jbyteArray (*)(JNIEnv *, jobject, jbyteArray, jint);
+EncodeFn g_original_encode = nullptr;
+int g_encode_dumped = 0;
+
+// OnJniEncodeWxPkg is called for every outgoing packet; its Java stack names the mars caller.
+jbyteArray CaptureEncode(JNIEnv *env, jobject thiz, jbyteArray data, jint kind) {
+    if (!__atomic_exchange_n(&g_encode_dumped, 1, __ATOMIC_ACQ_REL)) DumpJavaStack(env, "OnJniEncodeWxPkg");
+    return g_original_encode ? g_original_encode(env, thiz, data, kind) : data;
+}
+
 bool ContainsCI(const char *text, const char *needle) {
     if (!text || !needle) return false;
     for (const char *p = text; *p; ++p) {
@@ -211,6 +224,8 @@ void AppendLine(const char *name, const char *text) {
 }
 
 void CaptureStartTask(JNIEnv *env, jobject thiz, jobject task) {
+    static int entered = 0;
+    if (__atomic_add_fetch(&entered, 1, __ATOMIC_RELAXED) <= 300) AppendLine("starttask.log", "entered");
     static int seen = 0;
     if (task && !env->ExceptionCheck() && __atomic_load_n(&seen, __ATOMIC_RELAXED) < 300) {
         __atomic_add_fetch(&seen, 1, __ATOMIC_RELAXED);
@@ -255,6 +270,10 @@ jint ObserveRegister(JNIEnv *env, jclass clazz, const JNINativeMethod *methods, 
                        !strcmp(copy[i].signature, "(Lcom/tencent/mars/stn/StnManager$Task;)V")) {
                 g_original_start_task = reinterpret_cast<StartTaskFn>(copy[i].fnPtr);
                 copy[i].fnPtr = reinterpret_cast<void *>(CaptureStartTask);
+            } else if (!g_original_encode && !strcmp(copy[i].name, "OnJniEncodeWxPkg") &&
+                       !strcmp(copy[i].signature, "([BI)[B")) {
+                g_original_encode = reinterpret_cast<EncodeFn>(copy[i].fnPtr);
+                copy[i].fnPtr = reinterpret_cast<void *>(CaptureEncode);
             }
         }
         argument = copy;
