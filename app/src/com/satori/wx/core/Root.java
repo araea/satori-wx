@@ -117,21 +117,24 @@ public final class Root {
         public static final Device DENIED = new Device(false, false, false, false, false, "", "", null, 0);
     }
 
-    static final String PROBE = String.join("\n",
-            "M=" + MODULE,
-            "U=" + MODULE_UPDATE,
-            "[ -d \"$M\" ] && echo module=1",
-            "[ -f \"$M/disable\" ] && echo disabled=1",
-            "[ -f \"$M/remove\" ] && echo removing=1",
-            "{ [ -d \"$U\" ] || [ -f \"$M/update\" ]; } && echo update=1",
-            "[ -f \"$M/module.prop\" ] && sed -n 's/^version=/version=/p' \"$M/module.prop\" | head -n 1",
-            "[ -f \"$U/module.prop\" ] && sed -n 's/^version=/update_version=/p' \"$U/module.prop\" | head -n 1",
-            "[ -f \"$M/satori-wx.conf\" ] && echo \"conf=$(base64 -w 0 < \"$M/satori-wx.conf\")\"",
-            "echo \"pid=$(pidof " + WECHAT + " | cut -d ' ' -f 1)\"",
-            "true");
+    /** 探测脚本；目录可换，只为让 tests/RootScriptTest 在临时目录上真跑一遍。 */
+    public static String probeScript(String module, String update) {
+        return String.join("\n",
+                "M=" + module,
+                "U=" + update,
+                "[ -d \"$M\" ] && echo module=1",
+                "[ -f \"$M/disable\" ] && echo disabled=1",
+                "[ -f \"$M/remove\" ] && echo removing=1",
+                "{ [ -d \"$U\" ] || [ -f \"$M/update\" ]; } && echo update=1",
+                "[ -f \"$M/module.prop\" ] && sed -n 's/^version=/version=/p' \"$M/module.prop\" | head -n 1",
+                "[ -f \"$U/module.prop\" ] && sed -n 's/^version=/update_version=/p' \"$U/module.prop\" | head -n 1",
+                "[ -f \"$M/satori-wx.conf\" ] && echo \"conf=$(base64 -w 0 < \"$M/satori-wx.conf\")\"",
+                "echo \"pid=$(pidof " + WECHAT + " | cut -d ' ' -f 1)\"",
+                "true");
+    }
 
     public static Device probe() {
-        Result result = run(PROBE);
+        Result result = run(probeScript(MODULE, MODULE_UPDATE));
         if (!result.granted) return Device.DENIED;
         return parse(result.out);
     }
@@ -176,30 +179,35 @@ public final class Root {
     // ------------------------------------------------------------------ 写
 
     /**
-     * 原子写入配置：先写同目录的临时文件、设好属主 0:0、权限 0600 与原文件的 SELinux 上下文，
+     * 原子写入配置：先写同目录的临时文件、设好属主 0:0、权限 0600 与模块目录的 SELinux 上下文，
      * 再 rename 覆盖，任何时刻都不会留下半个文件。模块有待生效的更新（modules_update）时一并写入，
      * 否则重启后更新包里的旧配置会把这次修改盖掉。最后读回比对。
      */
     public static Result writeConf(String text) {
+        return run(writeScript(text, MODULE, MODULE_UPDATE));
+    }
+
+    /** 写配置的脚本；目录可换，理由同 {@link #probeScript}。 */
+    public static String writeScript(String text, String module, String update) {
         String b64 = Base64.getEncoder().encodeToString(text.getBytes(StandardCharsets.UTF_8));
-        String script = String.join("\n",
+        return String.join("\n",
                 "set -e",
                 "umask 077",
                 "wrote=0",
-                "for D in " + MODULE + " " + MODULE_UPDATE + "; do",
+                "for D in " + module + " " + update + "; do",
                 "  [ -d \"$D\" ] || continue",
                 "  T=\"$D/.satori-wx.conf.new\"",
                 "  printf '%s' '" + b64 + "' | base64 -d > \"$T\"",
                 "  chown 0:0 \"$T\"",
                 "  chmod 0600 \"$T\"",
-                "  ctx=$(stat -c %C \"$D/satori-wx.conf\" 2>/dev/null || stat -c %C \"$D/module.prop\" 2>/dev/null || true)",
+                // 上下文以安装器设好的 module.prop 为准：旧配置若被 sed -i 之类改坏过，不能把错误延续下去。
+                "  ctx=$(stat -c %C \"$D/module.prop\" 2>/dev/null || stat -c %C \"$D/satori-wx.conf\" 2>/dev/null || true)",
                 "  [ -n \"$ctx\" ] && chcon \"$ctx\" \"$T\" 2>/dev/null || true",
                 "  mv -f \"$T\" \"$D/satori-wx.conf\"",
                 "  wrote=1",
                 "done",
                 "[ \"$wrote\" = 1 ]",
-                "[ \"$(base64 -w 0 < " + MODULE + "/satori-wx.conf)\" = '" + b64 + "' ]");
-        return run(script);
+                "[ \"$(base64 -w 0 < " + module + "/satori-wx.conf)\" = '" + b64 + "' ]");
     }
 
     /**

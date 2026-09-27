@@ -278,3 +278,11 @@ JADX 也可用：`~/tools/jadx/bin/jadx --single-class <点分名> -d <输出目
 - `module.prop` / `native/version.h`：当前 **v0.6.7**（装机 **v0.6.6**；v0.6.7 把密钥捕获并入主模块、删除独立 probe、模块名改为“知言”）
 - 近期：`56cbac5` 预热等派发器 → `f797dcb` 读侧补齐 + unsupported → `1b34615` v0.6.4 读侧 →
   `62228ec` 状态语义+预热 → `0895aac` 状态计数 → `d92ee8f` r1.y.k() 修复 → `8e71852` 发送打通
+
+## 13. 管理应用（`app/`）
+
+`app/` 是独立构建的 Android 原生管理界面（`com.satori.wx`，需要 JDK / aapt，与纯 native 的模块构建互不依赖）。
+它通过 `su` 读写 `satori-wx.conf`、经 `/v1/internal/status` 与 `/v1/meta` 看状态、用 `guild.list` / `friend.list`
+给白名单挑会话。**改 `ReadConfig` 的规则时同步改 `app/src/com/satori/wx/core/Conf.java`**——`app/test.sh` 的
+`ConfTest` 会把同一批样例交给两边比对，不一致就失败。`internal/status` 的 `send` 块字段名被应用读取
+（`enabled`、`allow`、计数与 `last_*`），改名要同步。设计规范见 `docs/app-design.md`。

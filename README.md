@@ -62,6 +62,9 @@ send=off
 只在精确匹配的微信主进程内运行。非目标进程和 system_server 请求卸载模块。
 服务端只监听 **127.0.0.1**，随微信主进程结束而退出；配置更改在下一次进程启动生效。
 
+也可以用 **知言应用**（[`app/`](app/README.md)）管理：查看连接链路、编辑发送开关与白名单
+（从服务读群与联系人挑选）、端口与令牌，并一键重新启动微信让配置生效。应用需要 Root 授权。
+
 Satori 客户端填写：
 
 - API：`http://127.0.0.1:5601/v1`
@@ -165,6 +168,7 @@ HTTP 每次响应后关闭连接；暂不提供 TLS、chunked 请求体、资源
 - [标准 Zygisk 模块接口](https://github.com/topjohnwu/zygisk-module-sample)：当前沿用本地 API v4 头。
 - [Satori HTTP API](https://satori.chat/zh-CN/protocol/api.html)、[事件](https://satori.chat/zh-CN/protocol/events.html)、[元信息](https://satori.chat/zh-CN/advanced/meta.html)。
 - [**交接文档（下一位接手先读）**](docs/HANDOFF.md)。
+- [知言应用设计规范](docs/app-design.md)。
 - [研究记录与已知边界](docs/native-server.md)。
 - [只读账号身份说明](docs/wechat-account.md)。
 - [消息后端设计（native、低特征）](docs/wechat-store.md)。

@@ -30,4 +30,9 @@ CP="$JSON_JAR:$OUT/classes"
 java -cp "$CP" -Dparity="$OUT/conf-parity" ConfTest
 java -cp "$CP" StatusTest
 java -cp "$CP" -Dapp="$R" DesignTokenTest
+if su -c true >/dev/null 2>&1; then
+  java -cp "$CP" RootScriptTest
+else
+  echo "   skip RootScriptTest（没有 su）"
+fi
 echo "== DONE =="
