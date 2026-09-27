@@ -227,6 +227,7 @@ bool ResolveJava(JNIEnv *env) {
     g_j.ch_badge = env->GetMethodID(g_j.cls_channel, "setShowBadge", "(Z)V");
     Clear(env);
 
+    if (!g_j.get_app_context || !g_j.get_service) return false;
     jobject app_context = env->CallObjectMethod(application, g_j.get_app_context);
     Clear(env);
     if (!app_context) app_context = application;
@@ -285,7 +286,7 @@ bool ResolveJava(JNIEnv *env) {
 
     // The host's own launcher icon, resolved once; the fallback is a system drawable so the
     // notification is always valid even if the icon lookup fails.
-    jobject app_info = env->CallObjectMethod(g_j.context, g_j.get_app_info);
+    jobject app_info = g_j.get_app_info ? env->CallObjectMethod(g_j.context, g_j.get_app_info) : nullptr;
     Clear(env);
     if (app_info && g_j.app_icon) {
         g_j.icon = env->GetIntField(app_info, g_j.app_icon);
@@ -308,18 +309,20 @@ bool ResolveJava(JNIEnv *env) {
     jobject channel = env->NewObject(g_j.cls_channel, g_j.channel_ctor, String(env, kChannel),
                                      String(env, kChannelName), kImportanceLow);
     Clear(env);
-    if (channel) {
+    if (channel && g_j.ch_desc && g_j.ch_badge && g_j.nm_create) {
         env->CallVoidMethod(channel, g_j.ch_desc, String(env, "知言 Satori 服务的运行状态"));
         env->CallVoidMethod(channel, g_j.ch_badge, JNI_FALSE);
         Clear(env);
         env->CallVoidMethod(g_j.nm, g_j.nm_create, channel);
         Clear(env);
-        env->DeleteLocalRef(channel);
     }
+    if (channel) env->DeleteLocalRef(channel);
 
+    // Only mark ready when every method called unconditionally below is present; a null
+    // method ID would be a hard crash, not a Java exception.
     const bool complete = g_j.lock && g_j.wifi_lock && g_j.builder_ctor && g_j.b_icon && g_j.b_title &&
-                          g_j.b_text && g_j.b_build && g_j.big_ctor && g_j.big_set && g_j.pi_activity &&
-                          g_j.pi_broadcast && g_j.intent_ctor && g_j.intent_component && g_j.component_ctor;
+                          g_j.b_text && g_j.b_style && g_j.b_ongoing && g_j.b_alert && g_j.b_when &&
+                          g_j.b_category && g_j.b_build && g_j.big_ctor && g_j.big_set && g_j.nm_notify;
     g_j.ok = complete;
     return complete;
 }
@@ -348,7 +351,11 @@ void ApplyLock(JNIEnv *env) {
 // Periodic restart of WeChat's own core service: a started service in the main process keeps
 // it at SERVICE_ADJ, above the freezer cutoff, without any hook.
 void Kick(JNIEnv *env) {
-    if (!g_j.start_service || !g_j.context || !g_j.intent_ctor) return;
+    if (!g_j.start_service || !g_j.context || !g_j.cls_intent || !g_j.intent_ctor ||
+        !g_j.cls_component || !g_j.component_ctor || !g_j.intent_component) {
+        snprintf(g_service_detail, sizeof(g_service_detail), "unavailable");
+        return;
+    }
     jobject intent = env->NewObject(g_j.cls_intent, g_j.intent_ctor);
     if (!intent) { Clear(env); snprintf(g_service_detail, sizeof(g_service_detail), "intent-failed"); return; }
     jobject component = env->NewObject(g_j.cls_component, g_j.component_ctor,
@@ -442,7 +449,7 @@ void Notify(JNIEnv *env) {
     Clear(env);
 
     // Tap opens WeChat; the launcher intent already carries FLAG_ACTIVITY_NEW_TASK.
-    if (g_j.launch_intent && g_j.get_package_manager && g_j.pi_activity) {
+    if (g_j.launch_intent && g_j.get_package_manager && g_j.pi_activity && g_j.b_content_intent) {
         jobject manager = env->CallObjectMethod(g_j.context, g_j.get_package_manager);
         jobject launch = manager ? env->CallObjectMethod(manager, g_j.launch_intent, String(env, kHostPackage)) : nullptr;
         Clear(env);
@@ -458,7 +465,8 @@ void Notify(JNIEnv *env) {
 
     // Action button: a broadcast to the companion app, which forwards the toggle to
     // POST /v1/internal/wakelock. The module cannot host a receiver without loading code.
-    if (g_j.pi_broadcast && g_j.intent_ctor && g_j.component_ctor && g_j.b_action) {
+    if (g_j.pi_broadcast && g_j.intent_ctor && g_j.intent_component && g_j.intent_put_int &&
+        g_j.intent_put_string && g_j.intent_put_bool && g_j.component_ctor && g_j.b_action) {
         jobject action = env->NewObject(g_j.cls_intent, g_j.intent_ctor);
         jobject component = env->NewObject(g_j.cls_component, g_j.component_ctor,
                                            String(env, kTogglerPackage), String(env, kTogglerReceiver));
