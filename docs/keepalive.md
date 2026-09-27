@@ -11,12 +11,21 @@
 全部是公开 Android 框架 API 的 JNI 调用：**不加载 dex、不定义类、不改 ArtMethod**，
 这也是按钮不能直接在进程内注册接收器的原因。
 
-- **常驻状态通知**：低重要性、静默、`ongoing` 的通道 `satori-wx-status`。标题/正文跟随真实状态：
-  服务没监听 / 等待登录 / 运行中（带端口与发送开关）；正文附加唤醒锁状态。点击用微信的
-  launcher intent 打开微信。每 3 秒刷新一次，内容没变就只检查条目还在不在
+- **常驻状态通知**：低重要性、静默、`ongoing` 的通道 `satori-wx-status`，状态色与 satori-qq 一致
+  （在线=品牌色 / 等待=琥珀 / 异常=错误红）。标题/正文跟随真实状态：服务在监听且已登录 /
+  等待登录 / 已登录但端口没监听；正文带**在连客户端数**（WebSocket，与 satori-qq 的 connection
+  count 同义）与**在线时长**，大文本再附唤醒锁与发送状态。点击用微信的 launcher intent 打开微信。
+  每 3 秒刷新一次，内容没变就只检查条目还在不在
   （`NotificationManager.getActiveNotifications()`），被微信在前台清掉后自动补发。
 - **唤醒锁**：一个 `PARTIAL_WAKE_LOCK`（tag `satori-wx:wakelock`）加一个尽力而为的
   `WIFI_MODE_FULL_HIGH_PERF`，都 `setReferenceCounted(false)`。默认关；通知上的按钮切换它。
+  对齐 satori-qq 的 `WakeLockCtl`，还有两路自动持有：
+  - **出站期间自动持有**（`KeepaliveWakelockBegin/End`，引用计数）：`message.create`、
+    `message.delete`、`channel.delete`、`guild.member.kick`、`guild.member.role.set/unset` 在
+    派发期间持有 CPU 锁，避免息屏后微信内核的上传 / 派发被电源管理掐掉；自动持有带 180 秒上限，
+    卡死的发送不会一直占着 CPU。用户手动的持有是不定时长的。
+  - **有客户端连接时保 Wi-Fi**：只要有一个 `/v1/events` WebSocket 客户端在连，就保持 Wi-Fi 锁，
+    避免息屏省电把回环事件挤在队列里（对应 satori-qq 的 `sustainWifi`）。
   按钮自身是一个 `PendingIntent.getBroadcast`，指向知言应用导出的
   `com.satori.wx.keepalive.WakeToggleReceiver`，Intent 里带当前 `port` / `token` / 目标 `on` 状态。
   接收器把 `{"on":…}` POST 到 `http://127.0.0.1:<port>/v1/internal/wakelock`，模块在
@@ -32,8 +41,15 @@
 "keepalive": {
   "notification": true,          // 最近一次发布成功
   "notifications_enabled": true, // 系统里微信的通知权限是否打开
-  "wakelock": false,             // 用户意图
-  "wakelock_held": false,        // OS 实际持有
+  "wakelock": false,             // 用户意图（与 "user" 同值，兼容旧版应用）
+  "wakelock_held": false,        // OS 实际持有 CPU 或 Wi-Fi（兼容旧版应用）
+  "user": false,                 // 用户意图（通知按钮）
+  "auto": 0,                     // 正在进行的出站自动持有层数
+  "cpu_held": false,             // CPU 锁是否真的持有
+  "wifi_held": false,            // Wi-Fi 锁是否真的持有
+  "sustain_wifi": true,          // 是否因有客户端连接而保 Wi-Fi
+  "clients": 1,                  // 在连的 /v1/events 客户端数
+  "uptime_ms": 3600000,          // 已登录且在监听的时长
   "service": "ok",               // 最近一次 startService：ok / blocked
   "notify": "posted",            // posted / disabled / build-failed / notify-failed / no-context
   "reposts": 2,                  // 被清掉后补发次数

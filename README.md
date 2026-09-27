@@ -1,6 +1,6 @@
 # 知言（satori-wx）
 
-微信 `com.tencent.mm` 的 Zygisk 模块。v0.8.0 在 **Satori v1 服务端**
+微信 `com.tencent.mm` 的 Zygisk 模块。v0.8.1 在 **Satori v1 服务端**
 （C++ + POSIX socket，无 DEX、Java 助手、APK、ArtMethod 偏移或 hook 引擎）之上，
 加入**只读的微信账号身份 / 消息库适配层**，内置 **`upload.create` 与 `/v1/proxy` 资源路由**，
 以及一个**默认关闭的反射写操作集**（发送/撤回 + 群管理）。
@@ -29,7 +29,7 @@
 
 产物：
 
-- `build/satori-wx-server-v0.8.0.zip`，模块 ID `satori_wx`。
+- `build/satori-wx-server-v0.8.1.zip`，模块 ID `satori_wx`。
 - `build/module-server/`，服务端模块目录。
 - `build/satori-wx-account`，读取某个微信数据目录并打印推导出的登录事件（诊断用，不联网）。
 - `build/satori-wx-wcdb`，只读 SQLCipher/SQLite 客户端，用微信自己的 libWCDB 读导出数据库（诊断用）。
@@ -78,7 +78,7 @@ Satori 客户端填写：
 | --- | --- |
 | `POST /v1/meta` | 已登录时返回只读身份快照 `{"logins":[...],"proxy_urls":[]}`；无账号时 `logins` 为空 |
 | `POST /v1/meta/webhook.create` / `webhook.delete` | 注册/注销 WebHook（`url` 必填、`token` 可选）；标准可选功能 |
-| `POST /v1/internal/status` | 实验版版本、native 状态、`send` 与 `keepalive`（常驻通知、唤醒锁、进程 adj/wchan）状态块；项目自定义诊断接口 |
+| `POST /v1/internal/status` | 实验版版本、native 状态、`send` 与 `keepalive`（常驻通知、CPU/Wi-Fi 唤醒锁、自动持有、在连客户端、进程 adj/wchan）状态块；项目自定义诊断接口 |
 | `POST /v1/internal/wakelock` | 切换模块在微信进程内持有的 CPU / Wi-Fi 唤醒锁（`{"on":true|false}` 或 `{"toggle":true}`）；常驻通知上的按钮通过知言应用转到这个接口 |
 | `POST /v1/login.get` | 返回已登记账号快照；未登录或身份不匹配时返回 403 |
 | `POST /v1/{resource}.{method}` | 37 个标准方法的参数校验及 native 后端分发；已实现读侧 `message.get/list`、`user.get`、`friend.list`、`guild.get/list`、`guild.member.get/list`、`guild.role.list`、`guild.member.role.list`、`channel.get/list`、`user.channel.create`、`upload.create`；`send=on` 时另实现 `message.create/delete`、`channel.delete`（退群）、`guild.member.kick`、`guild.member.role.set/unset`（反射，见下与 [群管理](docs/wechat-room.md)）；其余返回 404 |
@@ -118,22 +118,27 @@ HTTP 每次响应后关闭连接；暂不提供 TLS、chunked 请求体、资源
 
 停用或卸载模块后，结束已有微信进程并按模块管理器要求重启；已有进程中的线程不会因删除模块目录自行退出。
 
-## 常驻通知、唤醒锁与保活（v0.7.0）
+## 常驻通知、唤醒锁与保活（v0.7.0，v0.8.1 与知弦对齐）
 
 模块在微信主进程内提供三项保活能力，全部走 Android 公开框架 API 的 JNI 调用：不加载 dex、
-不定义类、不改 ArtMethod。
+不定义类、不改 ArtMethod。通知与唤醒锁的行为对齐姊妹模块知弦（satori-qq）的 `StatusNotice` /
+`WakeLockCtl`。
 
-- **常驻状态通知**：低重要性、静默的常驻条目，标题/正文跟随真实状态（等待登录 / 运行中 /
-  服务未启动）与唤醒锁开关，点击打开微信；微信在前台清掉自家通知后会自动补发。
+- **常驻状态通知**：低重要性、静默的常驻条目，状态色同样是「在线 / 等待 / 异常」三档；标题/正文
+  跟随真实状态（等待登录 / 运行中 / 服务异常），正文带在连客户端数与在线时长，大文本附唤醒锁与
+  发送状态；点击打开微信；微信在前台清掉自家通知后会自动补发。
 - **唤醒锁**：通知上的「获取/释放唤醒锁」按钮切换一个 `PARTIAL_WAKE_LOCK` 与一个尽力而为的
-  `WIFI_MODE_FULL_HIGH_PERF` 锁，锁由微信进程持有。按钮是一个显式广播，落到知言应用的
-  导出接收器 `com.satori.wx.keepalive.WakeToggleReceiver`，它再转到回环上的
+  `WIFI_MODE_FULL_HIGH_PERF` 锁，锁由微信进程持有。除了用户开关，模块还在**出站派发期间自动
+  持有**（引用计数，带 180 秒上限，卡死的发送不会一直占着 CPU），并在**有客户端连接时保持
+  Wi-Fi 锁**——分别对应知弦的 `WakeLockCtl.begin()/end()` 与 `sustainWifi()`。按钮是一个显式
+  广播，落到知言应用的导出接收器 `com.satori.wx.keepalive.WakeToggleReceiver`，它再转到回环上的
   `POST /v1/internal/wakelock`（模块纯 native，进程里没有能注册接收器的代码）。
 - **进程内保活**：每 10 分钟重新 `startService` 微信自己的 `com.tencent.mm.booter.CoreService`，
   让主进程停在 SERVICE_ADJ 而不是 CACHED，从而不被系统 freezer 冻结。
 
 `/v1/internal/status` 与 `/v1/internal/capabilities` 的 `keepalive` 块报告通知是否发布、
-唤醒锁是否持有、上次 `startService` 结果，以及本进程的 `oom_score_adj` 与 `wchan`。
+用户意图与 OS 实际持有的 CPU / Wi-Fi 锁、自动持有的层数、保 Wi-Fi 的原因（客户端数）、
+已在线时长、上次 `startService` 结果，以及本进程的 `oom_score_adj` 与 `wchan`。
 
 **root 侧看守 `wxguard`**（模块自带，`service.sh` 开机恢复）：让微信在一台已 root 的设备上
 尽量不被冻结、不被回收。状态落盘在 `/data/adb/satori-wx/guard.state`，`ARMED` / `PAUSED` 区分

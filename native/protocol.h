@@ -40,6 +40,10 @@ extern volatile int g_login_count;
 // True once the listener is bound. The in-process keeper reports it in the notification so
 // a port conflict is visible instead of showing a healthy-but-deaf service.
 extern volatile bool g_server_ready;
+// Open /v1/events WebSocket clients (not transient HTTP requests). The in-process keeper uses
+// it the way satori-qq uses its connection count: to keep the Wi-Fi radio out of screen-off
+// power save while a Satori client is actually attached, and to show it on the notification.
+extern volatile int g_client_count;
 const cJSON *FindLogin(Hub *hub, const char *platform, const char *user);
 uint64_t Latest(Hub *hub);
 bool CanResume(Hub *hub, uint64_t sn);

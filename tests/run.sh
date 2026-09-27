@@ -30,6 +30,10 @@ clang++ -std=c++20 -O1 -g -fno-exceptions -fno-rtti -nostdinc++ -nostdlib++ \
     "$R/native/tempstore.cpp" "$R/native/webhook.cpp" "$R/native/wx_account.cpp" "$R/native/wx_adapter.cpp" \
     "$R/build/tests/cjson.o" -llog -o "$R/build/tests/capabilities-test"
 "$R/build/tests/capabilities-test"
+clang++ -std=c++20 -O1 -g -fno-exceptions -fno-rtti -nostdinc++ -nostdlib++ \
+    -Wall -Wextra -Werror -I "$R/native" "$R/tests/keepalive_test.cpp" "$R/native/wx_keepalive.cpp" \
+    "$R/native/protocol.cpp" "$R/build/tests/cjson.o" -llog -o "$R/build/tests/keepalive-test"
+"$R/build/tests/keepalive-test"
 clang++ -std=c++20 -O1 -g -fno-exceptions -fno-rtti -fno-threadsafe-statics -nostdinc++ -nostdlib++ \
     -Wall -Wextra -Werror -I "$R/native" "$R/tests/content_test.cpp" "$R/native/protocol.cpp" \
     "$R/build/tests/cjson.o" -o "$R/build/tests/content-test"

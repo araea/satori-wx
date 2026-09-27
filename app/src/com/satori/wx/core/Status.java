@@ -396,7 +396,9 @@ public final class Status {
         JSONObject keep = serving ? s.status.optJSONObject("keepalive") : null;
         String keepalive = keep == null ? "—"
                 : (keep.optBoolean("notification") ? "常驻通知已发布" : "常驻通知未发布")
-                        + " · 唤醒锁" + (keep.optBoolean("wakelock") ? "开启" : "关闭");
+                        + " · 唤醒锁" + (keep.optBoolean("wakelock") ? "开启" : "关闭")
+                        + (keep.has("cpu_held") ? "（CPU " + (keep.optBoolean("cpu_held") ? "持有" : "释放")
+                                + " · Wi-Fi " + (keep.optBoolean("wifi_held") ? "持有" : "释放") + "）" : "");
         return new String[][]{
                 {"知言应用", appVersion == null || appVersion.isEmpty() ? "未知" : appVersion},
                 {"已安装的模块", module},

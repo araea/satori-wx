@@ -10,7 +10,9 @@
 //   * a resident status notification (low importance, ongoing) whose tap opens WeChat and
 //     whose action button toggles a wake lock;
 //   * a partial CPU wake lock plus a best-effort high-performance Wi-Fi lock, toggled by the
-//     notification button or by POST /v1/internal/wakelock;
+//     notification button or by POST /v1/internal/wakelock; the module also takes a ref-counted
+//     hold around outbound work and sustains the Wi-Fi lock while a Satori client is attached,
+//     mirroring satori-qq's WakeLockCtl;
 //   * a periodic restart of WeChat's own core service, which keeps the main process at
 //     SERVICE_ADJ instead of CACHED so the system freezer leaves it alone.
 //
@@ -21,6 +23,11 @@ namespace satori {
 struct Config;
 void KeepaliveStart(void *vm, const Config &config);
 void KeepaliveWakelock(int action, bool *held); // action: 0=off, 1=on, 2=toggle
+// Ref-counted automatic hold for the duration of one outbound mutation. A wedged send cannot
+// keep the CPU awake longer than the safety timeout; nested calls share one underlying lock.
+// Unlike KeepaliveWakelock() this never redraws the notification (the user intent is unchanged).
+void KeepaliveWakelockBegin();
+void KeepaliveWakelockEnd();
 // Adds the "keepalive" block to /v1/internal/status and /v1/internal/capabilities.
 void KeepaliveStatus(cJSON *object);
 } // namespace satori

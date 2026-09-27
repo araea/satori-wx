@@ -32,6 +32,12 @@ constexpr int kReqToggle = 0x5A710004;
 constexpr long long kKickIntervalMs = 10 * 60 * 1000;
 constexpr long long kTickIntervalMs = 3000;
 constexpr long long kRepostGapMs = 3000;
+// An automatic (module-driven) hold can never outlive a wedged send by more than this.
+constexpr long long kAutoTimeoutMs = 180 * 1000;
+// Notification accent roles, matching satori-qq: brand / readable amber / Material error.
+constexpr int kColorOnline = 0xFF5D438B;
+constexpr int kColorWait = 0xFF775A0B;
+constexpr int kColorDegraded = 0xFFBA1A1A;
 constexpr const char *kChannel = "satori-wx-status";
 constexpr const char *kChannelName = "知言服务状态";
 constexpr const char *kLockTag = "satori-wx:wakelock";
@@ -49,6 +55,15 @@ bool g_send = false;
 
 volatile bool g_want_lock = false;
 volatile bool g_lock_held = false;
+// Nesting depth of module-driven holds around outbound work; a user hold is independent.
+volatile int g_auto_depth = 0;
+// Hold the Wi-Fi radio for as long as a Satori client is attached, independent of the CPU hold.
+volatile bool g_sustain_wifi = false;
+volatile bool g_cpu_held = false;
+volatile bool g_wifi_held = false;
+bool g_untimed = false; // g_mu: the CPU lock we currently hold was taken without a timeout
+long long g_serving_since_ms = 0; // when online && listening most recently became true
+bool g_was_serving = false;
 volatile bool g_notify_ok = false;
 volatile bool g_notify_enabled = false;
 volatile long long g_reposts = 0;
@@ -113,7 +128,8 @@ struct Java {
     jmethodID nm_create = nullptr, nm_notify = nullptr, nm_enabled = nullptr, nm_active = nullptr;
     jmethodID builder_ctor = nullptr, b_icon = nullptr, b_title = nullptr, b_text = nullptr,
               b_style = nullptr, b_ongoing = nullptr, b_alert = nullptr, b_when = nullptr,
-              b_category = nullptr, b_content_intent = nullptr, b_action = nullptr, b_build = nullptr;
+              b_category = nullptr, b_content_intent = nullptr, b_action = nullptr, b_build = nullptr,
+              b_color = nullptr;
     jmethodID big_ctor = nullptr, big_set = nullptr;
     jmethodID pi_activity = nullptr, pi_broadcast = nullptr;
     jmethodID intent_ctor = nullptr, intent_component = nullptr, intent_put_int = nullptr,
@@ -121,7 +137,7 @@ struct Java {
     jmethodID component_ctor = nullptr;
     jmethodID channel_ctor = nullptr, ch_desc = nullptr, ch_badge = nullptr;
     jmethodID pm_new_lock = nullptr, lock_acquire = nullptr, lock_release = nullptr,
-              lock_held = nullptr, lock_refcount = nullptr;
+              lock_held = nullptr, lock_refcount = nullptr, lock_acquire_timeout = nullptr;
     jmethodID wifi_new_lock = nullptr, wlock_acquire = nullptr, wlock_release = nullptr,
               wlock_held = nullptr, wlock_refcount = nullptr;
     jmethodID sbn_id = nullptr;
@@ -235,6 +251,8 @@ bool ResolveJava(JNIEnv *env) {
     g_j.b_when = Method(env, g_j.cls_builder, "setShowWhen", chain);
     snprintf(chain, sizeof(chain), "(Ljava/lang/String;)%s", builder);
     g_j.b_category = Method(env, g_j.cls_builder, "setCategory", chain);
+    snprintf(chain, sizeof(chain), "(I)%s", builder);
+    g_j.b_color = Method(env, g_j.cls_builder, "setColor", chain);
     snprintf(chain, sizeof(chain), "(Landroid/app/PendingIntent;)%s", builder);
     g_j.b_content_intent = Method(env, g_j.cls_builder, "setContentIntent", chain);
     snprintf(chain, sizeof(chain), "(ILjava/lang/CharSequence;Landroid/app/PendingIntent;)%s", builder);
@@ -297,6 +315,7 @@ bool ResolveJava(JNIEnv *env) {
     if (lock) {
         jclass lock_class = env->GetObjectClass(lock);
         g_j.lock_acquire = Method(env, lock_class, "acquire", "()V");
+        g_j.lock_acquire_timeout = Method(env, lock_class, "acquire", "(J)V");
         g_j.lock_release = Method(env, lock_class, "release", "()V");
         g_j.lock_held = Method(env, lock_class, "isHeld", "()Z");
         g_j.lock_refcount = Method(env, lock_class, "setReferenceCounted", "(Z)V");
@@ -368,18 +387,44 @@ bool IsHeld(JNIEnv *env, jobject lock, jmethodID method) {
     return held == JNI_TRUE;
 }
 
-// Brings the OS locks in line with the user's intent. Caller holds g_mu and g_j.ok.
+// Brings the OS locks in line with the two reasons we might want them: the user toggle and any
+// automatic hold around outbound work. Caller holds g_mu and g_j.ok.
 void ApplyLock(JNIEnv *env) {
-    const bool want = g_want_lock;
-    const bool cpu_held = IsHeld(env, g_j.lock, g_j.lock_held);
-    if (want && !cpu_held && g_j.lock_acquire) env->CallVoidMethod(g_j.lock, g_j.lock_acquire);
-    else if (!want && cpu_held && g_j.lock_release) env->CallVoidMethod(g_j.lock, g_j.lock_release);
-    Clear(env);
+    const bool want_cpu = g_want_lock || g_auto_depth > 0;
+    if (want_cpu) {
+        if (g_want_lock) {
+            // A user hold is untimed. PowerManager only cancels the pending timeout releaser on
+            // release(), so promoting a timed lock has to release first; otherwise it expires.
+            if (IsHeld(env, g_j.lock, g_j.lock_held) && !g_untimed && g_j.lock_release) {
+                env->CallVoidMethod(g_j.lock, g_j.lock_release);
+                Clear(env);
+            }
+            if (!IsHeld(env, g_j.lock, g_j.lock_held) && g_j.lock_acquire) env->CallVoidMethod(g_j.lock, g_j.lock_acquire);
+            g_untimed = true;
+        } else if (g_j.lock_acquire_timeout) {
+            // An automatic hold expires on its own if a send wedges; re-arms on every nested hold.
+            env->CallVoidMethod(g_j.lock, g_j.lock_acquire_timeout, static_cast<jlong>(kAutoTimeoutMs));
+            g_untimed = false;
+        } else if (!IsHeld(env, g_j.lock, g_j.lock_held) && g_j.lock_acquire) {
+            env->CallVoidMethod(g_j.lock, g_j.lock_acquire);
+            g_untimed = true;
+        }
+        Clear(env);
+    } else if (IsHeld(env, g_j.lock, g_j.lock_held) && g_j.lock_release) {
+        env->CallVoidMethod(g_j.lock, g_j.lock_release);
+        Clear(env);
+        g_untimed = false;
+    }
+    // The Wi-Fi radio outlives a single send: inbound events queue behind screen-off power save
+    // just as badly as an upload fails behind it.
+    const bool want_wifi = want_cpu || g_sustain_wifi;
     const bool wifi_held = IsHeld(env, g_j.wifi_lock, g_j.wlock_held);
-    if (want && !wifi_held && g_j.wlock_acquire) env->CallVoidMethod(g_j.wifi_lock, g_j.wlock_acquire);
-    else if (!want && wifi_held && g_j.wlock_release) env->CallVoidMethod(g_j.wifi_lock, g_j.wlock_release);
+    if (want_wifi && !wifi_held && g_j.wlock_acquire) env->CallVoidMethod(g_j.wifi_lock, g_j.wlock_acquire);
+    else if (!want_wifi && wifi_held && g_j.wlock_release) env->CallVoidMethod(g_j.wifi_lock, g_j.wlock_release);
     Clear(env);
-    g_lock_held = IsHeld(env, g_j.lock, g_j.lock_held) || IsHeld(env, g_j.wifi_lock, g_j.wlock_held);
+    g_cpu_held = IsHeld(env, g_j.lock, g_j.lock_held);
+    g_wifi_held = IsHeld(env, g_j.wifi_lock, g_j.wlock_held);
+    g_lock_held = g_cpu_held || g_wifi_held;
 }
 
 // Periodic restart of WeChat's own core service: a started service in the main process keeps
@@ -409,18 +454,50 @@ void Kick(JNIEnv *env) {
     env->DeleteLocalRef(intent);
 }
 
-void RenderState(char *title, size_t title_size, char *text, size_t text_size, char *big, size_t big_size) {
-    if (!g_server_ready) {
-        snprintf(title, title_size, "知言 · 服务未启动");
-        snprintf(text, text_size, "端口 %u 没有监听，请检查配置", g_port);
-    } else if (g_login_count <= 0) {
-        snprintf(title, title_size, "知言 · 等待登录");
-        snprintf(text, text_size, "服务在 127.0.0.1:%u，等待微信登录", g_port);
-    } else {
+void FormatUptime(long long ms, char *out, size_t size) {
+    if (ms < 0) ms = 0;
+    const long long seconds = ms / 1000, minutes = seconds / 60, hours = minutes / 60, days = hours / 24;
+    if (days > 0) snprintf(out, size, "%lld 天 %lld 小时", days, hours % 24);
+    else if (hours > 0) snprintf(out, size, "%lld 小时 %lld 分", hours, minutes % 60);
+    else if (minutes > 0) snprintf(out, size, "%lld 分", minutes);
+    else snprintf(out, size, "%lld 秒", seconds);
+}
+
+// Renders the resident entry from live state and returns its accent color. The online/listening
+// split, the attached-client count and the uptime line mirror satori-qq's StatusNotice; the
+// CPU/Wi-Fi detail mirrors its WakeLockCtl.
+int RenderState(char *title, size_t title_size, char *text, size_t text_size, char *big, size_t big_size) {
+    const bool online = g_login_count > 0;
+    const bool listening = g_server_ready;
+    const int clients = g_client_count > 0 ? g_client_count : 0;
+    int color = kColorDegraded;
+    if (online && listening) {
+        color = kColorOnline;
         snprintf(title, title_size, "知言 · 运行中");
-        snprintf(text, text_size, "已登录 · 127.0.0.1:%u · %s", g_port, g_send ? "发送已开启" : "只收不发");
+        if (clients == 0) snprintf(text, text_size, "等待客户端连接 · 端口 %u", g_port);
+        else snprintf(text, text_size, "已连接 %d 个客户端 · 端口 %u", clients, g_port);
+    } else if (!online) {
+        color = kColorWait;
+        snprintf(title, title_size, "知言 · 等待登录");
+        if (listening) snprintf(text, text_size, "打开微信登录，即可连接服务");
+        else snprintf(text, text_size, "等待微信登录与本地服务启动");
+    } else {
+        snprintf(title, title_size, "知言 · 服务异常");
+        snprintf(text, text_size, "本地端口 %u 未监听", g_port);
     }
-    snprintf(big, big_size, "%s\n%s\n唤醒锁：%s", title, text, g_want_lock ? "已开启" : "已关闭");
+    int used = snprintf(big, big_size, "%s\n%s", title, text);
+    if (used < 0 || static_cast<size_t>(used) >= big_size) return color;
+    if (online && listening && g_serving_since_ms > 0) {
+        char uptime[48];
+        FormatUptime(NowMs() - g_serving_since_ms, uptime, sizeof(uptime));
+        used += snprintf(big + used, big_size - used, "\n已在线 %s", uptime);
+        if (used < 0 || static_cast<size_t>(used) >= big_size) return color;
+    }
+    used += snprintf(big + used, big_size - used, "\n唤醒锁 %s：CPU %s · Wi-Fi %s", g_want_lock ? "已开启" : "已关闭",
+                     g_cpu_held ? "持有" : "释放", g_wifi_held ? "持有" : "释放");
+    if (used < 0 || static_cast<size_t>(used) >= big_size) return color;
+    snprintf(big + used, big_size - used, "\n发送 %s", g_send ? "已开启" : "只收不发");
+    return color;
 }
 
 bool StillPosted(JNIEnv *env) {
@@ -453,8 +530,9 @@ void Notify(JNIEnv *env) {
     g_notify_enabled = enabled;
 
     char title[96], text[160], big[320], key[320];
-    RenderState(title, sizeof(title), text, sizeof(text), big, sizeof(big));
-    snprintf(key, sizeof(key), "%s|%s|%d|%d|%d", title, text, g_login_count, g_want_lock ? 1 : 0, g_send ? 1 : 0);
+    const int color = RenderState(title, sizeof(title), text, sizeof(text), big, sizeof(big));
+    snprintf(key, sizeof(key), "%s|%s|%d|%d|%d|%d", title, text, g_login_count, g_want_lock ? 1 : 0,
+             g_cpu_held ? 1 : 0, g_wifi_held ? 1 : 0);
     const bool changed = strcmp(key, g_last_key) != 0;
     const long long now = NowMs();
     const bool alive = changed || StillPosted(env);
@@ -480,6 +558,7 @@ void Notify(JNIEnv *env) {
     env->CallObjectMethod(builder, g_j.b_alert, JNI_TRUE);
     env->CallObjectMethod(builder, g_j.b_when, JNI_FALSE);
     env->CallObjectMethod(builder, g_j.b_category, String(env, "service"));
+    if (g_j.b_color) env->CallObjectMethod(builder, g_j.b_color, color);
     Clear(env);
 
     // Tap opens WeChat; the launcher intent already carries FLAG_ACTIVITY_NEW_TASK.
@@ -586,6 +665,12 @@ void *Manager(void *) {
             pthread_mutex_lock(&g_mu);
             if (g_j.ok) {
                 if (env->PushLocalFrame(96) == 0) {
+                    // Derive the Wi-Fi sustain from live state: a client is actually attached.
+                    const bool serving = g_server_ready && g_login_count > 0;
+                    if (serving && !g_was_serving) g_serving_since_ms = NowMs();
+                    if (!serving) g_serving_since_ms = 0;
+                    g_was_serving = serving;
+                    g_sustain_wifi = serving && g_client_count > 0;
                     ApplyLock(env);
                     if (NowMs() - g_kick_ms >= kKickIntervalMs) Kick(env);
                     Notify(env);
@@ -634,6 +719,25 @@ void KeepaliveWakelock(int action, bool *held) {
     pthread_mutex_unlock(&g_mu);
 }
 
+// Ref-counted automatic hold around one outbound mutation. A wedged send cannot hold the CPU
+// past kAutoTimeoutMs; nested calls share the one underlying lock. No notification redraw:
+// the user intent did not change, only the transient CPU/Wi-Fi state.
+void KeepaliveWakelockBegin() {
+    pthread_mutex_lock(&g_mu);
+    g_auto_depth = g_auto_depth + 1;
+    JNIEnv *env = g_vm ? Env() : nullptr;
+    if (env && g_j.ok && env->PushLocalFrame(32) == 0) { ApplyLock(env); env->PopLocalFrame(nullptr); }
+    pthread_mutex_unlock(&g_mu);
+}
+
+void KeepaliveWakelockEnd() {
+    pthread_mutex_lock(&g_mu);
+    if (g_auto_depth > 0) g_auto_depth = g_auto_depth - 1;
+    JNIEnv *env = g_vm ? Env() : nullptr;
+    if (env && g_j.ok && env->PushLocalFrame(32) == 0) { ApplyLock(env); env->PopLocalFrame(nullptr); }
+    pthread_mutex_unlock(&g_mu);
+}
+
 void KeepaliveStatus(cJSON *object) {
     if (!object) return;
     cJSON *keep = cJSON_AddObjectToObject(object, "keepalive");
@@ -642,6 +746,13 @@ void KeepaliveStatus(cJSON *object) {
     cJSON_AddBoolToObject(keep, "notifications_enabled", g_notify_enabled);
     cJSON_AddBoolToObject(keep, "wakelock", g_want_lock);
     cJSON_AddBoolToObject(keep, "wakelock_held", g_lock_held);
+    cJSON_AddBoolToObject(keep, "user", g_want_lock);
+    cJSON_AddNumberToObject(keep, "auto", g_auto_depth);
+    cJSON_AddBoolToObject(keep, "cpu_held", g_cpu_held);
+    cJSON_AddBoolToObject(keep, "wifi_held", g_wifi_held);
+    cJSON_AddBoolToObject(keep, "sustain_wifi", g_sustain_wifi);
+    cJSON_AddNumberToObject(keep, "clients", g_client_count);
+    cJSON_AddNumberToObject(keep, "uptime_ms", static_cast<double>(g_serving_since_ms > 0 ? NowMs() - g_serving_since_ms : 0));
     cJSON_AddStringToObject(keep, "service", g_service_detail);
     cJSON_AddStringToObject(keep, "notify", g_notify_detail);
     cJSON_AddNumberToObject(keep, "reposts", static_cast<double>(g_reposts));

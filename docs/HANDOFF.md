@@ -12,7 +12,7 @@
 **纯 native C++**：无 DEX、无 Java 助手、无 ArtMethod 改写、无 hook 引擎。连发送都是纯反射调用
 微信自己的代码，不加载任何额外东西。
 
-- **当前版本 v0.8.0**（v0.8.0：按官方资源最佳实践内置 `upload.create` + `/v1/proxy`，`message.create` 改为返回 `Message[]`；新增反射群管理 `channel.delete`(退群)/`guild.member.kick`/`guild.member.role.set/unset`；v0.7.1：修 keepalive JNI 截断崩溃；v0.7.0：取消发送白名单 + 常驻通知/唤醒锁 + wxguard）。
+- **当前版本 v0.8.1**（v0.8.1：常驻通知与唤醒锁对齐知弦——状态色 / 在线时长 / 在连客户端数、出站期自动持有唤醒锁（带超时）、有客户端在连时保 Wi-Fi；v0.8.0：按官方资源最佳实践内置 `upload.create` + `/v1/proxy`，`message.create` 改为返回 `Message[]`；新增反射群管理 `channel.delete`(退群)/`guild.member.kick`/`guild.member.role.set/unset`；v0.7.1：修 keepalive JNI 截断崩溃；v0.7.0：取消发送白名单 + 常驻通知/唤醒锁 + wxguard）。
 - 家账号：`wxid_8zxjsghrk8vz41`。模块配置：`send=on`（白名单已取消，任意会话可发）。
 
 ## 2. 协议覆盖（37 个标准方法）
@@ -35,9 +35,9 @@
 ```sh
 cd /data/data/com.termux/files/home/dev/araea/satori-wx
 ./build.sh          # 服务端 ZIP + satori-wx-check + satori-wx-account + satori-wx-wcdb
-./tests/run.sh      # 22 socket + 10 协议 + account + wcdb + store + capabilities + webhook
+./tests/run.sh      # 22 socket + 11 协议 + account + wcdb + store + capabilities + keepalive + webhook
 
-su -c 'ksud module install build/satori-wx-server-v0.8.0.zip'   # 装机（暂存，重启才生效）
+su -c 'ksud module install build/satori-wx-server-v0.8.1.zip'   # 装机（暂存，重启才生效）
 su -c 'setsid sh -c "sleep 60; /system/bin/reboot" </dev/null >/dev/null 2>&1 &'
 ```
 
@@ -77,7 +77,7 @@ send=off            # 默认关闭；on 才进 features 并允许向任意会话
 | `native/wx_send.cpp/.h` | 反射发送器 + 状态/计数快照（无白名单、无限速）；并对外暴露 ReflectEnv/ReflectResolve/ReflectLoad/ReflectDispatchScene 供群管理复用 |
 | `native/wx_room.cpp/.h` | 反射群管理写操作：`qn.p`（踢人/退群，`m1` 派发）与 `qn.b`/`qn.e`（设/撤管理员，`z2.d` Cgi 派发） |
 | `native/tempstore.cpp/.h` | 内置 `upload.create` 的落盘与 TTL；`/v1/proxy` 的 `internal:.../_tmp/...` 目标 |
-| `native/wx_keepalive.cpp/.h` | 微信进程内常驻状态通知、唤醒锁、每 10 分钟重启微信自己的 CoreService；`keepalive` 状态块 |
+| `native/wx_keepalive.cpp/.h` | 微信进程内常驻状态通知（状态色 / 在线时长 / 在连客户端数）、唤醒锁（用户开关 + 出站期自动持有 + 客户端在连时保 Wi-Fi）、每 10 分钟重启微信自己的 CoreService；`keepalive` 状态块 |
 | `native/wx_key.cpp/.h` | 捕获 SQLCipher 密钥：RegisterNatives 指针替换，只取 setCipherKey/nativeSetKey |
 | `tools/wxguard.sh` | root 侧看守（`service.sh` 开机恢复，`action.sh` 切换，`docs/keepalive.md`） |
 | `tools/*.py` | 离线 DEX 分析工具（见 §9） |
@@ -308,7 +308,7 @@ JADX 也可用：`~/tools/jadx/bin/jadx --single-class <点分名> -d <输出目
 
 ## 12. 版本与提交
 
-- `module.prop` / `native/version.h`：当前 **v0.8.0**（v0.8.0 资源路由 upload/proxy + message.create 返回数组 + 反射群管理；v0.7.1 修 keepalive JNI 截断崩溃；v0.7.0 取消白名单 + 常驻通知/唤醒锁 + wxguard）
+- `module.prop` / `native/version.h`：当前 **v0.8.1**（v0.8.1 常驻通知/唤醒锁对齐知弦；v0.8.0 资源路由 upload/proxy + message.create 返回数组 + 反射群管理；v0.7.1 修 keepalive JNI 截断崩溃；v0.7.0 取消白名单 + 常驻通知/唤醒锁 + wxguard）
 - 近期：`56cbac5` 预热等派发器 → `f797dcb` 读侧补齐 + unsupported → `1b34615` v0.6.4 读侧 →
   `62228ec` 状态语义+预热 → `0895aac` 状态计数 → `d92ee8f` r1.y.k() 修复 → `8e71852` 发送打通
   → `af751de` 协议资源路由 → `e5c9a1c` 群写操作
@@ -320,5 +320,5 @@ JADX 也可用：`~/tools/jadx/bin/jadx --single-class <点分名> -d <输出目
 挑会话；常驻通知上的唤醒锁按钮是一个显式广播落到应用的 `keepalive.WakeToggleReceiver`，它再把
 切换转到 `internal/wakelock`。**改 `ReadConfig` 的规则时同步改 `app/src/com/satori/wx/core/Conf.java`**
 ——`app/test.sh` 的 `ConfTest` 会把同一批样例交给两边比对，不一致就失败。`internal/status` 的 `send`
-与 `keepalive` 块字段名被应用读取（`enabled`、计数与 `last_*`；`notification`、`wakelock`），改名要同步。
+与 `keepalive` 块字段名被应用读取（`enabled`、计数与 `last_*`；`notification`、`wakelock`、`cpu_held`、`wifi_held`），改名要同步。
 设计规范见 `docs/app-design.md`。

@@ -13,7 +13,7 @@ echo "== 0. 服务端 ReadConfig（native/server.cpp）=="
 clang -std=c11 -O1 -c "$NATIVE/vendor/cjson/cJSON.c" -o "$OUT/cjson.o"
 clang++ -std=c++20 -O1 -fno-exceptions -fno-rtti -nostdinc++ -nostdlib++ -Wall -Wextra -Werror \
   -I "$NATIVE" "$R/tests/conf_parity.cpp" "$NATIVE/server.cpp" "$NATIVE/protocol.cpp" "$NATIVE/multipart.cpp" \
-  "$NATIVE/webhook.cpp" "$OUT/cjson.o" -o "$OUT/conf-parity"
+  "$NATIVE/tempstore.cpp" "$NATIVE/webhook.cpp" "$OUT/cjson.o" -o "$OUT/conf-parity"
 
 echo "== 1. javac =="
 AAPT=/data/data/com.termux/files/home/android/android-sdk-tools/build-tools/aapt

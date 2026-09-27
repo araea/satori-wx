@@ -1,5 +1,6 @@
 #include "wx_backend.h"
 #include "wx_capabilities.h"
+#include "wx_keepalive.h"
 #include "wx_live.h"
 #include "wx_room.h"
 #include "wx_send.h"
@@ -12,6 +13,22 @@
 namespace satori {
 namespace {
 constexpr size_t kOutgoingMax = 4000;
+
+// Holds the CPU (and, through the shared keeper, the Wi-Fi radio) for the duration of one
+// outbound mutation, mirroring satori-qq's WakeLockCtl.begin()/end(): WeChat's kernel can
+// upload while a scene runs, and a screen-off CPU/radio makes that transfer fail. The hold is
+// ref-counted and expires on its own, so a wedged send cannot keep the device awake.
+struct OutboundHold {
+    explicit OutboundHold(bool on) : on_(on) { if (on_) KeepaliveWakelockBegin(); }
+    ~OutboundHold() { if (on_) KeepaliveWakelockEnd(); }
+    bool on_;
+};
+
+bool IsOutbound(const char *name) {
+    return !strcmp(name, "message.create") || !strcmp(name, "message.delete") ||
+           !strcmp(name, "channel.delete") || !strcmp(name, "guild.member.kick") ||
+           !strcmp(name, "guild.member.role.set") || !strcmp(name, "guild.member.role.unset");
+}
 
 const char *Text(const Request &request, const char *key) {
     const cJSON *value = cJSON_GetObjectItemCaseSensitive(request.params, key);
@@ -65,6 +82,7 @@ Response Failure(const char *code, const char *detail, bool rejected) {
 
 Response Call(void *, const Request &request) {
     const char *name = request.method->name;
+    const OutboundHold hold(name && IsOutbound(name));
     Store *store = LiveStore();
 
     if (!strcmp(name, "message.create")) {

@@ -56,7 +56,15 @@ bool EqualToken(const char *a, const char *b) {
     for (size_t i = 0; i < size; ++i) diff |= static_cast<unsigned char>(a[i] ^ b[i]);
     return diff == 0;
 }
-void Drop(Client &c) { if (c.fd >= 0) close(c.fd); c.fd = -1; }
+void Drop(Client &c) {
+    if (c.fd >= 0) {
+        close(c.fd);
+        // Only WebSocket clients count: transient HTTP requests would make the keeper toggle
+        // the Wi-Fi lock on every status poll. c.ws stays set, so this cannot double-count.
+        if (c.ws && g_client_count > 0) g_client_count = g_client_count - 1;
+    }
+    c.fd = -1;
+}
 bool Queue(Client &c, const void *data, size_t size) {
     if (c.sent) {
         memmove(c.output, c.output + c.sent, c.pending - c.sent);
@@ -339,7 +347,7 @@ void Http(Client &c, const Config &config, Hub *hub, const Backend *backend, Web
         char accept[29], response[256]; WebSocketAccept(header("Sec-WebSocket-Key"), accept);
         const int n = snprintf(response, sizeof(response), "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\n"
                                "Connection: Upgrade\r\nSec-WebSocket-Accept: %s\r\n\r\n", accept);
-        Queue(c, response, n); c.ws = true; c.deadline = Now() + kRequestMs;
+        Queue(c, response, n); c.ws = true; g_client_count = g_client_count + 1; c.deadline = Now() + kRequestMs;
         memmove(c.input, c.input + length, c.used - length); c.used -= length;
         return;
     }
