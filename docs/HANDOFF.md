@@ -12,7 +12,7 @@
 **纯 native C++**：无 DEX、无 Java 助手、无 ArtMethod 改写、无 hook 引擎。连发送都是纯反射调用
 微信自己的代码，不加载任何额外东西。
 
-- **装机版本 v0.6.6**；**repo 版本 v0.6.7**（v0.6.6：预热重试 §6.4 + Satori `content` 拍平 §6.5 + `message.delete` 撤回 §6.6；v0.6.7：密钥捕获并入主模块、删掉独立 probe、模块名改为“知言”，随下次重启一起上）。
+- **装机版本 v0.6.7**；**repo 版本 v0.6.8**（v0.6.7：密钥捕获并入主模块、删掉独立 probe、模块名改为“知言”；v0.6.8：账号身份改为优先读 MMKV `MMKV_Name_LastLoginInfo`——微信 8.0.78 会把 `com.tencent.mm_preferences.xml` 重写成不含登录键，旧版因此报 `logins: []`，随下次重启一起上）。
 - 家账号：`wxid_8zxjsghrk8vz41`。模块配置：`send=on` + `send_allow=filehelper`。
 
 ## 2. 协议覆盖（37 个标准方法）
@@ -37,7 +37,7 @@ cd /data/data/com.termux/files/home/dev/araea/satori-wx
 ./build.sh          # 服务端 ZIP + satori-wx-check + satori-wx-account + satori-wx-wcdb
 ./tests/run.sh      # 22 socket + 10 协议 + account + wcdb + store + capabilities + webhook
 
-su -c 'ksud module install build/satori-wx-server-v0.6.7.zip'   # 装机（暂存，重启才生效）
+su -c 'ksud module install build/satori-wx-server-v0.6.8.zip'   # 装机（暂存，重启才生效）
 su -c 'setsid sh -c "sleep 60; /system/bin/reboot" </dev/null >/dev/null 2>&1 &'
 ```
 
@@ -275,7 +275,7 @@ JADX 也可用：`~/tools/jadx/bin/jadx --single-class <点分名> -d <输出目
 
 ## 12. 版本与提交
 
-- `module.prop` / `native/version.h`：当前 **v0.6.7**（装机 **v0.6.6**；v0.6.7 把密钥捕获并入主模块、删除独立 probe、模块名改为“知言”）
+- `module.prop` / `native/version.h`：当前 **v0.6.8**（装机 **v0.6.7**；v0.6.8 账号身份优先读 MMKV）
 - 近期：`56cbac5` 预热等派发器 → `f797dcb` 读侧补齐 + unsupported → `1b34615` v0.6.4 读侧 →
   `62228ec` 状态语义+预热 → `0895aac` 状态计数 → `d92ee8f` r1.y.k() 修复 → `8e71852` 发送打通
 

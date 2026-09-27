@@ -48,6 +48,14 @@ struct Fixture {
         remove(path);
         Path(path, sizeof(path), "auth_info_key_prefs.xml");
         remove(path);
+        snprintf(path, sizeof(path), "%s/files/mmkv/MMKV_Name_LastLoginInfo", dir);
+        remove(path);
+        snprintf(path, sizeof(path), "%s/files/mmkv/MMKV_Name_LastLoginInfo.crc", dir);
+        remove(path);
+        snprintf(path, sizeof(path), "%s/files/mmkv", dir);
+        rmdir(path);
+        snprintf(path, sizeof(path), "%s/files", dir);
+        rmdir(path);
         snprintf(path, sizeof(path), "%s/shared_prefs", dir);
         rmdir(path);
         rmdir(dir);
@@ -66,6 +74,52 @@ struct Fixture {
         Path(path, sizeof(path), "auth_info_key_prefs.xml");
         snprintf(xml, sizeof(xml), "<?xml version='1.0' encoding='utf-8' standalone='yes' ?>\n<map>\n%s</map>\n", body);
         return WriteFile(path, xml);
+    }
+};
+
+// Builds an MMKV file the way WeChat 8.0.78 writes MMKV_Name_LastLoginInfo: a zero header,
+// a size placeholder varint, then [key][string value] records; the valid length goes into the
+// .crc meta file at offset 28 (meta version 3+) unless header_size asks for the old layout.
+struct Mmkv {
+    unsigned char data[4096] = {};
+    size_t used = 9; // 4-byte header + 5-byte placeholder varint (0xffffff07-style holder)
+    Mmkv() { data[4] = 0xff; data[5] = 0xff; data[6] = 0xff; data[7] = 0xff; data[8] = 0x07; }
+    void Varint(uint32_t v) {
+        while (v >= 0x80) { data[used++] = static_cast<unsigned char>(v | 0x80); v >>= 7; }
+        data[used++] = static_cast<unsigned char>(v);
+    }
+    Mmkv &Put(const char *key, const char *value) {
+        const size_t k = strlen(key), v = strlen(value);
+        Varint(static_cast<uint32_t>(k));
+        memcpy(data + used, key, k); used += k;
+        Varint(static_cast<uint32_t>(v + (v < 0x80 ? 1 : 2)));
+        Varint(static_cast<uint32_t>(v));
+        memcpy(data + used, value, v); used += v;
+        return *this;
+    }
+    bool Write(const Fixture &fixture, bool header_size, size_t valid = 0) const {
+        char path[512];
+        snprintf(path, sizeof(path), "%s/files", fixture.dir);
+        mkdir(path, 0700);
+        snprintf(path, sizeof(path), "%s/files/mmkv", fixture.dir);
+        mkdir(path, 0700);
+        const uint32_t size = static_cast<uint32_t>(valid ? valid : used - 4);
+        unsigned char copy[4096];
+        memcpy(copy, data, sizeof(copy));
+        if (header_size) memcpy(copy, &size, 4);
+        snprintf(path, sizeof(path), "%s/files/mmkv/MMKV_Name_LastLoginInfo", fixture.dir);
+        int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
+        if (fd < 0 || write(fd, copy, sizeof(copy)) != static_cast<ssize_t>(sizeof(copy))) { if (fd >= 0) close(fd); return false; }
+        close(fd);
+        unsigned char meta[4096] = {};
+        const uint32_t version = 5;
+        memcpy(meta + 4, &version, 4);
+        if (!header_size) memcpy(meta + 28, &size, 4);
+        snprintf(path, sizeof(path), "%s/files/mmkv/MMKV_Name_LastLoginInfo.crc", fixture.dir);
+        fd = open(path, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
+        if (fd < 0 || write(fd, meta, sizeof(meta)) != static_cast<ssize_t>(sizeof(meta))) { if (fd >= 0) close(fd); return false; }
+        close(fd);
+        return true;
     }
 };
 
@@ -283,10 +337,70 @@ void TestHubIntegration() {
 }
 } // namespace
 
+// WeChat 8.0.78 rewrote com.tencent.mm_preferences.xml without the login keys; identity now
+// lives only in MMKV. This is the exact shape seen on the device on 2026-09-28.
+void TestMmkvIdentity() {
+    Fixture fixture;
+    Check(fixture.Main("<boolean name=\"Main_need_read_top_margin\" value=\"false\" />\n"
+                       "<int name=\"heavy_user_session_cnt\" value=\"31\" />\n"), "trimmed main prefs");
+    Check(fixture.Auth("<int name=\"_auth_uin\" value=\"1114861342\" />\n"), "auth prefs");
+    Mmkv mmkv;
+    mmkv.Put("last_login_use_voice", "58368").Put("last_login_uin", "1114861342")
+        .Put("login_weixin_username", "wxid_8zxjsghrk8vz41").Put("last_login_nick_name", "旧昵称")
+        .Put("last_login_alias", "nawyjx").Put("last_login_bind_mobile", "19558338697")
+        .Put("last_login_nick_name", "知言"); // appended later: the last record wins
+    Check(mmkv.Write(fixture, false), "write mmkv (size in .crc)");
+    satori::Account account;
+    Check(satori::ReadAccount(fixture.dir, &account), "read mmkv account");
+    Check(account.exists && account.online, "mmkv identity exists and is online by auth uin");
+    Check(!strcmp(account.wxid, "wxid_8zxjsghrk8vz41"), "mmkv wxid");
+    Check(!strcmp(account.uin, "1114861342"), "mmkv uin");
+    Check(!strcmp(account.nickname, "知言"), "last mmkv record wins");
+    Check(!strcmp(account.alias, "nawyjx") && !strcmp(account.mobile, "19558338697"), "mmkv alias and mobile");
+
+    // Another account authenticated (or the auth record cleared): not online.
+    Check(fixture.Auth("<int name=\"_auth_uin\" value=\"999\" />\n"), "auth prefs other uin");
+    Check(satori::ReadAccount(fixture.dir, &account) && account.exists && !account.online, "auth mismatch is offline");
+    Check(fixture.Auth("<int name=\"_auth_uin\" value=\"0\" />\n"), "auth prefs zero");
+    Check(satori::ReadAccount(fixture.dir, &account) && !account.online, "zero auth uin is offline");
+}
+
+void TestMmkvBounds() {
+    Fixture fixture;
+    Check(fixture.Auth("<int name=\"_auth_uin\" value=\"42\" />\n"), "auth prefs");
+    Mmkv mmkv;
+    mmkv.Put("login_weixin_username", "wxid_valid").Put("last_login_uin", "42");
+    const size_t valid = mmkv.used - 4;
+    mmkv.Put("login_weixin_username", "wxid_stale_beyond_valid_length");
+    Check(mmkv.Write(fixture, false, valid), "write mmkv with stale tail");
+    satori::Account account;
+    Check(satori::ReadAccount(fixture.dir, &account), "read without main prefs");
+    Check(!strcmp(account.wxid, "wxid_valid"), "records past the valid length are ignored");
+    Check(account.online, "online via auth uin");
+
+    Mmkv old;
+    old.Put("login_weixin_username", "wxid_header").Put("last_login_uin", "42");
+    Check(old.Write(fixture, true), "write old-layout mmkv");
+    Check(satori::ReadAccount(fixture.dir, &account) && !strcmp(account.wxid, "wxid_header"), "size from the 4-byte header");
+
+    Mmkv broken;
+    broken.Put("login_weixin_username", "wxid_before_break").Put("last_login_uin", "42");
+    broken.data[broken.used++] = 0x7f; // key length 127 that runs past the data
+    Check(broken.Write(fixture, false), "write truncated mmkv");
+    Check(satori::ReadAccount(fixture.dir, &account) && !strcmp(account.wxid, "wxid_before_break"),
+          "a broken record ends the scan and keeps what came before");
+
+    // The legacy XML still wins nothing over MMKV but fills fields MMKV lacks.
+    Check(fixture.Main("<string name=\"last_login_nick_name\">来自 XML</string>\n"), "main prefs with nickname only");
+    Check(satori::ReadAccount(fixture.dir, &account) && !strcmp(account.nickname, "来自 XML"), "xml fills missing fields");
+}
+
 int main() {
     TestOnlineAccount();
     TestOfflineAndRemoval();
     TestAuthFallback();
+    TestMmkvIdentity();
+    TestMmkvBounds();
     TestEntitiesAndInvalidUtf8();
     TestMissingAndMalformed();
     TestAdapterTransitions();

@@ -1,6 +1,6 @@
 # 知言（satori-wx）
 
-微信 `com.tencent.mm` 的 Zygisk 模块。v0.6.7 在 **Satori v1 服务端**
+微信 `com.tencent.mm` 的 Zygisk 模块。v0.6.8 在 **Satori v1 服务端**
 （C++ + POSIX socket，无 DEX、Java 助手、APK、ArtMethod 偏移或 hook 引擎）之上，
 加入**只读的微信账号身份 / 消息库适配层**，以及一个**默认关闭的反射消息发送与撤回**。
 
@@ -27,7 +27,7 @@
 
 产物：
 
-- `build/satori-wx-server-v0.6.7.zip`，模块 ID `satori_wx`。
+- `build/satori-wx-server-v0.6.8.zip`，模块 ID `satori_wx`。
 - `build/module-server/`，服务端模块目录。
 - `build/satori-wx-account`，读取某个微信数据目录并打印推导出的登录事件（诊断用，不联网）。
 - `build/satori-wx-wcdb`，只读 SQLCipher/SQLite 客户端，用微信自己的 libWCDB 读导出数据库（诊断用）。
@@ -121,6 +121,9 @@ HTTP 每次响应后关闭连接；暂不提供 TLS、chunked 请求体、资源
 - `shared_prefs/com.tencent.mm_preferences.xml`：`login_weixin_username`（wxid）、`last_login_uin`、
   `isLogin`、`last_login_alias`、`last_login_nick_name`、`last_login_bind_mobile`、`login_user_name`。
 - `shared_prefs/auth_info_key_prefs.xml`：`_auth_uin`，作为 uin 缺失时的回退。
+- `files/mmkv/MMKV_Name_LastLoginInfo`（v0.6.8 起）：微信 8.0.78 把上次登录的身份写进这个未加密的 MMKV 文件，
+  并可能把上面的偏好文件重写成不含登录键。两处同名键以 MMKV 为准、偏好文件补缺；有效长度取自 `.crc` 元数据
+  （旧版取文件头），坏记录即停止解析。MMKV 里没有 `isLogin`，此时以 `_auth_uin` 与账号 uin 一致判定在线。
 
 推导出的 Satori 登录以 wxid 作为 `user.id`，昵称与别名作为 `user.nick` / `user.name`。
 `sn` 在账号出现时分配、更新时复用，账号切换会先 `login-removed` 再以新 `sn`

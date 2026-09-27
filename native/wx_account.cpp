@@ -34,10 +34,20 @@ struct Prefs {
         const size_t key_size = strlen(key);
         if (!key_size || key_size >= sizeof(entries[0].key)) return;
         if (Get(key)) return; // Android writes one value per key; keep the first.
-        strcpy(entries[count].key, key);
-        strncpy(entries[count].value, value, sizeof(entries[0].value) - 1);
-        entries[count].value[sizeof(entries[0].value) - 1] = 0;
-        ++count;
+        Put(key, value);
+    }
+    // MMKV is an append-only log: a later record for the same key replaces the earlier one.
+    void Put(const char *key, const char *value) {
+        const size_t key_size = strlen(key);
+        if (!key_size || key_size >= sizeof(entries[0].key)) return;
+        size_t slot = count;
+        for (size_t i = 0; i < count; ++i)
+            if (!strcmp(entries[i].key, key)) slot = i;
+        if (slot == kPrefsEntries) return;
+        strcpy(entries[slot].key, key);
+        strncpy(entries[slot].value, value, sizeof(entries[0].value) - 1);
+        entries[slot].value[sizeof(entries[0].value) - 1] = 0;
+        if (slot == count) ++count;
     }
 };
 
@@ -241,6 +251,88 @@ bool LoadPrefs(const char *path, Prefs *prefs) {
     return ok;
 }
 
+// ---- MMKV (Tencent's mmap key-value store) ------------------------------------------
+//
+// WeChat 8.0.78 keeps the last-login identity in files/mmkv/MMKV_Name_LastLoginInfo and may
+// rewrite com.tencent.mm_preferences.xml without it. The file is unencrypted:
+//   [uint32 header][varint size placeholder]{[varint key length][key][varint value length][value]}*
+// where a string value is itself [varint length][UTF-8]. Records are appended, so the last one
+// for a key wins. Since MMKV meta version 3 the valid length lives in the sibling .crc file
+// (uint32 at offset 28); older files keep it in the 4-byte header. Read-only, bounded, and any
+// record that does not decode cleanly ends the scan instead of guessing.
+constexpr size_t kMmkvMax = 256 * 1024;
+
+bool Varint(const unsigned char *&p, const unsigned char *end, uint32_t *out) {
+    uint32_t value = 0;
+    for (int shift = 0; shift < 35 && p < end; shift += 7) {
+        const unsigned char byte = *p++;
+        value |= static_cast<uint32_t>(byte & 0x7f) << shift;
+        if (!(byte & 0x80)) { *out = value; return true; }
+    }
+    return false;
+}
+
+uint32_t Le32(const unsigned char *p) {
+    return p[0] | (p[1] << 8) | (p[2] << 16) | (static_cast<uint32_t>(p[3]) << 24);
+}
+
+void ParseMmkv(const unsigned char *data, size_t size, size_t valid, Prefs *prefs) {
+    if (size < 4) return;
+    const unsigned char *p = data + 4;
+    const unsigned char *end = data + 4 + (valid && valid <= size - 4 ? valid : size - 4);
+    uint32_t placeholder;
+    if (!Varint(p, end, &placeholder)) return;
+    while (p < end) {
+        uint32_t key_size, value_size;
+        if (!Varint(p, end, &key_size) || !key_size || key_size >= kPrefsKey ||
+            key_size > static_cast<size_t>(end - p)) return;
+        char key[kPrefsKey];
+        memcpy(key, p, key_size);
+        key[key_size] = 0;
+        p += key_size;
+        if (!Varint(p, end, &value_size) || value_size > static_cast<size_t>(end - p)) return;
+        const unsigned char *value = p;
+        const unsigned char *value_end = p + value_size;
+        p = value_end;
+        if (!Utf8(key, key_size)) return;
+        // Only string records are interesting; numbers WeChat stores here are strings too.
+        uint32_t text_size;
+        const unsigned char *text = value;
+        if (!Varint(text, value_end, &text_size) || text + text_size != value_end || text_size >= kPrefsValue) continue;
+        char decoded[kPrefsValue];
+        memcpy(decoded, text, text_size);
+        decoded[text_size] = 0;
+        if (Utf8(decoded, text_size)) prefs->Put(key, decoded);
+    }
+}
+
+bool LoadMmkv(const char *path, Prefs *prefs) {
+    prefs->count = 0;
+    char *data = static_cast<char *>(malloc(kMmkvMax + 1));
+    if (!data) return false;
+    size_t size = 0;
+    const bool ok = ReadFile(path, data, kMmkvMax, &size);
+    if (ok && size >= 4) {
+        size_t valid = Le32(reinterpret_cast<const unsigned char *>(data));
+        if (!valid) {
+            // The .crc meta file is a whole page; only its first 32 bytes matter here.
+            char meta_path[520];
+            unsigned char meta[32];
+            snprintf(meta_path, sizeof(meta_path), "%s.crc", path);
+            const int fd = open(meta_path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+            if (fd >= 0) {
+                ssize_t n;
+                do n = pread(fd, meta, sizeof(meta), 0); while (n < 0 && errno == EINTR);
+                close(fd);
+                if (n == static_cast<ssize_t>(sizeof(meta))) valid = Le32(meta + 28);
+            }
+        }
+        ParseMmkv(reinterpret_cast<const unsigned char *>(data), size, valid, prefs);
+    }
+    free(data);
+    return ok && prefs->count > 0;
+}
+
 void CopyField(char *destination, size_t capacity, const char *source) {
     if (!source || !*source || !capacity) return;
     const size_t size = strlen(source);
@@ -255,32 +347,48 @@ bool ReadAccount(const char *data_dir, Account *account) {
     *account = Account{};
     static const char kMain[] = "/shared_prefs/com.tencent.mm_preferences.xml";
     static const char kAuth[] = "/shared_prefs/auth_info_key_prefs.xml";
+    static const char kMmkv[] = "/files/mmkv/MMKV_Name_LastLoginInfo";
     char path[512];
     const size_t base = strlen(data_dir);
-    if (base + sizeof(kMain) >= sizeof(path) || base + sizeof(kAuth) >= sizeof(path)) return false;
+    if (base + sizeof(kMain) >= sizeof(path) || base + sizeof(kAuth) >= sizeof(path) ||
+        base + sizeof(kMmkv) + 4 >= sizeof(path)) return false;
     memcpy(path, data_dir, base);
-    Prefs *prefs = static_cast<Prefs *>(malloc(sizeof(Prefs)));
-    if (!prefs) return false;
+    Prefs *xml = static_cast<Prefs *>(malloc(sizeof(Prefs)));
+    Prefs *mmkv = static_cast<Prefs *>(malloc(sizeof(Prefs)));
+    if (!xml || !mmkv) { free(xml); free(mmkv); return false; }
     strcpy(path + base, kMain);
-    const bool readable = LoadPrefs(path, prefs);
+    const bool xml_readable = LoadPrefs(path, xml);
+    if (!xml_readable) xml->count = 0;
+    strcpy(path + base, kMmkv);
+    const bool mmkv_readable = LoadMmkv(path, mmkv);
+    const bool readable = xml_readable || mmkv_readable;
     if (readable) {
-        const char *wxid = prefs->Get("login_weixin_username");
-        const char *uin = prefs->Get("last_login_uin");
-        const char *online = prefs->Get("isLogin");
-        CopyField(account->wxid, sizeof(account->wxid), wxid);
-        CopyField(account->uin, sizeof(account->uin), uin);
-        CopyField(account->alias, sizeof(account->alias), prefs->Get("last_login_alias"));
-        CopyField(account->nickname, sizeof(account->nickname), prefs->Get("last_login_nick_name"));
-        CopyField(account->mobile, sizeof(account->mobile), prefs->Get("last_login_bind_mobile"));
-        if (!account->mobile[0]) CopyField(account->mobile, sizeof(account->mobile), prefs->Get("login_user_name"));
-        account->online = online && !strcmp(online, "true");
-        if (!account->wxid[0] || !account->uin[0]) {
-            strcpy(path + base, kAuth);
-            if (LoadPrefs(path, prefs) && !account->uin[0])
-                CopyField(account->uin, sizeof(account->uin), prefs->Get("_auth_uin"));
-        }
+        // The newer MMKV store wins; the XML preferences fill whatever it does not have.
+        auto field = [&](const char *key) -> const char * {
+            const char *value = mmkv_readable ? mmkv->Get(key) : nullptr;
+            return value && *value ? value : xml->Get(key);
+        };
+        CopyField(account->wxid, sizeof(account->wxid), field("login_weixin_username"));
+        CopyField(account->uin, sizeof(account->uin), field("last_login_uin"));
+        CopyField(account->alias, sizeof(account->alias), field("last_login_alias"));
+        CopyField(account->nickname, sizeof(account->nickname), field("last_login_nick_name"));
+        CopyField(account->mobile, sizeof(account->mobile), field("last_login_bind_mobile"));
+        if (!account->mobile[0]) CopyField(account->mobile, sizeof(account->mobile), field("login_user_name"));
+        // isLogin only speaks for the account the XML itself names.
+        const char *xml_wxid = xml->Get("login_weixin_username");
+        const char *online = xml->Get("isLogin");
+        const bool xml_says = online && xml_wxid && !strcmp(xml_wxid, account->wxid);
+        account->online = xml_says && !strcmp(online, "true");
+        strcpy(path + base, kAuth);
+        const bool auth = LoadPrefs(path, xml);
+        const char *auth_uin = auth ? xml->Get("_auth_uin") : nullptr;
+        if (!account->uin[0]) CopyField(account->uin, sizeof(account->uin), auth_uin);
+        // Without an isLogin flag, WeChat's own authenticated uin matching the identity means
+        // the account is signed in (it is cleared or changed on logout / account switch).
+        if (!xml_says) account->online = auth_uin && account->uin[0] && strcmp(auth_uin, "0") && !strcmp(auth_uin, account->uin);
     }
-    free(prefs);
+    free(xml);
+    free(mmkv);
     if (!readable) return false;
     account->exists = account->wxid[0] && account->uin[0];
     if (!account->exists) account->online = false;
