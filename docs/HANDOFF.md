@@ -18,7 +18,7 @@
 | 联系人/群/频道 | ✅ 真机验证 | `user.get` / `friend.list` / `guild.get,list` / `channel.get,list` |
 | 协议可选 WebHook | ✅ | `/v1/meta/webhook.create|delete`，`Satori-Opcode` 推送 |
 | 协议服务端 | ✅ | HTTP RPC、WebSocket、鉴权、37 方法目录、事件回放 |
-| **消息发送** | 🔶 已实现、待真机 | `send=on` 时反射调微信自己的 `v51.r0`+派发器发纯文本；默认关闭、白名单、限速。v0.6.0 真机：解析全通过、`a3.c()` 主进程为 null；v0.6.1 改 `r1.y.k()` 优先，待验 |
+| **消息发送** | ✅ 真机验证 | `send=on` 时反射调微信自己的 `v51.r0`+派发器发纯文本；默认关闭、白名单、限速。v0.6.1 主进程用 `r1.y.k()`（`a3.c()` 只在 `:push` 有效），2026-09-27 向 filehelper 实发成功（netId 0） |
 | guild.member.* / guild.role.* | ⬜ 未做 | 需要 `chatroom` 表成员/角色 |
 
 **已实现并写入 `login.features` 的方法（8 个，`send=on` 时 9 个）**：
@@ -105,7 +105,7 @@ su -c 'nohup sh -c "sleep 20; reboot" >/dev/null 2>&1 &'
 
 **待办**：最终版应把捕获搬进主模块内存，不再落盘 key.log（安全项）。
 
-## 7. 发送（v0.6.1 已解决路径，待真机）
+## 7. 发送（v0.6.1 真机已验证）
 
 **结论：不需要 hook、不需要 dex、不需要碰编译化 `libapp.so`。** 完整结论见
 [docs/wechat-send.md](wechat-send.md)。要点：
@@ -122,7 +122,7 @@ su -c 'nohup sh -c "sleep 20; reboot" >/dev/null 2>&1 &'
    **加密/序号/重发全是微信自己的代码**。派发器必须在构造场景**之前**拿到（构造器写库）。
 
 实现：`native/wx_send.cpp`。默认关闭（`send=off`），`send_allow` 白名单外一律拒绝，
-1.5s 最小间隔 + 每分钟 10 条。**真机尚未验证**；发送是风控最敏感动作，保持默认关闭。
+1.5s 最小间隔 + 每分钟 10 条。**真机已验证**（2026-09-27）；发送是风控最敏感动作，保持默认关闭。
 
 （旧结论「高层入口在编译 dex、只有 4 条不确定路径」已被上面的路径取代；`0.5.0` 的
 §7.1–7.4 不再适用。探针仍可用来观测 mars 任务 cgi。）
@@ -181,7 +181,7 @@ su -c "curl -s -X POST http://127.0.0.1:5601/v1/guild.list \
 2. probe 目前把密钥明文写 `key.log` —— 最终版搬进主模块内存
 3. 微信 `:push` 子进程也在跑 mars；服务端只在主进程
 4. 32 位/其它 ABI 未支持
-5. 发送是风控最敏感动作：`send` 默认关闭 + 限速 + 白名单，且**不伪造成功**（只在微信派发返回 `netId>=0` 时才回 200；真机尚未验证）
+5. 发送是风控最敏感动作：`send` 默认关闭 + 限速 + 白名单，且**不伪造成功**（只在微信派发返回 `netId>=0` 时才回 200；v0.6.1 已真机验证）
 
 ## 12. Git 最近提交（上下文）
 ```
@@ -197,10 +197,9 @@ f004a88 store 等 hub 登录后再轮询
 ## 13. 下一位接手时的第一步
 
 1. `./tests/run.sh` 确认全绿；`git log --oneline -10`
-2. **真机验证发送**（唯一未验的关键项）：提交推送后装模块 + 重启，把 `send=on` +
-   `send_allow=<自己的测试群>` 写进 `/data/adb/modules/satori_wx/satori-wx.conf`，
-   调一次 `POST /v1/message.create`，看 `logcat -s SatoriWx` 与微信里消息是否出现；
-   失败则看返回 502 的 `detail`（哪一步解析/派发失败）。
-3. 发送稳了之后：`internal/capabilities` 里补发送状态与计数，`guild.member.*` /
+2. 发送已在真机验证（2026-09-27，v0.6.1 向 `filehelper` 实发成功）。已装机配置是
+   `send=on` + `send_allow=filehelper`；要接真实用例就把自己的测试会话加进 `send_allow`
+   （分号分隔，wxid 或 `<数字>@chatroom`），改完重启生效。
+3. 接下来：`internal/capabilities` 里补发送状态与计数，`guild.member.*` /
    `guild.role.*`（读 `chatroom` 表）等只读方法逐个开 `features`。
 4. 保持纪律：每个方法真实实现后才进 `features`；破坏性/风控敏感动作默认关闭 + 白名单。

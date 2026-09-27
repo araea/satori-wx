@@ -13,7 +13,7 @@
 | 方法可用性 | 登录快照 features 控制；不支持返回 404，声明支持但无 handler 返回 501，离线返回 503 |
 | login.get / meta / READY | 同一份登录快照；登录身份由只读偏好解析得到，无账号时为空 |
 | message.create / update 的 content | 保留 Satori 标记字符串；提供 native 文本转义 helper，不把标记当 HTML 执行 |
-| message.create（可选发送） | v0.6.0：`send=on` 时反射调微信自己的 NetSceneSendMsg 发纯文本；默认关闭、`send_allow` 白名单、限速；成功＝已派发，非投递确认；真机未验 |
+| message.create（可选发送） | v0.6.1：`send=on` 时反射调微信自己的 NetSceneSendMsg 发纯文本；默认关闭、`send_allow` 白名单、限速；成功＝已派发，非投递确认；2026-09-27 真机向 filehelper 实发成功 |
 | 分页 | params 的 next/direction/limit/order 与后端返回的 data/prev/next 原样传递 |
 | upload.create | multipart/form-data，有界二进制零拷贝解析，字段名与返回 URL 映射由后端实现 |
 | WebSocket | RFC 6455 握手、掩码、文本分片、控制帧交错、UTF-8、关闭、大小限制 |

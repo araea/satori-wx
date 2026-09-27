@@ -70,11 +70,15 @@ com.tencent.mm.network.y2.<init>()   微信自己在 a3.b 里用的空回调（�
 
 - 离线：`tests/capabilities_test.cpp` 覆盖 features 开关、配置解析、白名单/限速/无 VM 的拒绝路径；
   `./tests/run.sh` 全绿。
-- 真机 v0.6.0（2026-09-27）：模块/协议/身份全部 PASS，`features` 已含 `message.create`，
-  **反射解析全部成功**（类、构造器、字段、方法都拿到），唯独 `a3.c()` 在主进程返回 null
-  → 报 `network dispatcher unavailable`。即：主进程没有 mars 的 `j1`，需改用
-  `com.tencent.mm.modelbase.r1.y.k()`（见 §二）。
-- 真机 v0.6.1：改用 `r1.y.k()` 优先 + `a3.c()` 兜底，**待验**。
+- **真机 v0.6.1（2026-09-27）：发送打通。** 开机自检自动向 `filehelper` 调一次
+  `message.create`，得到 `{"channel":{"id":"filehelper","type":1},"id":"3257",...}`，
+  logcat `SatoriWx: sent to filehelper (local id 3257, netId 0)`，`SEND verdict ok=1`。
+- v0.6.0 真机（同一轮）：模块/协议/身份全 PASS、`features` 含 `message.create`、反射解析全通过，
+  但 `a3.c()` 在主进程为 null → `network dispatcher unavailable`。据此改成 `r1.y.k()` 优先。
+- **副作用（v0.6.0 遗留）**：v0.6.0 的实现在拿到派发器**之前**就构造了场景，13 次失败尝试各在
+  `message` 表留下一条 SENDING 行（`3244`–`3256`）。v0.6.1 首次成功发送时 `doScene` 把待发
+  SENDING 消息一并派发，于是这些行也被发到 `filehelper`（只发给自己，无社交影响）。
+  v0.6.1 已把派发器检查移到构造场景之前，不再产生这种孤儿行。
 - 发送是风控最敏感动作，线上必须保持默认关闭、只对白名单开放。
 
 ## 五、已知边界
