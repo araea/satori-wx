@@ -258,20 +258,20 @@ jint ObserveRegister(JNIEnv *env, jclass clazz, const JNINativeMethod *methods, 
         memcpy(copy, methods, static_cast<size_t>(n) * sizeof(JNINativeMethod));
         for (jint i = 0; i < n; ++i) {
             if (!copy[i].name || !copy[i].signature) continue;
-            // Substitute each target only once: if two classes register the same name/signature,
-            // a shared original pointer would make one class call the other's implementation.
-            if (!g_original_set_key && !strcmp(copy[i].name, "nativeSetKey") && !strcmp(copy[i].signature, "(J[B)V")) {
+            // Always substitute: WeChat re-registers these natives several times, and a
+            // one-shot guard would let a later registration restore the original pointer.
+            // Each target is registered by a single class here, so one original pointer is enough.
+            if (!strcmp(copy[i].name, "nativeSetKey") && !strcmp(copy[i].signature, "(J[B)V")) {
                 g_original_set_key = reinterpret_cast<SetKeyFn>(copy[i].fnPtr);
                 copy[i].fnPtr = reinterpret_cast<void *>(CaptureSetKey);
-            } else if (!g_original_cipher_key && !strcmp(copy[i].name, "setCipherKey") && !strcmp(copy[i].signature, "(J[BII)V")) {
+            } else if (!strcmp(copy[i].name, "setCipherKey") && !strcmp(copy[i].signature, "(J[BII)V")) {
                 g_original_cipher_key = reinterpret_cast<SetCipherKeyFn>(copy[i].fnPtr);
                 copy[i].fnPtr = reinterpret_cast<void *>(CaptureCipherKey);
-            } else if (!g_original_start_task && !strcmp(copy[i].name, "OnJniStartTask") &&
+            } else if (!strcmp(copy[i].name, "OnJniStartTask") &&
                        !strcmp(copy[i].signature, "(Lcom/tencent/mars/stn/StnManager$Task;)V")) {
                 g_original_start_task = reinterpret_cast<StartTaskFn>(copy[i].fnPtr);
                 copy[i].fnPtr = reinterpret_cast<void *>(CaptureStartTask);
-            } else if (!g_original_encode && !strcmp(copy[i].name, "OnJniEncodeWxPkg") &&
-                       !strcmp(copy[i].signature, "([BI)[B")) {
+            } else if (!strcmp(copy[i].name, "OnJniEncodeWxPkg") && !strcmp(copy[i].signature, "([BI)[B")) {
                 g_original_encode = reinterpret_cast<EncodeFn>(copy[i].fnPtr);
                 copy[i].fnPtr = reinterpret_cast<void *>(CaptureEncode);
             }
