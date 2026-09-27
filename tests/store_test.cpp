@@ -56,6 +56,8 @@ int main() {
     Check(satori::WcdbExec(writer, "INSERT INTO rcontact VALUES('wxid_friend','fri','好友备注','昵称',3,0)"), "insert friend");
     Check(satori::WcdbExec(writer, "INSERT INTO rcontact VALUES('123@chatroom','','群备注','群名',2,0)"), "insert group contact");
     Check(satori::WcdbExec(writer, "INSERT INTO rcontact VALUES('gh_abc','','','公众号',1,0)"), "insert service");
+    Check(satori::WcdbExec(writer, "CREATE TABLE chatroom(chatroomname TEXT PRIMARY KEY, memberlist TEXT, displayname TEXT, roomowner TEXT, memberCount INTEGER)"), "create chatroom");
+    Check(satori::WcdbExec(writer, "INSERT INTO chatroom VALUES('123@chatroom','wxid_abc;wxid_friend','甲、好友备注','wxid_abc',2)"), "insert chatroom");
     satori::WcdbClose(writer);
 
     satori::Store *store = satori::CreateStoreEx(library, path, nullptr, 0, 0, "self_wxid");
@@ -142,6 +144,38 @@ int main() {
     cJSON *channels = satori::StoreChannelList(store, "123@chatroom", nullptr, 50);
     Check(channels && cJSON_GetArraySize(Item(channels, "data")) == 1, "channel.list");
     cJSON_Delete(channels);
+
+    // Guild members come from the chatroom table: memberlist + displayname + roomowner.
+    cJSON *members = satori::StoreGuildMemberList(store, "123@chatroom", nullptr, 50);
+    Check(members && cJSON_GetArraySize(Item(members, "data")) == 2, "guild.member.list count");
+    const cJSON *first_member = members ? cJSON_GetArrayItem(Item(members, "data"), 0) : nullptr;
+    Check(first_member && !strcmp(Str(first_member, "nick"), "甲"), "member group display name");
+    Check(first_member && !strcmp(Nested(first_member, "user", "id"), "wxid_abc"), "member user id");
+    cJSON_Delete(members);
+    cJSON *member_page = satori::StoreGuildMemberList(store, "123@chatroom", nullptr, 1);
+    Check(member_page && cJSON_GetArraySize(Item(member_page, "data")) == 1 && *Str(member_page, "next"), "member page cursor");
+    cJSON_Delete(member_page);
+    cJSON *one_member = satori::StoreGuildMemberGet(store, "123@chatroom", "wxid_friend");
+    Check(one_member && !strcmp(Str(one_member, "nick"), "好友备注"), "guild.member.get display name");
+    Check(one_member && !strcmp(Nested(one_member, "user", "name"), "好友备注"), "member contact name");
+    cJSON_Delete(one_member);
+    Check(satori::StoreGuildMemberGet(store, "123@chatroom", "nobody") == nullptr, "member.get missing");
+    Check(satori::StoreGuildMemberList(store, "999@chatroom", nullptr, 50) == nullptr, "member.list unknown guild");
+
+    cJSON *roles = satori::StoreGuildRoleList(store, "123@chatroom");
+    Check(roles && cJSON_GetArraySize(Item(roles, "data")) == 2, "guild.role.list");
+    cJSON_Delete(roles);
+    Check(satori::StoreGuildRoleList(store, "999@chatroom") == nullptr, "role.list unknown guild");
+    cJSON *owner_roles = satori::StoreMemberRoleList(store, "123@chatroom", "wxid_abc");
+    Check(owner_roles && !strcmp(Str(cJSON_GetArrayItem(Item(owner_roles, "data"), 0), "id"), "owner"), "owner role");
+    cJSON_Delete(owner_roles);
+    cJSON *member_roles = satori::StoreMemberRoleList(store, "123@chatroom", "wxid_friend");
+    Check(member_roles && !strcmp(Str(cJSON_GetArrayItem(Item(member_roles, "data"), 0), "id"), "member"), "member role");
+    cJSON_Delete(member_roles);
+    cJSON *none_roles = satori::StoreMemberRoleList(store, "123@chatroom", "nobody");
+    Check(none_roles && cJSON_GetArraySize(Item(none_roles, "data")) == 0, "non-member has no roles");
+    cJSON_Delete(none_roles);
+
     satori::DestroyStore(store);
     unlink(path);
     rmdir(directory);

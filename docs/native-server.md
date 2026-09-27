@@ -1,4 +1,4 @@
-> v0.3.0 历史设计记录。当前版本见 [v0.6.3 协议矩阵](satori-conformance.md)、[消息发送路径](wechat-send.md) 和 [部署记录](deployment-v0.4.0.md)。
+> v0.3.0 历史设计记录。当前版本见 [v0.6.4 协议矩阵](satori-conformance.md)、[消息发送路径](wechat-send.md) 和 [部署记录](deployment-v0.4.0.md)。
 
 # v0.3.0 native 服务端研究记录
 

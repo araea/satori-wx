@@ -295,7 +295,7 @@ void Http(Client &c, const Config &config, Hub *hub, const Backend *backend, Web
             cJSON_AddNumberToObject(result, "replay_capacity", static_cast<double>(kHistory));
             cJSON_AddNumberToObject(result, "standard_methods", static_cast<double>(kMethodCount));
             cJSON_AddNumberToObject(result, "sequence", static_cast<double>(Latest(hub)));
-            if (g_status_provider) g_status_provider(result);
+            if (g_status_provider) g_status_provider(result, false);
             char *text = cJSON_PrintUnformatted(result);
             Reply(c, text ? 200 : 500, text ? "OK" : "Internal Server Error", text ? text : "{}"); free(text);
             cJSON_Delete(result);
@@ -310,7 +310,7 @@ void Http(Client &c, const Config &config, Hub *hub, const Backend *backend, Web
             cJSON_AddBoolToObject(result, "webhook", true);
             cJSON_AddNumberToObject(result, "webhooks", static_cast<double>(WebHookCount(hooks)));
             cJSON_AddBoolToObject(result, "proxy", false);
-            if (g_status_provider) g_status_provider(result);
+            if (g_status_provider) g_status_provider(result, true);
             char *text = cJSON_PrintUnformatted(result);
             Reply(c, text ? 200 : 500, text ? "OK" : "Internal Server Error", text ? text : "{}"); free(text);
             cJSON_Delete(result);

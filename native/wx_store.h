@@ -34,4 +34,11 @@ cJSON *StoreGuildList(Store *store, const char *next, int limit);
 cJSON *StoreGuildGet(Store *store, const char *guild_id);
 cJSON *StoreChannelGet(Store *store, const char *channel_id);
 cJSON *StoreChannelList(Store *store, const char *guild_id, const char *next, int limit);
+// Guild members from the `chatroom` table (memberlist + displayname + roomowner).
+// `next` is a member offset. Satori GuildMember objects. Caller frees.
+cJSON *StoreGuildMemberList(Store *store, const char *guild_id, const char *next, int limit);
+cJSON *StoreGuildMemberGet(Store *store, const char *guild_id, const char *user_id);
+// Roles are synthetic: WeChat has no custom guild roles, so `owner` and `member` only.
+cJSON *StoreGuildRoleList(Store *store, const char *guild_id);
+cJSON *StoreMemberRoleList(Store *store, const char *guild_id, const char *user_id);
 } // namespace satori

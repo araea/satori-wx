@@ -449,4 +449,212 @@ cJSON *StoreChannelList(Store *store, const char *guild_id, const char *next, in
     cJSON_AddItemToArray(data, channel);
     return result;
 }
+
+namespace {
+constexpr int kMemberMax = 512; // WeChat group member ceiling
+constexpr char kNameSeparator[] = "\xE3\x80\x81"; // U+3001, WeChat's member display-name joiner
+
+// A chatroom row, copied out of the statement so the lock can be released before use.
+struct Chatroom {
+    char *memberlist;
+    char *displayname;
+    char roomowner[80];
+};
+
+void FreeChatroom(Chatroom *room) {
+    free(room->memberlist);
+    free(room->displayname);
+    room->memberlist = nullptr;
+    room->displayname = nullptr;
+}
+
+// Caller owns the copies inside *room and must call FreeChatroom. Locks internally.
+bool LoadChatroom(Store *store, const char *guild_id, Chatroom *room) {
+    room->memberlist = nullptr;
+    room->displayname = nullptr;
+    room->roomowner[0] = 0;
+    if (!store || !store->db || !SafeSql(guild_id)) return false;
+    pthread_mutex_lock(&store->mutex);
+    char sql[400];
+    snprintf(sql, sizeof(sql),
+             "SELECT memberlist, displayname, roomowner FROM chatroom WHERE chatroomname = '%s' LIMIT 1", guild_id);
+    struct Context { Chatroom *room; int found; };
+    Context context{room, 0};
+    WcdbRow row = [](Wcdb *db, void *stmt, void *raw) -> bool {
+        auto *ctx = static_cast<Context *>(raw);
+        const char *members = WcdbText(db, stmt, 0);
+        const char *names = WcdbText(db, stmt, 1);
+        const char *owner = WcdbText(db, stmt, 2);
+        if (members && *members) {
+            const size_t size = strlen(members);
+            ctx->room->memberlist = static_cast<char *>(malloc(size + 1));
+            if (ctx->room->memberlist) memcpy(ctx->room->memberlist, members, size + 1);
+        }
+        if (names && *names) {
+            const size_t size = strlen(names);
+            ctx->room->displayname = static_cast<char *>(malloc(size + 1));
+            if (ctx->room->displayname) memcpy(ctx->room->displayname, names, size + 1);
+        }
+        if (owner) snprintf(ctx->room->roomowner, sizeof(ctx->room->roomowner), "%s", owner);
+        ctx->found = 1;
+        return false;
+    };
+    WcdbQuery(store->db, sql, row, &context);
+    pthread_mutex_unlock(&store->mutex);
+    if (!context.found) { FreeChatroom(room); return false; }
+    return true;
+}
+
+// Splits in place and returns borrowed pointers into the mutated buffer.
+int SplitMembers(char *list, const char **out, int max) {
+    int count = 0;
+    char *cursor = list;
+    while (cursor && *cursor && count < max) {
+        char *end = strchr(cursor, ';');
+        if (end) *end = 0;
+        out[count++] = cursor;
+        cursor = end ? end + 1 : nullptr;
+    }
+    return count;
+}
+
+int SplitNames(char *names, const char **out, int max) {
+    int count = 0;
+    if (!names) return 0;
+    char *cursor = names;
+    while (*cursor && count < max) {
+        char *end = strstr(cursor, kNameSeparator);
+        if (end) *end = 0;
+        out[count++] = cursor;
+        if (!end) break;
+        cursor = end + sizeof(kNameSeparator) - 1;
+    }
+    return count;
+}
+
+// A Satori User for a member id; falls back to {"id": ...} when rcontact has no row.
+cJSON *MemberUser(Store *store, const char *id) {
+    cJSON *user = OneContact(store, id, 1);
+    if (user) return user;
+    user = cJSON_CreateObject();
+    if (user) cJSON_AddStringToObject(user, "id", id ? id : "");
+    return user;
+}
+
+cJSON *MemberObject(Store *store, const char *id, const char *group_name) {
+    cJSON *member = cJSON_CreateObject();
+    if (!member) return nullptr;
+    cJSON *user = MemberUser(store, id);
+    if (user) cJSON_AddItemToObject(member, "user", user);
+    // The in-group alias is what the group actually shows; keep the contact name on `user`.
+    if (group_name && *group_name) cJSON_AddStringToObject(member, "nick", group_name);
+    return member;
+}
+
+cJSON *RoleObject(const char *id, const char *name) {
+    cJSON *role = cJSON_CreateObject();
+    if (role) {
+        cJSON_AddStringToObject(role, "id", id);
+        cJSON_AddStringToObject(role, "name", name);
+    }
+    return role;
+}
+
+cJSON *RoleList(const char *id, const char *name) {
+    cJSON *result = cJSON_CreateObject();
+    cJSON *data = cJSON_CreateArray();
+    if (!result || !data) { cJSON_Delete(result); cJSON_Delete(data); return nullptr; }
+    cJSON_AddItemToObject(result, "data", data);
+    if (id) cJSON_AddItemToArray(data, RoleObject(id, name));
+    return result;
+}
+} // namespace
+
+cJSON *StoreGuildMemberList(Store *store, const char *guild_id, const char *next, int limit) {
+    if (!store || !store->db) return nullptr;
+    if (limit < 1) limit = 50;
+    if (limit > kListMax) limit = kListMax;
+    long long offset = 0;
+    if (next && *next) {
+        char *end = nullptr;
+        offset = strtoll(next, &end, 10);
+        if (!end || *end || offset < 0) return nullptr;
+    }
+    Chatroom room{};
+    if (!LoadChatroom(store, guild_id, &room)) return nullptr;
+    const char *ids[kMemberMax];
+    const char *names[kMemberMax];
+    const int total = SplitMembers(room.memberlist, ids, kMemberMax);
+    const int named = SplitNames(room.displayname, names, kMemberMax);
+    // The display-name list is positional; only trust it when it lines up with memberlist.
+    const bool aligned = named == total;
+    cJSON *result = cJSON_CreateObject();
+    cJSON *data = cJSON_CreateArray();
+    if (!result || !data) { cJSON_Delete(result); cJSON_Delete(data); FreeChatroom(&room); return nullptr; }
+    cJSON_AddItemToObject(result, "data", data);
+    int index = static_cast<int>(offset);
+    int added = 0;
+    for (; index < total && added < limit; ++index) {
+        cJSON *member = MemberObject(store, ids[index], aligned ? names[index] : nullptr);
+        if (!member) continue;
+        cJSON_AddItemToArray(data, member);
+        ++added;
+    }
+    if (index < total) {
+        char buffer[32];
+        snprintf(buffer, sizeof(buffer), "%d", index);
+        cJSON_AddStringToObject(result, "next", buffer);
+    }
+    FreeChatroom(&room);
+    return result;
+}
+
+cJSON *StoreGuildMemberGet(Store *store, const char *guild_id, const char *user_id) {
+    if (!store || !store->db || !SafeSql(user_id)) return nullptr;
+    Chatroom room{};
+    if (!LoadChatroom(store, guild_id, &room)) return nullptr;
+    const char *ids[kMemberMax];
+    const char *names[kMemberMax];
+    const int total = SplitMembers(room.memberlist, ids, kMemberMax);
+    const int named = SplitNames(room.displayname, names, kMemberMax);
+    const bool aligned = named == total;
+    cJSON *member = nullptr;
+    for (int i = 0; i < total; ++i) {
+        if (!strcmp(ids[i], user_id)) {
+            member = MemberObject(store, user_id, aligned ? names[i] : nullptr);
+            break;
+        }
+    }
+    FreeChatroom(&room);
+    return member;
+}
+
+cJSON *StoreGuildRoleList(Store *store, const char *guild_id) {
+    Chatroom room{};
+    if (!LoadChatroom(store, guild_id, &room)) return nullptr;
+    FreeChatroom(&room);
+    cJSON *result = cJSON_CreateObject();
+    cJSON *data = cJSON_CreateArray();
+    if (!result || !data) { cJSON_Delete(result); cJSON_Delete(data); return nullptr; }
+    cJSON_AddItemToObject(result, "data", data);
+    cJSON_AddItemToArray(data, RoleObject("owner", "群主"));
+    cJSON_AddItemToArray(data, RoleObject("member", "成员"));
+    return result;
+}
+
+cJSON *StoreMemberRoleList(Store *store, const char *guild_id, const char *user_id) {
+    if (!store || !store->db || !SafeSql(user_id)) return nullptr;
+    Chatroom room{};
+    if (!LoadChatroom(store, guild_id, &room)) return nullptr;
+    const bool owner = !strcmp(room.roomowner, user_id);
+    const char *ids[kMemberMax];
+    const int total = SplitMembers(room.memberlist, ids, kMemberMax);
+    bool present = false;
+    for (int i = 0; i < total; ++i) {
+        if (!strcmp(ids[i], user_id)) { present = true; break; }
+    }
+    FreeChatroom(&room);
+    if (!present) return RoleList(nullptr, nullptr);
+    return owner ? RoleList("owner", "群主") : RoleList("member", "成员");
+}
 } // namespace satori

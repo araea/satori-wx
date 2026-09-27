@@ -1,4 +1,4 @@
-# 知言 satori-wx —— 交接文档（截至 v0.6.3 实验）
+# 知言 satori-wx —— 交接文档（截至 v0.6.4 实验）
 
 > 给下一个对话/会话的完整上下文。仓库：`/data/data/com.termux/files/home/dev/araea/satori-wx`
 > 先读这份，再读 `README.md`、`docs/wechat-store.md`、`docs/wechat-send.md`、`docs/wechat-account.md`、`docs/satori-conformance.md`。
@@ -19,14 +19,20 @@
 | 协议可选 WebHook | ✅ | `/v1/meta/webhook.create|delete`，`Satori-Opcode` 推送 |
 | 协议服务端 | ✅ | HTTP RPC、WebSocket、鉴权、37 方法目录、事件回放 |
 | **消息发送** | ✅ 真机验证 | `send=on` 时反射调微信自己的 `v51.r0`+派发器发纯文本；默认关闭、白名单、限速。v0.6.1 主进程用 `r1.y.k()`（`a3.c()` 只在 `:push` 有效），2026-09-27 向 filehelper 实发成功（netId 0） |
-| guild.member.* / guild.role.* | ⬜ 未做 | 需要 `chatroom` 表成员/角色 |
+| guild.member.get/list、guild.role.list、guild.member.role.list | ✅ | 读 `chatroom` 表（memberlist / displayname / roomowner）；角色只有合成的 owner/member |
+| user.channel.create | ✅ | 直接返回该 wxid 的私聊频道（type=1） |
+| 微信无法表达的方法 | — | `message.update`、`reaction.*`、`guild.role.create/update/delete`：在 `internal/capabilities.unsupported` 里声明 |
+| 写操作（撤回/改名/禁言/踢人/审批/上传） | ⬜ 未做 | 各自需要逆向微信内部接口，工程量与发送同级 |
 
-**已实现并写入 `login.features` 的方法（8 个，`send=on` 时 9 个）**：
+**已实现并写入 `login.features` 的方法（13 个，`send=on` 时 14 个）**：
 ```
 message.get, message.list,
 user.get, friend.list,
 guild.get, guild.list,
-channel.get, channel.list
+guild.member.get, guild.member.list,
+guild.role.list, guild.member.role.list,
+channel.get, channel.list,
+user.channel.create
 # send=on 时追加： message.create
 ```
 （唯一来源是 `wx_capabilities.cpp` 的 `WeChatFeatures()`；`wx_backend.cpp` 与 `wx_account.cpp` 都读它。）
@@ -47,7 +53,7 @@ cd /data/data/com.termux/files/home/dev/araea/satori-wx
 ./tests/run.sh      # 22 socket + 10 协议 + account + wcdb + store + capabilities + 3 webhook + 探针测试
 
 # 部署（KernelSU，需重启生效）
-su -c 'ksud module install build/satori-wx-server-v0.6.3.zip'
+su -c 'ksud module install build/satori-wx-server-v0.6.4.zip'
 su -c 'nohup sh -c "sleep 20; reboot" >/dev/null 2>&1 &'
 ```
 
@@ -205,6 +211,7 @@ f004a88 store 等 hub 登录后再轮询
 2. 发送已在真机验证（2026-09-27，v0.6.1 向 `filehelper` 实发成功）。已装机配置是
    `send=on` + `send_allow=filehelper`；要接真实用例就把自己的测试会话加进 `send_allow`
    （分号分隔，wxid 或 `<数字>@chatroom`），改完重启生效。
-3. 接下来：`internal/capabilities` 里补发送状态与计数，`guild.member.*` /
-   `guild.role.*`（读 `chatroom` 表）等只读方法逐个开 `features`。
+3. 接下来：写操作（撤回/改名/禁言/踢人/好友与群审批/上传）——每个都要像发送那样先逆向
+   微信内部接口，且都是风控敏感动作，默认关闭 + 白名单 + 失败不伪造。`internal/capabilities`
+   已经把微信无法表达的 8 个方法列进 `unsupported`。
 4. 保持纪律：每个方法真实实现后才进 `features`；破坏性/风控敏感动作默认关闭 + 白名单。

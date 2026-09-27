@@ -12,4 +12,6 @@ namespace satori {
 void SetSendEnabled(bool enabled);
 bool SendEnabled();
 const char *const *WeChatFeatures(size_t *count);
+// Standard methods WeChat cannot express at all (message.update, reaction.*, custom roles).
+const char *const *WeChatUnsupported(size_t *count);
 } // namespace satori

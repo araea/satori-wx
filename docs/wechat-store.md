@@ -89,7 +89,7 @@
 | M3.1 | probe 在 RegisterNatives 边界替换 nativeSetKey/setCipherKey 函数指针，只把 spec 写进私有 key.log，**不打开活库** | 微信正常运行；key.log 出现全部 spec（含 page/version） |
 | M3.1b | **离线**用副本（.db/-wal/-shm）匹配正确密钥与参数 | 副本上能 `SELECT count(*) FROM message`，微信不受影响 |
 | M3.2 | 用确定后的密钥开只读连接（或读副本）接成 `message-created` 事件 | 真机收到真实消息事件，WebHook/WS 都能看到 |
-| M3.3 | 读 `rcontact`/`chatroom`，实现 user/friend/guild/channel/message.list/get | 按 37 方法逐个打开 `features` |
+| M3.3 | 读 `rcontact`/`chatroom`，实现 user/friend/guild/channel/message.list/get | 已完成：另含 `guild.member.get/list`、`guild.role.list`、`guild.member.role.list`、`user.channel.create` |
 | M3.4 | 反射微信发送 API，实现 `message.create` 等写操作 | 真机发出真实消息，并做失败回滚 |
 M3.1 先在**可选 probe**（独立模块，不影响已上线的 v0.5.0）里做，确认真机可行且无副作用后，
 再把同一个小包装接进主模块。

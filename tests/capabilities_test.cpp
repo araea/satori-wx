@@ -37,15 +37,31 @@ void TestFeatures() {
     satori::SetSendEnabled(false);
     size_t count = 0;
     const char *const *list = satori::WeChatFeatures(&count);
-    Check(count == 8, "read-only feature count is 8");
+    Check(count == 13, "read-only feature count is 13");
     Check(!HasFeature(list, count, "message.create"), "message.create absent while sender is off");
     Check(HasFeature(list, count, "message.list"), "message.list present");
+    Check(HasFeature(list, count, "guild.member.list"), "guild.member.list present");
+    Check(HasFeature(list, count, "guild.role.list"), "guild.role.list present");
+    Check(HasFeature(list, count, "guild.member.role.list"), "guild.member.role.list present");
+    Check(HasFeature(list, count, "user.channel.create"), "user.channel.create present");
 
     satori::SetSendEnabled(true);
     list = satori::WeChatFeatures(&count);
-    Check(count == 9, "feature count is 9 when the sender is on");
+    Check(count == 14, "feature count is 14 when the sender is on");
     Check(HasFeature(list, count, "message.create"), "message.create present when the sender is on");
     satori::SetSendEnabled(false);
+
+    // Unsupported methods are WeChat-side impossibilities, not unimplemented features.
+    size_t unsupported = 0;
+    const char *const *no = satori::WeChatUnsupported(&unsupported);
+    Check(unsupported == 8, "unsupported count is 8");
+    Check(HasFeature(no, unsupported, "message.update"), "message.update declared unsupported");
+    Check(HasFeature(no, unsupported, "reaction.create"), "reaction.create declared unsupported");
+    Check(HasFeature(no, unsupported, "guild.role.create"), "guild.role.create declared unsupported");
+    Check(!HasFeature(no, unsupported, "message.create"), "message.create is not unsupported");
+    // A method must never be both implemented and unsupported.
+    list = satori::WeChatFeatures(&count);
+    for (size_t i = 0; i < unsupported; ++i) Check(!HasFeature(list, count, no[i]), "feature and unsupported sets are disjoint");
 }
 
 void TestConfig() {

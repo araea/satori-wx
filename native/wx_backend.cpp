@@ -103,6 +103,22 @@ Response Call(void *, const Request &request) {
         cJSON *list = StoreChannelList(store, Text(request, "guild_id"), Text(request, "next"), Limit(request, 50));
         return list ? Response{200, list} : Response{400, nullptr};
     }
+    if (!strcmp(name, "guild.member.get"))
+        return Read(StoreGuildMemberGet(store, Text(request, "guild_id"), Text(request, "user_id")));
+    if (!strcmp(name, "guild.member.list")) {
+        cJSON *list = StoreGuildMemberList(store, Text(request, "guild_id"), Text(request, "next"), Limit(request, 50));
+        return list ? Response{200, list} : Response{404, nullptr};
+    }
+    if (!strcmp(name, "guild.role.list")) {
+        cJSON *list = StoreGuildRoleList(store, Text(request, "guild_id"));
+        return list ? Response{200, list} : Response{404, nullptr};
+    }
+    if (!strcmp(name, "guild.member.role.list")) {
+        cJSON *list = StoreMemberRoleList(store, Text(request, "guild_id"), Text(request, "user_id"));
+        return list ? Response{200, list} : Response{404, nullptr};
+    }
+    if (!strcmp(name, "user.channel.create"))
+        return Read(StoreChannelGet(store, Text(request, "user_id")));
     return {501, nullptr};
 }
 } // namespace

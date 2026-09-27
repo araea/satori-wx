@@ -1,6 +1,6 @@
 # 知言（satori-wx）
 
-微信 `com.tencent.mm` 的实验性 Zygisk 模块。v0.6.3 在 **纯 native Satori v1 服务端**
+微信 `com.tencent.mm` 的实验性 Zygisk 模块。v0.6.4 在 **纯 native Satori v1 服务端**
 （C++ + POSIX socket，无 DEX、Java 助手、APK、ArtMethod 偏移或 hook 引擎）之上，
 加入**只读的微信账号身份 / 消息库适配层**，以及一个**默认关闭的反射消息发送器**。
 
@@ -26,11 +26,11 @@
 
 产物：
 
-- `build/satori-wx-server-v0.6.3.zip`，模块 ID `satori_wx`。
+- `build/satori-wx-server-v0.6.4.zip`，模块 ID `satori_wx`。
 - `build/module-server/`，服务端模块目录。
 - `build/satori-wx-account`，读取某个微信数据目录并打印推导出的登录事件（诊断用，不联网）。
 - `build/satori-wx-wcdb`，只读 SQLCipher/SQLite 客户端，用微信自己的 libWCDB 读导出数据库（诊断用）。
-- `build/satori-wx-probe-v0.6.3.zip`，模块 ID `satori_wx_probe`。
+- `build/satori-wx-probe-v0.6.4.zip`，模块 ID `satori_wx_probe`。
 
 构建检查 AArch64、Zygisk 导出入口、动态依赖白名单及 DEX/旧引导标记。
 构建会移除 Termux RUNPATH，运行时不依赖 Termux 库目录。C++ 不链接共享 STL；JSON 解析器为静态编译的 cJSON 1.7.19（MIT，许可证随包附带）。
@@ -76,7 +76,8 @@ Satori 客户端填写：
 | `POST /v1/meta/webhook.create` / `webhook.delete` | 注册/注销 WebHook（`url` 必填、`token` 可选）；标准可选功能 |
 | `POST /v1/internal/status` | 实验版版本、native 状态、backend unavailable；项目自定义诊断接口 |
 | `POST /v1/login.get` | 返回已登记账号快照；未登录或身份不匹配时返回 403 |
-| `POST /v1/{resource}.{method}` | 37 个标准方法的参数校验及 native 后端分发；已实现 `message.get/list`、`user.get`、`friend.list`、`guild.get/list`、`channel.get/list`（读只读库）；`send=on` 时另实现 `message.create`（反射发送，见下）；其余返回 404 |
+| `POST /v1/{resource}.{method}` | 37 个标准方法的参数校验及 native 后端分发；已实现读侧 `message.get/list`、`user.get`、`friend.list`、`guild.get/list`、`guild.member.get/list`、`guild.role.list`、`guild.member.role.list`、`channel.get/list`、`user.channel.create`；`send=on` 时另实现 `message.create`（反射发送，见下）；其余返回 404 |
+| `POST /v1/internal/capabilities` | 除标准方法目录外，报告 `send` 状态块与 `unsupported`（微信无法表达的方法：`message.update`、`reaction.*`、`guild.role.create/update/delete`） |
 | `GET /v1/events` | WebSocket upgrade；10 秒内 IDENTIFY；READY、登录事件与 PING/PONG |
 
 HTTP 使用 `Authorization: Bearer <token>`。缺失 token 返回 401，错误 token 返回 403。
@@ -176,9 +177,9 @@ JNI 表来自主线程；CheckJNI 或其他模块使用不同表时，不保证�
 - [研究记录与已知边界](docs/native-server.md)。
 - [只读账号身份说明](docs/wechat-account.md)。
 - [消息后端设计（native、低特征）](docs/wechat-store.md)。
-- [微信消息发送路径（反射，v0.6.3）](docs/wechat-send.md)。
-- [v0.6.3 协议覆盖矩阵](docs/satori-conformance.md)。
+- [微信消息发送路径（反射，v0.6.4）](docs/wechat-send.md)。
+- [v0.6.4 协议覆盖矩阵](docs/satori-conformance.md)。
 - [v0.4.0 安装与重启验收记录](docs/deployment-v0.4.0.md)。
 
-下一步：在真机上验证可选发送器（默认关闭、白名单内真发一条），以及补上 `guild.member.*` /
-`guild.role.*` 等只读方法。每个方法只有在后端真正实现后才写入账号 `features`。
+下一步：写操作（撤回、改名、禁言、踢人、好友审批、上传）需要逐个逆向微信内部接口，
+每个都像发送那样是一次独立研究；读侧与发送已经齐了。

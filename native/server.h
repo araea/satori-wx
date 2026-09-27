@@ -13,9 +13,10 @@ struct Config {
     char send_allow[512] = {};
 };
 // Optional backend-specific fields added to the /v1/internal/status and
-// /v1/internal/capabilities objects. The module registers one; tests and standalone tools
-// leave it null so their responses stay minimal.
-using StatusProvider = void (*)(cJSON *object);
+// /v1/internal/capabilities objects. `capabilities` is true for the latter, where a backend
+// may also report things like the set of standard methods it cannot express. The module
+// registers one; tests and standalone tools leave it null so their responses stay minimal.
+using StatusProvider = void (*)(cJSON *object, bool capabilities);
 void SetStatusProvider(StatusProvider provider);
 // fd is borrowed. Invalid/missing token prevents startup. No anonymous mode.
 bool ReadConfig(int fd, Config *config);
