@@ -23,6 +23,8 @@ namespace {
 constexpr size_t kHeader = 8192, kMessage = 16384, kInput = kHeader + kMessage;
 constexpr int kClients = 8;
 constexpr int64_t kRequestMs = 10000, kHeartbeatMs = 30000;
+// Registered by the module; null in tests and standalone tools.
+StatusProvider g_status_provider = nullptr;
 struct Client {
     int fd;
     bool ws, identified, closing, fragmented;
@@ -283,11 +285,23 @@ void Http(Client &c, const Config &config, Hub *hub, const Backend *backend, Web
         char *text = cJSON_PrintUnformatted(Meta(hub));
         Reply(c, text ? 200 : 500, text ? "OK" : "Internal Server Error", text ? text : "{}"); free(text);
     } else if (status) {
-        char text[384];
-        snprintf(text, sizeof(text), "{\"version\":\"%s\",\"native\":true,\"pid\":%d,\"backend\":\"%s\","
-                 "\"event_replay\":true,\"replay_capacity\":%u,\"standard_methods\":%zu,\"sequence\":%llu}",
-                 SATORI_WX_VERSION, getpid(), backend ? "attached" : "unavailable", kHistory, kMethodCount, static_cast<unsigned long long>(Latest(hub)));
-        Reply(c, 200, "OK", text);
+        cJSON *result = cJSON_CreateObject();
+        if (result) {
+            cJSON_AddStringToObject(result, "version", SATORI_WX_VERSION);
+            cJSON_AddBoolToObject(result, "native", true);
+            cJSON_AddNumberToObject(result, "pid", static_cast<double>(getpid()));
+            cJSON_AddStringToObject(result, "backend", backend ? "attached" : "unavailable");
+            cJSON_AddBoolToObject(result, "event_replay", true);
+            cJSON_AddNumberToObject(result, "replay_capacity", static_cast<double>(kHistory));
+            cJSON_AddNumberToObject(result, "standard_methods", static_cast<double>(kMethodCount));
+            cJSON_AddNumberToObject(result, "sequence", static_cast<double>(Latest(hub)));
+            if (g_status_provider) g_status_provider(result);
+            char *text = cJSON_PrintUnformatted(result);
+            Reply(c, text ? 200 : 500, text ? "OK" : "Internal Server Error", text ? text : "{}"); free(text);
+            cJSON_Delete(result);
+        } else {
+            Reply(c, 500, "Internal Server Error", "{}");
+        }
     } else if (capabilities) {
         cJSON *result = cJSON_CreateObject(), *methods = cJSON_CreateArray();
         if (result && methods && cJSON_AddItemToObject(result, "standard_methods", methods)) {
@@ -296,6 +310,7 @@ void Http(Client &c, const Config &config, Hub *hub, const Backend *backend, Web
             cJSON_AddBoolToObject(result, "webhook", true);
             cJSON_AddNumberToObject(result, "webhooks", static_cast<double>(WebHookCount(hooks)));
             cJSON_AddBoolToObject(result, "proxy", false);
+            if (g_status_provider) g_status_provider(result);
             char *text = cJSON_PrintUnformatted(result);
             Reply(c, text ? 200 : 500, text ? "OK" : "Internal Server Error", text ? text : "{}"); free(text);
             cJSON_Delete(result);
@@ -341,6 +356,8 @@ void Http(Client &c, const Config &config, Hub *hub, const Backend *backend, Web
     cJSON_Delete(body);
 }
 } // namespace
+
+void SetStatusProvider(StatusProvider provider) { g_status_provider = provider; }
 
 bool ReadConfig(int fd, Config *config) {
     char data[1025]; size_t used = 0;

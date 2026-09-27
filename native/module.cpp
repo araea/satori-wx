@@ -20,6 +20,31 @@ satori::EventBus *g_bus = nullptr;
 char g_data_dir[256] = {};
 constexpr unsigned kAccountIntervalMs = 3000;
 
+// Adds the sender block to /v1/internal/status and /v1/internal/capabilities so clients can
+// see whether sending is enabled, resolved and how the last attempt went.
+void AddSendStatus(cJSON *object) {
+    satori::SendStatus status{};
+    satori::SendStatusGet(&status);
+    cJSON *send = cJSON_CreateObject();
+    if (!send) return;
+    cJSON_AddItemToObject(object, "send", send);
+    cJSON_AddBoolToObject(send, "enabled", status.enabled);
+    cJSON_AddBoolToObject(send, "ready", status.ready);
+    cJSON_AddBoolToObject(send, "allowed_any", status.allowed_any);
+    if (status.allow[0]) cJSON_AddStringToObject(send, "allow", status.allow);
+    cJSON_AddNumberToObject(send, "sent", static_cast<double>(status.sent));
+    cJSON_AddNumberToObject(send, "failed", static_cast<double>(status.failed));
+    cJSON_AddNumberToObject(send, "rejected", static_cast<double>(status.rejected));
+    if (status.last_age_ms >= 0) {
+        cJSON_AddNumberToObject(send, "last_age_ms", static_cast<double>(status.last_age_ms));
+        cJSON_AddBoolToObject(send, "last_ok", status.last_ok);
+        cJSON_AddStringToObject(send, "last_target", status.last_target);
+        cJSON_AddNumberToObject(send, "last_net_id", static_cast<double>(status.last_net_id));
+        cJSON_AddNumberToObject(send, "last_local_id", static_cast<double>(status.last_local_id));
+        if (status.last_error[0]) cJSON_AddStringToObject(send, "last_error", status.last_error);
+    }
+}
+
 void *Serve(void *) {
     pthread_setname_np(pthread_self(), "satori-wx");
     const int listener = satori::Listen(g_config);
@@ -77,6 +102,7 @@ public:
             // The sender is opt-in and, when on, still restricted to the allow list.
             satori::SetSendEnabled(configured_ && g_config.send);
             satori::SendConfigure(g_config.send_allow);
+            satori::SetStatusProvider(AddSendStatus);
             if (configured_ && g_config.send) {
                 if (g_config.send_allow[0])
                     __android_log_print(ANDROID_LOG_WARN, "SatoriWx", "message sender enabled for: %s", g_config.send_allow);

@@ -66,6 +66,28 @@ com.tencent.mm.network.y2.<init>()   微信自己在 a3.b 里用的空回调（�
   返回的消息 id 是本地 id，形状由实现端按 Satori Message 构造，不回读数据库。
 - 全程不 hook、不改 ArtMethod、不加载 dex、不写微信代码段。
 
+### 诊断：`internal/status` 与 `internal/capabilities` 的 `send` 块
+
+模块在 `postAppSpecialize` 注册一个状态提供者，两个 `internal/*` 响应都会多出 `send` 对象：
+
+```json
+"send": {
+  "enabled": true,          // 配置 send=on 且配置有效
+  "ready": true,            // 微信类已在宿主 ClassLoader 上解析成功
+  "allowed_any": true,      // 白名单非空（为空＝一切目标都拒）
+  "allow": "filehelper",    // 白名单原文
+  "sent": 1, "failed": 0, "rejected": 0,
+  "last_age_ms": 12345,     // 距上次尝试的毫秒；从未尝试则没有该字段
+  "last_ok": true, "last_target": "filehelper",
+  "last_net_id": 0, "last_local_id": 3257,
+  "last_error": "..."       // 仅上次失败时有
+}
+```
+
+计数含义：`sent` = 已交微信派发；`failed` = 到了发送管线但失败（含解析不到类、派发返回负值）；
+`rejected` = 在派发前被策略拒绝（未开启 / 不在白名单 / 限速）。计数按进程计，重启归零。
+`message.create` 失败时返回的 502 体会带 `rejected: true` 以示区别。
+
 ## 四、验证状态
 
 - 离线：`tests/capabilities_test.cpp` 覆盖 features 开关、配置解析、白名单/限速/无 VM 的拒绝路径；

@@ -120,11 +120,55 @@ void TestSendGating() {
     satori::SendConfigure("");
     satori::SetSendEnabled(false);
 }
+
+void TestSendStatus() {
+    satori::SendConfigure("");
+    satori::SetSendEnabled(false);
+    satori::SendStatus status{};
+    satori::SendStatusGet(&status);
+    Check(!status.enabled, "status: disabled by default");
+    Check(!status.allowed_any, "status: no allow entries");
+    Check(status.allow[0] == 0, "status: allow list empty");
+    Check(!status.ready, "status: unresolved without a JavaVM");
+    Check(status.last_age_ms == -1, "status: no attempt recorded yet");
+    const long long rejected_before = status.rejected;
+    const long long failed_before = status.failed;
+
+    const satori::SendResult denied = satori::SendText("wxid_x", "hi");
+    Check(denied.rejected, "disabled send is marked rejected");
+    satori::SendStatusGet(&status);
+    Check(status.rejected == rejected_before + 1, "status: policy rejection counted");
+    Check(!status.last_ok, "status: last attempt not ok");
+    Check(!strcmp(status.last_target, "wxid_x"), "status: last target recorded");
+    Check(strstr(status.last_error, "disabled") != nullptr, "status: last error recorded");
+    Check(status.last_age_ms >= 0, "status: attempt age recorded");
+
+    satori::SetSendEnabled(true);
+    satori::SendConfigure("wxid_x;42@chatroom");
+    satori::SendStatusGet(&status);
+    Check(status.enabled, "status: enabled follows configuration");
+    Check(status.allowed_any, "status: allow list non-empty");
+    Check(!strcmp(status.allow, "wxid_x;42@chatroom"), "status: allow list exposed");
+
+    // Allowed target and a fresh pacing window, but no JavaVM: an environment failure, not
+    // a policy rejection.
+    const satori::SendResult no_vm = satori::SendText("wxid_x", "hi");
+    Check(!no_vm.ok && !no_vm.rejected, "environment failure is not a policy rejection");
+    satori::SendStatusGet(&status);
+    Check(status.failed == failed_before + 1, "status: environment failure counted as failed");
+    Check(status.rejected == rejected_before + 1, "status: rejection counter unchanged by it");
+    Check(!status.ready, "status: still unresolved");
+
+    satori::SetSendEnabled(false);
+    satori::SendConfigure("");
+}
 } // namespace
 
 int main() {
     TestFeatures();
     TestConfig();
+    // Runs before any other send attempt so the "no attempt yet" state is observable.
+    TestSendStatus();
     TestSendGating();
     if (failures) {
         fprintf(stderr, "%d capability test(s) failed\n", failures);

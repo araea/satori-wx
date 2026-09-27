@@ -1,4 +1,4 @@
-# 知言 satori-wx —— 交接文档（截至 v0.6.1 实验）
+# 知言 satori-wx —— 交接文档（截至 v0.6.2 实验）
 
 > 给下一个对话/会话的完整上下文。仓库：`/data/data/com.termux/files/home/dev/araea/satori-wx`
 > 先读这份，再读 `README.md`、`docs/wechat-store.md`、`docs/wechat-send.md`、`docs/wechat-account.md`、`docs/satori-conformance.md`。
@@ -47,7 +47,7 @@ cd /data/data/com.termux/files/home/dev/araea/satori-wx
 ./tests/run.sh      # 22 socket + 10 协议 + account + wcdb + store + capabilities + 3 webhook + 探针测试
 
 # 部署（KernelSU，需重启生效）
-su -c 'ksud module install build/satori-wx-server-v0.6.1.zip'
+su -c 'ksud module install build/satori-wx-server-v0.6.2.zip'
 su -c 'nohup sh -c "sleep 20; reboot" >/dev/null 2>&1 &'
 ```
 
@@ -148,6 +148,10 @@ python3 tools/dexfields.py     $APK 'Lcom/tencent/mm/storage/e9;'        # 类�
 ## 9. 协议层要点
 
 - `/v1/meta`、`/v1/meta/webhook.create|delete`、`/v1/internal/status|capabilities`
+- `internal/status|capabilities` 的响应由 `server.cpp` 的 `StatusProvider`（`module.cpp` 注册）
+  追加 `send` 块：`enabled/ready/allowed_any/allow` + `sent/failed/rejected` 计数 +
+  上次尝试的 `last_target/last_ok/last_net_id/last_local_id/last_error/last_age_ms`。
+  测试与独立工具不注册它，响应保持精简。`message.create` 被策略拒绝时 502 体带 `rejected: true`。
 - 账号 API 需 `Satori-Platform: wechat` + `Satori-User-ID: <wxid>`
 - 非 login 方法：未在 features → 404；在 features 但后端没实现 → 501
 - `g_login_count`（protocol.cpp）由 `Apply` 更新；`wx_live` 等它 >0 再发事件，避免事件被丢弃

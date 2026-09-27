@@ -50,11 +50,14 @@ cJSON *SentMessage(Store *store, const char *channel_id, const char *content, lo
     return message;
 }
 
-Response Failure(const char *code, const char *detail) {
+Response Failure(const char *code, const char *detail, bool rejected) {
     cJSON *body = cJSON_CreateObject();
     if (!body) return {502, nullptr};
     cJSON_AddStringToObject(body, "error", code);
     if (detail && *detail) cJSON_AddStringToObject(body, "detail", detail);
+    // Distinguishes "refused by policy" (disabled, allow list, pacing) from a send that
+    // actually reached WeChat and failed.
+    if (rejected) cJSON_AddBoolToObject(body, "rejected", true);
     return {502, body};
 }
 
@@ -69,7 +72,7 @@ Response Call(void *, const Request &request) {
         if (!*channel_id || !*content) return {400, nullptr};
         if (strlen(content) > kOutgoingMax) return {400, nullptr};
         SendResult sent = SendText(channel_id, content);
-        if (!sent.ok) return Failure("send_failed", sent.detail);
+        if (!sent.ok) return Failure("send_failed", sent.detail, sent.rejected);
         if (!store) return {503, nullptr};
         cJSON *message = SentMessage(store, channel_id, content, sent.local_id);
         return message ? Response{200, message} : Response{500, nullptr};

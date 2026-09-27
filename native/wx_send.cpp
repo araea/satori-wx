@@ -31,6 +31,13 @@ long long g_minute_start_ms = 0;
 int g_minute_count = 0;
 long long g_sent = 0;
 long long g_failed = 0;
+long long g_rejected = 0;
+long long g_attempt_ms = 0;   // last SendText() attempt (monotonic), 0 = none yet
+bool g_last_ok = false;
+int g_last_net = -1;
+long long g_last_local = -1;
+char g_last_target[96] = {};
+char g_last_error[160] = {};
 
 // Resolved once on the host class loader and then only read.
 bool g_resolved = false;
@@ -252,14 +259,26 @@ void SendConfigure(const char *allow_semicolon_list) {
 
 bool SendReady() { return g_resolved; }
 
-void SendStats(long long *sent, long long *failed) {
+void SendStatusGet(SendStatus *status) {
+    if (!status) return;
     pthread_mutex_lock(&g_mu);
-    if (sent) *sent = g_sent;
-    if (failed) *failed = g_failed;
+    status->enabled = SendEnabled();
+    status->ready = g_resolved;
+    status->allowed_any = g_allow[0] != 0;
+    status->sent = g_sent;
+    status->failed = g_failed;
+    status->rejected = g_rejected;
+    status->last_age_ms = g_attempt_ms ? NowMs() - g_attempt_ms : -1;
+    status->last_ok = g_last_ok;
+    status->last_net_id = g_last_net;
+    status->last_local_id = g_last_local;
+    snprintf(status->last_target, sizeof(status->last_target), "%s", g_last_target);
+    snprintf(status->last_error, sizeof(status->last_error), "%s", g_last_error);
+    snprintf(status->allow, sizeof(status->allow), "%s", g_allow);
     pthread_mutex_unlock(&g_mu);
 }
 
-SendResult SendText(const char *talker, const char *content) {
+static SendResult SendTextInner(const char *talker, const char *content) {
     SendResult result{};
     result.local_id = -1;
     result.net_id = -1;
@@ -268,14 +287,17 @@ SendResult SendText(const char *talker, const char *content) {
         return result;
     }
     if (!SendEnabled()) {
+        result.rejected = true;
         Detail(result.detail, sizeof(result.detail), "send is disabled by configuration");
         return result;
     }
     if (!Allowed(talker)) {
+        result.rejected = true;
         Detail(result.detail, sizeof(result.detail), "target not in send_allow");
         return result;
     }
     if (!Pacing()) {
+        result.rejected = true;
         Detail(result.detail, sizeof(result.detail), "rate limited");
         return result;
     }
@@ -349,12 +371,26 @@ SendResult SendText(const char *talker, const char *content) {
     env->DeleteLocalRef(callback);
     env->DeleteLocalRef(dispatcher);
     env->DeleteLocalRef(scene);
+    return result;
+}
+
+SendResult SendText(const char *talker, const char *content) {
+    SendResult result = SendTextInner(talker, content);
     pthread_mutex_lock(&g_mu);
-    if (result.ok) ++g_sent; else ++g_failed;
+    g_attempt_ms = NowMs();
+    g_last_ok = result.ok;
+    g_last_net = result.net_id;
+    g_last_local = result.local_id;
+    snprintf(g_last_target, sizeof(g_last_target), "%s", talker ? talker : "");
+    snprintf(g_last_error, sizeof(g_last_error), "%s", result.ok ? "" : result.detail);
+    if (result.ok) ++g_sent;
+    else if (result.rejected) ++g_rejected;
+    else ++g_failed;
     pthread_mutex_unlock(&g_mu);
     if (result.ok) __android_log_print(ANDROID_LOG_INFO, "SatoriWx", "sent to %s (local id %lld, netId %d)",
                                        talker, result.local_id, result.net_id);
-    else __android_log_print(ANDROID_LOG_WARN, "SatoriWx", "send to %s failed: %s", talker, result.detail);
+    else __android_log_print(ANDROID_LOG_WARN, "SatoriWx", "send to %s failed%s: %s",
+                             talker, result.rejected ? " (rejected)" : "", result.detail);
     return result;
 }
 } // namespace satori
