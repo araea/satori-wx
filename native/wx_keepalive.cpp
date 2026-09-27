@@ -39,6 +39,8 @@ constexpr int kColorOnline = 0xFF5D438B;
 constexpr int kColorWait = 0xFF775A0B;
 constexpr int kColorDegraded = 0xFFBA1A1A;
 constexpr const char *kChannel = "satori-wx-status";
+// Used only if the primary channel cannot be (re)created, e.g. a ROM that keeps a deleted id blocked.
+constexpr const char *kChannelFallback = "satori-wx-status-2";
 constexpr const char *kChannelName = "知言服务状态";
 constexpr const char *kLockTag = "satori-wx:wakelock";
 constexpr const char *kHostPackage = "com.tencent.mm";
@@ -66,6 +68,8 @@ long long g_serving_since_ms = 0; // when online && listening most recently beca
 bool g_was_serving = false;
 volatile bool g_notify_ok = false;
 volatile bool g_channel_ok = false;
+// The channel notifications are posted to; EnsureChannel() may switch it to the fallback id.
+const char *g_active_channel = kChannel;
 volatile bool g_notify_enabled = false;
 volatile long long g_reposts = 0;
 char g_notify_detail[48] = "init";
@@ -126,7 +130,8 @@ struct Java {
               get_app_info = nullptr, get_package_manager = nullptr, start_service = nullptr;
     jfieldID app_icon = nullptr;
     jmethodID launch_intent = nullptr;
-    jmethodID nm_create = nullptr, nm_notify = nullptr, nm_enabled = nullptr, nm_active = nullptr;
+    jmethodID nm_create = nullptr, nm_notify = nullptr, nm_enabled = nullptr, nm_active = nullptr,
+              nm_get = nullptr;
     jmethodID builder_ctor = nullptr, b_icon = nullptr, b_title = nullptr, b_text = nullptr,
               b_style = nullptr, b_ongoing = nullptr, b_alert = nullptr, b_when = nullptr,
               b_category = nullptr, b_content_intent = nullptr, b_action = nullptr, b_build = nullptr,
@@ -194,19 +199,33 @@ jfieldID StaticField(JNIEnv *env, jclass cls, const char *name, const char *sign
 // before every post: WeChat or ColorOS can delete the channel out from under us, and a
 // notification posted to a missing channel is rejected by the system (“No Channel found”)
 // without throwing — the keeper would then re-post every tick and the entry would never show.
-void EnsureChannel(JNIEnv *env) {
-    if (!g_j.cls_channel || !g_j.channel_ctor || !g_j.nm || !g_j.nm_create) { g_channel_ok = false; return; }
-    jobject channel = env->NewObject(g_j.cls_channel, g_j.channel_ctor, String(env, kChannel),
-                                     String(env, kChannelName), kImportanceLow);
-    if (!channel) { Clear(env); g_channel_ok = false; return; }
-    // The description and badge are cosmetic; a missing setter must not block channel creation.
-    if (g_j.ch_desc) env->CallVoidMethod(channel, g_j.ch_desc, String(env, "知言 Satori 服务的运行状态"));
-    if (g_j.ch_badge) env->CallVoidMethod(channel, g_j.ch_badge, JNI_FALSE);
-    Clear(env);
-    env->CallVoidMethod(g_j.nm, g_j.nm_create, channel);
-    g_channel_ok = !env->ExceptionCheck();
-    Clear(env);
-    env->DeleteLocalRef(channel);
+// If the primary id cannot be resurrected, the fallback id is used. Returns whether a usable
+// channel now exists and records its id in g_active_channel.
+bool EnsureChannel(JNIEnv *env) {
+    g_channel_ok = false;
+    if (!g_j.cls_channel || !g_j.channel_ctor || !g_j.nm || !g_j.nm_create) return false;
+    const char *const ids[] = {kChannel, kChannelFallback};
+    for (const char *id : ids) {
+        g_active_channel = id;
+        jobject channel = env->NewObject(g_j.cls_channel, g_j.channel_ctor, String(env, id),
+                                         String(env, kChannelName), kImportanceLow);
+        if (!channel) { Clear(env); continue; }
+        // The description and badge are cosmetic; a missing setter must not block channel creation.
+        if (g_j.ch_desc) env->CallVoidMethod(channel, g_j.ch_desc, String(env, "知言 Satori 服务的运行状态"));
+        if (g_j.ch_badge) env->CallVoidMethod(channel, g_j.ch_badge, JNI_FALSE);
+        Clear(env);
+        env->CallVoidMethod(g_j.nm, g_j.nm_create, channel);
+        Clear(env);
+        env->DeleteLocalRef(channel);
+        // getNotificationChannel() returns null for a missing or deleted channel: verify, because
+        // createNotificationChannel() silently ignores a channel whose id a ROM refuses to undelete.
+        if (!g_j.nm_get) { g_channel_ok = true; return true; }
+        jobject existing = env->CallObjectMethod(g_j.nm, g_j.nm_get, String(env, id));
+        Clear(env);
+        if (existing) { env->DeleteLocalRef(existing); g_channel_ok = true; return true; }
+    }
+    g_active_channel = kChannel;
+    return false;
 }
 
 // Builds the class cache. Requires a PushLocalFrame; the kept objects are global refs.
@@ -248,6 +267,7 @@ bool ResolveJava(JNIEnv *env) {
     g_j.launch_intent = Method(env, package_manager, "getLaunchIntentForPackage", "(Ljava/lang/String;)Landroid/content/Intent;");
 
     g_j.nm_create = Method(env, g_j.cls_nm, "createNotificationChannel", "(Landroid/app/NotificationChannel;)V");
+    g_j.nm_get = Method(env, g_j.cls_nm, "getNotificationChannel", "(Ljava/lang/String;)Landroid/app/NotificationChannel;");
     g_j.nm_notify = Method(env, g_j.cls_nm, "notify", "(ILandroid/app/Notification;)V");
     g_j.nm_enabled = Method(env, g_j.cls_nm, "areNotificationsEnabled", "()Z");
     g_j.nm_active = Method(env, g_j.cls_nm, "getActiveNotifications", "()[Landroid/service/notification/StatusBarNotification;");
@@ -551,7 +571,7 @@ void Notify(JNIEnv *env) {
 
     // The channel can disappear (WeChat or ColorOS deleting it): recreate it right before posting.
     EnsureChannel(env);
-    jobject builder = env->NewObject(g_j.cls_builder, g_j.builder_ctor, g_j.context, String(env, kChannel));
+    jobject builder = env->NewObject(g_j.cls_builder, g_j.builder_ctor, g_j.context, String(env, g_active_channel));
     if (!builder) {
         Clear(env);
         snprintf(g_notify_detail, sizeof(g_notify_detail), "builder-failed");
