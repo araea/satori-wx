@@ -147,6 +147,7 @@ JNI 表来自主线程；CheckJNI 或其他模块使用不同表时，不保证�
 - [ZygiskNext](https://github.com/LSPosed/ZygiskNext)：运行环境与公开接口参考。
 - [标准 Zygisk 模块接口](https://github.com/topjohnwu/zygisk-module-sample)：当前沿用本地 API v4 头。
 - [Satori HTTP API](https://satori.chat/zh-CN/protocol/api.html)、[事件](https://satori.chat/zh-CN/protocol/events.html)、[元信息](https://satori.chat/zh-CN/advanced/meta.html)。
+- [**交接文档（下一位接手先读）**](docs/HANDOFF.md)。
 - [研究记录与已知边界](docs/native-server.md)。
 - [只读账号身份说明](docs/wechat-account.md)。
 - [消息后端设计（native、低特征）](docs/wechat-store.md)。
