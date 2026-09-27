@@ -354,7 +354,7 @@ bool ReadConfig(int fd, Config *config) {
     }
     if (memchr(data, 0, used)) return false;
     data[used] = 0;
-    Config parsed; bool token_seen = false, port_seen = false;
+    Config parsed; bool token_seen = false, port_seen = false, send_seen = false, allow_seen = false;
     char *state = nullptr;
     for (char *line = strtok_r(data, "\n", &state); line; line = strtok_r(nullptr, "\n", &state)) {
         const size_t n = strlen(line);
@@ -371,6 +371,24 @@ bool ReadConfig(int fd, Config *config) {
             }
             if (port < 1024) return false;
             parsed.port = port; port_seen = true;
+        } else if (!strncmp(line, "send=", 5) && !send_seen) {
+            const char *value = line + 5;
+            if (!strcmp(value, "on")) parsed.send = true;
+            else if (!strcmp(value, "off")) parsed.send = false;
+            else return false;
+            send_seen = true;
+        } else if (!strncmp(line, "send_allow=", 11) && !allow_seen) {
+            const char *value = line + 11;
+            const size_t length = strlen(value);
+            if (length >= sizeof(parsed.send_allow)) return false;
+            // Talkers are wxids or "<digits>@chatroom"; only separators and those characters.
+            for (size_t i = 0; i < length; ++i) {
+                const char c = value[i];
+                const bool ok = (c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+                                c == '_' || c == '@' || c == '.' || c == '-' || c == ';';
+                if (!ok) return false;
+            }
+            strcpy(parsed.send_allow, value); allow_seen = true;
         } else return false;
     }
     if (!token_seen) return false;

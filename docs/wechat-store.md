@@ -70,13 +70,17 @@
   用于 `user.get`、`friend.list`、`guild.*`、`channel.*`、`message.list/get`。
 - 群 ID 直接用 `<数字>@chatroom`，作为 `guild_id` / `channel_id`。
 
-## 发送（后续，风险最高）
+## 发送（v0.6.0 已实现，见 [wechat-send.md](wechat-send.md)）
 
-发送不能只写库（写了不会发出去）。两条路，都不需要 hook 引擎：
+发送不能只写库（写了不会发出去）。v0.6.0 的结论是走**反射微信自己的发送链路**
+（宿主 ClassLoader，`native FindClass` 对 App 类会 method-missing）：
 
-1. **反射微信自己的发送 API**（宿主 ClassLoader；WCDB/部分类必须走宿主 classloader，
-   native `FindClass` 会 method-missing）。这是"应用调用自己的代码"，无代码改写，但类/方法随版本变。
-2. **投递 mars 任务**（`StnManager`）：特征更高，放到最后再评估。
+- `com.tencent.mm.network.a3.c()` 取网络派发器；
+- `new v51.r0(talker, content, 1, 0, 0, "")`（NetSceneSendMsg）构造器自己入库；
+- `scene.doScene(dispatcher, new com.tencent.mm.network.y2())` 交给微信 mars。
+
+不 hook、不改代码、不加载 dex、不发原始封包。实现端默认关闭 + `send_allow` 白名单 +
+限速，返回「已派发」而非投递确认。完整逆向与验证状态见 [wechat-send.md](wechat-send.md)。
 
 ## 分步计划
 
@@ -87,7 +91,6 @@
 | M3.2 | 用确定后的密钥开只读连接（或读副本）接成 `message-created` 事件 | 真机收到真实消息事件，WebHook/WS 都能看到 |
 | M3.3 | 读 `rcontact`/`chatroom`，实现 user/friend/guild/channel/message.list/get | 按 37 方法逐个打开 `features` |
 | M3.4 | 反射微信发送 API，实现 `message.create` 等写操作 | 真机发出真实消息，并做失败回滚 |
-
 M3.1 先在**可选 probe**（独立模块，不影响已上线的 v0.5.0）里做，确认真机可行且无副作用后，
 再把同一个小包装接进主模块。
 

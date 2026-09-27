@@ -1,13 +1,16 @@
 # 知言（satori-wx）
 
-微信 `com.tencent.mm` 的实验性 Zygisk 模块。v0.5.0 在 **纯 native Satori v1 服务端**
+微信 `com.tencent.mm` 的实验性 Zygisk 模块。v0.6.0 在 **纯 native Satori v1 服务端**
 （C++ + POSIX socket，无 DEX、Java 助手、APK、ArtMethod 偏移或 hook 引擎）之上，
-加入一个**只读的微信账号身份适配层**。
+加入**只读的微信账号身份 / 消息库适配层**，以及一个**默认关闭的反射消息发送器**。
 
 账号身份来自微信自己持久化的 SharedPreferences（同 uid 直接读文件，不 hook、不改写、
-不访问数据库）。已登录时 `READY` / `/v1/meta` 会带真实 `logins`；退出登录或清除身份后
-快照随事件总线更新。**消息接收、发送以及其余 37 个业务方法尚未接入**：账号快照的
-当前账号 `features` 已声明 8 个真正实现的方法（见下表）；未实现的方法返回 404，不会伪造成功。
+不访问数据库）。消息读取用微信自己的 `libWCDB.so` 只读打开 `EnMicroMsg.db`。
+**发送是可选项**：`send=on` 后，实现端用**宿主 ClassLoader 反射调用微信自己的
+`v51.r0`（NetSceneSendMsg）与网络派发器**，由微信完成入库、加密、发送；不发任何原始包、
+不 hook、不加载 dex。默认 `send=off`，且只对 `send_allow` 白名单内的会话开放。
+已登录时 `READY` / `/v1/meta` 会带真实 `logins`；账号快照的 `features` 只声明后端
+真正实现的方法（见下表）；未实现的方法返回 404，不会伪造成功。
 旧 v0.2.x 的 `native/wx.cpp`、`native/jni_helpers.h`、`src/`、`AndroidManifest.xml` 和 `libs/`
 保留作研究资料，不参与任何当前构建。版本来源改为根目录 `module.prop`。
 
@@ -23,11 +26,11 @@
 
 产物：
 
-- `build/satori-wx-server-v0.5.0.zip`，模块 ID `satori_wx`。
+- `build/satori-wx-server-v0.6.0.zip`，模块 ID `satori_wx`。
 - `build/module-server/`，服务端模块目录。
 - `build/satori-wx-account`，读取某个微信数据目录并打印推导出的登录事件（诊断用，不联网）。
 - `build/satori-wx-wcdb`，只读 SQLCipher/SQLite 客户端，用微信自己的 libWCDB 读导出数据库（诊断用）。
-- `build/satori-wx-probe-v0.5.0.zip`，模块 ID `satori_wx_probe`。
+- `build/satori-wx-probe-v0.6.0.zip`，模块 ID `satori_wx_probe`。
 
 构建检查 AArch64、Zygisk 导出入口、动态依赖白名单及 DEX/旧引导标记。
 构建会移除 Termux RUNPATH，运行时不依赖 Termux 库目录。C++ 不链接共享 STL；JSON 解析器为静态编译的 cJSON 1.7.19（MIT，许可证随包附带）。
@@ -43,14 +46,18 @@
 /data/adb/modules/satori_wx/satori-wx.conf
 ```
 
-格式（端口可改，token 使用 32–128 位字母、数字、`-` 或 `_`）：
+格式（端口可改，token 使用 32–128 位字母、数字、`-` 或 `_`；`send` 默认关闭）：
 
 ```ini
 port=5601
 token=<安装器生成的令牌>
+send=off
+# send=on 时才需要白名单；分号分隔，只允许这些会话（wxid 或 <数字>@chatroom）
+# send_allow=wxid_xxxxxxxx;1234567890@chatroom
 ```
 
-配置权限为 `0600`；缺失、过长、重复字段或无效 token 时服务端不启动。
+配置权限为 `0600`；缺失、过长、重复字段或无效 token 时服务端不启动。`send=on` 但
+`send_allow` 为空时，服务端照常启动，但**任何发送目标都会被拒绝**（记 logcat 警告）。
 配置在 `preAppSpecialize` 读取，文件描述符立即关闭；服务在 `postAppSpecialize` 启动。
 只在精确匹配的微信主进程内运行。非目标进程和 system_server 请求卸载模块。
 服务端只监听 **127.0.0.1**，随微信主进程结束而退出；配置更改在下一次进程启动生效。
@@ -69,7 +76,7 @@ Satori 客户端填写：
 | `POST /v1/meta/webhook.create` / `webhook.delete` | 注册/注销 WebHook（`url` 必填、`token` 可选）；标准可选功能 |
 | `POST /v1/internal/status` | 实验版版本、native 状态、backend unavailable；项目自定义诊断接口 |
 | `POST /v1/login.get` | 返回已登记账号快照；未登录或身份不匹配时返回 403 |
-| `POST /v1/{resource}.{method}` | 37 个标准方法的参数校验及 native 后端分发；已实现 `message.get/list`、`user.get`、`friend.list`、`guild.get/list`、`channel.get/list`（读只读库），其余返回 404 |
+| `POST /v1/{resource}.{method}` | 37 个标准方法的参数校验及 native 后端分发；已实现 `message.get/list`、`user.get`、`friend.list`、`guild.get/list`、`channel.get/list`（读只读库）；`send=on` 时另实现 `message.create`（反射发送，见下）；其余返回 404 |
 | `GET /v1/events` | WebSocket upgrade；10 秒内 IDENTIFY；READY、登录事件与 PING/PONG |
 
 HTTP 使用 `Authorization: Bearer <token>`。缺失 token 返回 401，错误 token 返回 403。
@@ -124,6 +131,19 @@ HTTP 每次响应后关闭连接；暂不提供 TLS、chunked 请求体、资源
 - 不含头像 URL、好友、群、消息等数据；这些需要后续的数据库或网络层适配。
 - 诊断：`build/satori-wx-account <数据目录>` 打印推导结果与将发布的登录事件，不写入、不联网。
 
+## 可选消息发送（反射，默认关闭）
+
+`send=on` 且目标在 `send_allow` 内时，`message.create` 通过**反射调用微信自己的发送链路**
+发出纯文本：`v51.r0`（NetSceneSendMsg）构造器负责入库，`doScene` 交给微信的 mars 传输层，
+加密/序号/重发都是微信自己的行为。实现端不 hook、不改写代码、不加载 dex、不发原始封包。
+完整逆向结论见 [微信消息发送路径](docs/wechat-send.md)。
+
+- 只支持纯文本；`channel_id` 是 wxid（私聊）或 `<数字>@chatroom`（群）。
+- 返回的 `Message.id` 是微信本地消息 id；**成功表示「场景已交给微信派发」，不是投递确认**。
+- 额外限速：1.5 秒最小间隔、每分钟 10 条；解析失败或派发返回负值时返回 502 并写明原因。
+- 这是本模块里风控最敏感的能力，请保持默认关闭；`features` 与 `internal/capabilities`
+  会如实反映当前是否可用。
+
 ## 可选 native 探针
 
 `./build.sh probe` 构建独立探针，不是服务端的运行依赖。
@@ -151,9 +171,9 @@ JNI 表来自主线程；CheckJNI 或其他模块使用不同表时，不保证�
 - [研究记录与已知边界](docs/native-server.md)。
 - [只读账号身份说明](docs/wechat-account.md)。
 - [消息后端设计（native、低特征）](docs/wechat-store.md)。
-- [v0.5.0 协议覆盖矩阵](docs/satori-conformance.md)。
+- [微信消息发送路径（反射，v0.6.0）](docs/wechat-send.md)。
+- [v0.6.0 协议覆盖矩阵](docs/satori-conformance.md)。
 - [v0.4.0 安装与重启验收记录](docs/deployment-v0.4.0.md)。
 
-下一步是在账号身份之上实现微信 native 业务适配层。设计（消息库加密、只用微信自己的 libWCDB
-做只读客户端的干净路线、密钥的单点捕获、分步计划）见 [消息后端设计](docs/wechat-store.md)；
-每个方法只有在后端真正实现后才写入账号 `features`。
+下一步：在真机上验证可选发送器（默认关闭、白名单内真发一条），以及补上 `guild.member.*` /
+`guild.role.*` 等只读方法。每个方法只有在后端真正实现后才写入账号 `features`。

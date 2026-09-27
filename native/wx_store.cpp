@@ -183,6 +183,7 @@ void DestroyStore(Store *store) {
 
 bool StoreReady(Store *store) { return store && store->db; }
 const char *StoreError(Store *store) { return store ? store->error : "no store"; }
+const char *StoreSelfId(Store *store) { return store ? store->self_id : ""; }
 
 long long StoreWatermark(Store *store) {
     if (!store || !store->db) return -1;

@@ -1,5 +1,6 @@
 #include "wx_account.h"
 #include "protocol.h"
+#include "wx_capabilities.h"
 #include "vendor/cjson/cJSON.h"
 #include <errno.h>
 #include <fcntl.h>
@@ -309,14 +310,11 @@ char *AccountEvent(const char *type, const Account &account, int sn) {
     cJSON *features = cJSON_CreateArray();
     if (!features) { cJSON_Delete(root); return nullptr; }
     cJSON_AddItemToObject(login, "features", features);
-    // Must match satori::WeChatFeatures() in wx_backend.cpp.
-    static const char *const kFeatures[] = {
-        "message.get", "message.list",
-        "user.get", "friend.list",
-        "guild.get", "guild.list",
-        "channel.get", "channel.list",
-    };
-    for (const char *feature : kFeatures) cJSON_AddItemToArray(features, cJSON_CreateString(feature));
+    // Canonical list lives in wx_capabilities.cpp; it adds message.create when the sender
+    // is enabled. wx_backend.cpp serves exactly this set.
+    size_t feature_count = 0;
+    const char *const *features_list = WeChatFeatures(&feature_count);
+    for (size_t i = 0; i < feature_count; ++i) cJSON_AddItemToArray(features, cJSON_CreateString(features_list[i]));
     if (!removed) {
         cJSON_AddStringToObject(login, "platform", "wechat");
         cJSON *user = cJSON_CreateObject();

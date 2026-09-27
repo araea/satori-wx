@@ -3,7 +3,9 @@
 #include "protocol.h"
 #include "wx_adapter.h"
 #include "wx_backend.h"
+#include "wx_capabilities.h"
 #include "wx_live.h"
+#include "wx_send.h"
 #include <android/log.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -72,11 +74,24 @@ public:
             if (fd >= 0) close(fd);
             if (dir >= 0) close(dir);
             if (!configured_) __android_log_print(ANDROID_LOG_ERROR, "SatoriWx", "missing or invalid satori-wx.conf; server disabled");
+            // The sender is opt-in and, when on, still restricted to the allow list.
+            satori::SetSendEnabled(configured_ && g_config.send);
+            satori::SendConfigure(g_config.send_allow);
+            if (configured_ && g_config.send) {
+                if (g_config.send_allow[0])
+                    __android_log_print(ANDROID_LOG_WARN, "SatoriWx", "message sender enabled for: %s", g_config.send_allow);
+                else
+                    __android_log_print(ANDROID_LOG_WARN, "SatoriWx", "send=on but send_allow is empty; every target is refused");
+            }
         }
         if (!target_ || !configured_) api_->setOption(zygisk::DLCLOSE_MODULE_LIBRARY);
     }
     void postAppSpecialize(const zygisk::AppSpecializeArgs *) override {
         if (!target_ || !configured_) return;
+        // The sender needs the process JavaVM; classes are resolved lazily on first use.
+        JavaVM *vm = nullptr;
+        if (env_->GetJavaVM(&vm) == JNI_OK) satori::SendInit(vm);
+        else __android_log_print(ANDROID_LOG_ERROR, "SatoriWx", "GetJavaVM failed; message sender disabled");
         g_bus = satori::CreateBus();
         if (!g_bus) {
             __android_log_print(ANDROID_LOG_ERROR, "SatoriWx", "event bus allocation failed; server disabled");

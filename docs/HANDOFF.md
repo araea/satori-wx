@@ -1,7 +1,7 @@
-# 知言 satori-wx —— 交接文档（截至 v0.5.0 实验）
+# 知言 satori-wx —— 交接文档（截至 v0.6.0 实验）
 
 > 给下一个对话/会话的完整上下文。仓库：`/data/data/com.termux/files/home/dev/araea/satori-wx`
-> 先读这份，再读 `README.md`、`docs/wechat-store.md`、`docs/wechat-account.md`、`docs/satori-conformance.md`。
+> 先读这份，再读 `README.md`、`docs/wechat-store.md`、`docs/wechat-send.md`、`docs/wechat-account.md`、`docs/satori-conformance.md`。
 
 ## 1. 这是什么
 
@@ -18,17 +18,18 @@
 | 联系人/群/频道 | ✅ 真机验证 | `user.get` / `friend.list` / `guild.get,list` / `channel.get,list` |
 | 协议可选 WebHook | ✅ | `/v1/meta/webhook.create|delete`，`Satori-Opcode` 推送 |
 | 协议服务端 | ✅ | HTTP RPC、WebSocket、鉴权、37 方法目录、事件回放 |
-| **消息发送** | 🔶 进行中 | 链路已摸到 `NetSceneSendMsg`；高层 API 待定位 |
+| **消息发送** | 🔶 已实现、待真机 | `send=on` 时反射调微信自己的 `v51.r0`+派发器发纯文本；默认关闭、白名单、限速；离线测试过，真机未验 |
 | guild.member.* / guild.role.* | ⬜ 未做 | 需要 `chatroom` 表成员/角色 |
 
-**已实现并写入 `login.features` 的方法（8 个）**：
+**已实现并写入 `login.features` 的方法（8 个，`send=on` 时 9 个）**：
 ```
 message.get, message.list,
 user.get, friend.list,
 guild.get, guild.list,
 channel.get, channel.list
+# send=on 时追加： message.create
 ```
-（`wx_backend.cpp` 的 `kFeatures` 与 `wx_account.cpp` 的 `kFeatures` 必须保持一致。）
+（唯一来源是 `wx_capabilities.cpp` 的 `WeChatFeatures()`；`wx_backend.cpp` 与 `wx_account.cpp` 都读它。）
 
 ## 3. 运行/构建环境
 
@@ -43,10 +44,10 @@ cd /data/data/com.termux/files/home/dev/araea/satori-wx
 
 ./build.sh          # 服务端 ZIP + satori-wx-check + satori-wx-account + satori-wx-wcdb
 ./build.sh probe    # 可选探针 ZIP（satori_wx_probe）
-./tests/run.sh      # 22 socket + 10 协议 + account + wcdb + store + 3 webhook + 探针测试
+./tests/run.sh      # 22 socket + 10 协议 + account + wcdb + store + capabilities + 3 webhook + 探针测试
 
 # 部署（KernelSU，需重启生效）
-su -c 'ksud module install build/satori-wx-server-v0.5.0.zip'
+su -c 'ksud module install build/satori-wx-server-v0.6.0.zip'
 su -c 'nohup sh -c "sleep 20; reboot" >/dev/null 2>&1 &'
 ```
 
@@ -63,7 +64,9 @@ su -c 'nohup sh -c "sleep 20; reboot" >/dev/null 2>&1 &'
 | `native/wcdb.cpp/.h` | `dlopen("libWCDB.so")` + SQLCipher 只读客户端 |
 | `native/wx_store.cpp/.h` | 只读 store：message/联系人查询 → Satori JSON（含互斥锁） |
 | `native/wx_live.cpp/.h` | 读 probe 的 key.log，只读打开库，轮询新消息 → `message-created`；暴露 `LiveStore()` |
-| `native/wx_backend.cpp/.h` | Satori Backend，实现 8 个读方法 |
+| `native/wx_backend.cpp/.h` | Satori Backend：8 个读方法 + （`send=on` 时）`message.create` |
+| `native/wx_capabilities.cpp/.h` | 唯一的 features 列表；`send=on` 时追加 `message.create` |
+| `native/wx_send.cpp/.h` | 反射发送器（宿主 ClassLoader + `v51.r0` + 网络派发器）；默认关闭、白名单、限速 |
 | `native/probe.cpp` | 可选探针：RegisterNatives 指针替换（密钥/spec/任务栈） |
 | `tools/*.py` | 离线 DEX 分析工具（见 §8） |
 
@@ -102,51 +105,25 @@ su -c 'nohup sh -c "sleep 20; reboot" >/dev/null 2>&1 &'
 
 **待办**：最终版应把捕获搬进主模块内存，不再落盘 key.log（安全项）。
 
-## 7. 发送（进行中）—— 已有结论
+## 7. 发送（v0.6.0 已解决路径，待真机）
 
-### 7.1 内部链路（真机 DEX 精确反查）
-```
-高层 API（未定位，疑在编译化 libapp.so）
-   ↓
-发送请求 Lv51/r1;
-   ↓  Ldy1/g; k(Lv51/r1;)Lv51/m1;
-NetSceneSendMsg Lv51/r0;   构造函数 (String,String,int,int,long,String)
-   ↑ 构造函数自己会入库并发送（日志 "new msg inserted to db, local id = "）
-MsgInfo = Lcom/tencent/mm/storage/e9;
-稳定辅助 = Lcom/tencent/mm/plugin/msg/MsgIdTalker;
-```
+**结论：不需要 hook、不需要 dex、不需要碰编译化 `libapp.so`。** 完整结论见
+[docs/wechat-send.md](wechat-send.md)。要点：
 
-### 7.2 已排除
-- `Lhy/a;` 是 `BypMsgInfoService`，不是普通文本发送
-- `Lcom/tencent/mm/app/q3;` 是 `MvvmMsgDataRepo`（UI），不是发送
-- `k04/h2` 是修复配置
-- `SendMsgEvent` / `SendMsgSuccessEvent` 是 autogen **通知**（字段 `fm.xt`/`fm.au`），post 不会发送
-- `dy1.g.k` 在 `classes*.dex` 里**没有调用者** → 高层入口在编译 dex
+1. 从运行时发送栈里的 `t2/j1/w1`（都在 `classes11.dex`）反推，找到
+   `com.tencent.mm.network.a3`：`static boolean b(j1, m1)` 的实现就是
+   `m1.doScene(j1, new y2())`——现成的派发入口。
+2. 消息场景 `v51.r0`（NetSceneSendMsg）的 6 参构造器、`doScene`、字段 `f`（本地消息 id）
+   与回调 `com.tencent.mm.network.y2` 也都在 dex 里。
+3. 实现用宿主 ClassLoader 反射：`a3.c()` 取派发器 → `new v51.r0(talker, content, 1, 0, 0, "")`
+   （构造器自己入库）→ `scene.doScene(dispatcher, new y2())`。返回 `netId >= 0` 表示已交给
+   微信派发。**加密/序号/重发全是微信自己的代码**。
 
-### 7.3 探针栈追踪结果（重要）
-hook `StnManager.OnJniStartTask(Task)` 后，发送（`tasks.log` 已见
-`/cgi-bin/micromsg-bin/newsendmsg`、`/cgi-bin/micromsg-bin/sendemoji`）的栈是：
-```
-StnManager.OnJniStartTask (Native)
-StnManager.startTask
-com.tencent.mm.network.t2.v
-com.tencent.mm.network.j1.e
-com.tencent.mm.network.w1.b
-com.tencent.mm.sdk.platformtools.h8.run   ← Handler
-```
-**这是异步派发栈**（mars 任务队列的消费线程），**不含高层发送 API**。
-另外：`Task.toString()` 只输出对象地址，**cgi 字段要反射读**（`getFieldID(taskClass,"cgi","Ljava/lang/String;")`）。
-发送在 **`com.tencent.mm:push` 子进程**里执行（探针需放宽到 `com.tencent.mm*` 前缀才观察到）。
+实现：`native/wx_send.cpp`。默认关闭（`send=off`），`send_allow` 白名单外一律拒绝，
+1.5s 最小间隔 + 每分钟 10 条。**真机尚未验证**；发送是风控最敏感动作，保持默认关闭。
 
-### 7.4 下一步可选的发送实现路径
-| 路径 | 做法 | 备注 |
-| --- | --- | --- |
-| A. 反射高层 API | 仍需找到"输入 talker+content"的方法；静态在编译 dex，动态栈只到派发层 | 需要 Java 级 hook 或其它发现手段 |
-| B. 直接构造 `v51.r0` 并入队 | 构造 `NetSceneSendMsg(String,String,int,int,long,String)`，再用微信场景队列入队 | 需要队列 API（可能在编译 dex）；且要自己补齐入库/序号 |
-| C. mars 任务 | 反射读真实 send 任务的 `reqBuf`（protobuf `NewSendMsgRequest`），改造后经 `StnManager.startTask` 发出 | 需逆向 protobuf；特征最高 |
-| D. 一次性 LSPosed 发现 | 临时挂 Java hook 记录发送调用链，再落成原生 | ⚠️ 微信可能检测 Xposed，有风控风险 |
-
-**建议**：先做 B 的可行性验证（能否反射构造 `v51.r0` 并找到入队入口），或 D 一次性发现。
+（旧结论「高层入口在编译 dex、只有 4 条不确定路径」已被上面的路径取代；`0.5.0` 的
+§7.1–7.4 不再适用。探针仍可用来观测 mars 任务 cgi。）
 
 ## 8. 离线 DEX 分析工具（tools/）
 
@@ -202,7 +179,7 @@ su -c "curl -s -X POST http://127.0.0.1:5601/v1/guild.list \
 2. probe 目前把密钥明文写 `key.log` —— 最终版搬进主模块内存
 3. 微信 `:push` 子进程也在跑 mars；服务端只在主进程
 4. 32 位/其它 ABI 未支持
-5. 发送是风控最敏感动作：务必默认关闭 + 限速 + 白名单，不伪造成功
+5. 发送是风控最敏感动作：`send` 默认关闭 + 限速 + 白名单，且**不伪造成功**（只在微信派发返回 `netId>=0` 时才回 200；真机尚未验证）
 
 ## 12. Git 最近提交（上下文）
 ```
@@ -216,7 +193,12 @@ f004a88 store 等 hub 登录后再轮询
 ```
 
 ## 13. 下一位接手时的第一步
+
 1. `./tests/run.sh` 确认全绿；`git log --oneline -10`
-2. 读 `java-stack.log`（发送派发栈）、`tasks.log`（真实 cgi）
-3. 选定 §7.4 的一条发送路径，先把"能反射拿到发送类/方法"验证出来
-4. 发送实现后：加入 `features`、`internal/compat` 自检、限速开关
+2. **真机验证发送**（唯一未验的关键项）：提交推送后装模块 + 重启，把 `send=on` +
+   `send_allow=<自己的测试群>` 写进 `/data/adb/modules/satori_wx/satori-wx.conf`，
+   调一次 `POST /v1/message.create`，看 `logcat -s SatoriWx` 与微信里消息是否出现；
+   失败则看返回 502 的 `detail`（哪一步解析/派发失败）。
+3. 发送稳了之后：`internal/capabilities` 里补发送状态与计数，`guild.member.*` /
+   `guild.role.*`（读 `chatroom` 表）等只读方法逐个开 `features`。
+4. 保持纪律：每个方法真实实现后才进 `features`；破坏性/风控敏感动作默认关闭 + 白名单。

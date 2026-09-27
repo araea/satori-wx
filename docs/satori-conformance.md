@@ -1,7 +1,8 @@
-# Satori v1 协议层验收（v0.5.0）
+# Satori v1 协议层验收（v0.6.0）
 
-本版本提供 native 协议服务端、native 后端接口，以及只读账号身份适配层。
-**微信消息后端尚未实现，不能称为完整可收发的微信适配器。**
+本版本提供 native 协议服务端、native 后端接口、只读账号身份与消息库适配层，
+以及一个**默认关闭**的反射消息发送器。可收发，但**发送尚未在真机验证**，
+且只支持纯文本、只对白名单会话开放——仍不是完整适配器。
 下表中的“完成”指协议层及带独立测试后端/账号适配层的验收，不代表微信支持或已适配所有 API。
 
 | 标准项目 | 实现 / 验证 |
@@ -12,6 +13,7 @@
 | 方法可用性 | 登录快照 features 控制；不支持返回 404，声明支持但无 handler 返回 501，离线返回 503 |
 | login.get / meta / READY | 同一份登录快照；登录身份由只读偏好解析得到，无账号时为空 |
 | message.create / update 的 content | 保留 Satori 标记字符串；提供 native 文本转义 helper，不把标记当 HTML 执行 |
+| message.create（可选发送） | v0.6.0：`send=on` 时反射调微信自己的 NetSceneSendMsg 发纯文本；默认关闭、`send_allow` 白名单、限速；成功＝已派发，非投递确认；真机未验 |
 | 分页 | params 的 next/direction/limit/order 与后端返回的 data/prev/next 原样传递 |
 | upload.create | multipart/form-data，有界二进制零拷贝解析，字段名与返回 URL 映射由后端实现 |
 | WebSocket | RFC 6455 握手、掩码、文本分片、控制帧交错、UTF-8、关闭、大小限制 |
@@ -52,7 +54,8 @@ HTTP 请求体 / WS 消息最大 16 KiB、HTTP 头 8 KiB、单事件 4 KiB、最
 ## 测试
 
 `./tests/run.sh`：22 项 HTTP/WebSocket socket 测试、10 项协议测试、账号解析/状态机/Hub 集成测试、
-账号端到端适配测试、探针并发/资源/权限测试。
+账号端到端适配测试、能力/配置测试（features 开关、`send`/`send_allow` 解析、发送门禁）、
+探针并发/资源/权限测试。
 协议测试遍历 37 个方法，并验证上传二进制、标记保留、分页、广播、登录状态、元信息、
 历史窗口淘汰以及超过发送缓冲容量的分段回放。
 账号端到端测试用夹具偏好文件驱动真实适配层，验证 meta / login.get / READY 的一致快照、

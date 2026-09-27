@@ -16,6 +16,8 @@ Store *CreateStoreEx(const char *library, const char *path, const void *key, int
 void DestroyStore(Store *store);
 bool StoreReady(Store *store);
 const char *StoreError(Store *store);
+// The account's own wxid, used as the author of outgoing messages. Never null.
+const char *StoreSelfId(Store *store);
 // Highest message rowid, or -1 when it cannot be read.
 long long StoreWatermark(Store *store);
 // Emits one JSON event per new message (rowid > since). Returns the new watermark.
