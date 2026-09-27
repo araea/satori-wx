@@ -12,7 +12,7 @@
 **纯 native C++**：无 DEX、无 Java 助手、无 ArtMethod 改写、无 hook 引擎。连发送都是纯反射调用
 微信自己的代码，不加载任何额外东西。
 
-- **装机版本 v0.6.4**；**repo 版本 v0.6.5**（只差一个预热重试的小修，见 §6.4，随下次重启一起上）。
+- **装机版本 v0.6.4**；**repo 版本 v0.6.5**（预热重试 §6.4 + 发送前把 Satori `content` 拍平成纯文本 §6.5，随下次重启一起上）。
 - 家账号：`wxid_8zxjsghrk8vz41`。模块配置：`send=on` + `send_allow=filehelper`。
 
 ## 2. 协议覆盖（37 个标准方法）
@@ -155,6 +155,16 @@ mars 在 `com.tencent.mm:push`；主进程（服务端所在）拿不到 `a3.c()
     `dispatcher` 会是 false，直到真发一条
 - `message.create` 被策略拒绝时 502 体带 `rejected: true`
 
+### 6.5 只收纯文本，进入发送前先拍平 `content`
+
+微信发不了 Satori 元素，所以 `message.create` 收到 `content` 后先过 `PlainText()`
+（`native/protocol.cpp`）：保留转义文本、`<br/>` 变换行，丢掉 `<quote>`、`<at>`、`<emoji>`、`<img>`
+这些只带 id 的元素；`&lt;`/`&gt;`/`&amp;` 等实体还原。拍平后为空（比如只有一张图）就返回 400，
+而不是把标签当正文发出去。事件侧不受影响，仍是完整的 Satori 元素。
+
+> 背景：acumen 的主线改为按协议发完整 `content`，不再为微信单独拍平（见 acumen `refactor(ids)`）。
+> 因此这一步落在实现端。新增 `tests/content_test.cpp` 覆盖引号内 `>`、未闭合标签、容量边界等。
+
 ## 7. 协议层要点
 
 - 端点：`/v1/meta`、`/v1/meta/webhook.create|delete`、`/v1/internal/status|capabilities`、`/v1/{resource}.{method}`
@@ -247,6 +257,6 @@ JADX 也可用：`~/tools/jadx/bin/jadx --single-class <点分名> -d <输出目
 
 ## 12. 版本与提交
 
-- `module.prop` / `native/version.h`：当前 **v0.6.5**（装机 **v0.6.4**，差 §6.4 那条预热重试）
+- `module.prop` / `native/version.h`：当前 **v0.6.5**（装机 **v0.6.4**，含 §6.4 预热重试与 §6.5 纯文本拍平）
 - 近期：`56cbac5` 预热等派发器 → `f797dcb` 读侧补齐 + unsupported → `1b34615` v0.6.4 读侧 →
   `62228ec` 状态语义+预热 → `0895aac` 状态计数 → `d92ee8f` r1.y.k() 修复 → `8e71852` 发送打通

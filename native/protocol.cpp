@@ -178,6 +178,52 @@ bool EscapeText(const char *text, char *out, size_t capacity) {
     if (!capacity) return false;
     out[used] = 0; return true;
 }
+
+size_t PlainText(const char *content, char *out, size_t capacity) {
+    if (!out || capacity == 0) return 0;
+    size_t used = 0;
+    // Every element in a Satori content string is self-closing or wraps text. Quote,
+    // at, emoji and media only carry ids, so writing them out would leak numbers into
+    // the chat; <br/> is the one tag that means something to a text-only client.
+    auto keep = [&](char c) { if (used + 1 < capacity) out[used++] = c; };
+    for (const char *p = content; p && *p;) {
+        if (*p == '<') {
+            const char *q = p + 1;
+            char quote = 0;
+            for (; *q; ++q) {
+                if (quote) { if (*q == quote) quote = 0; continue; }
+                if (*q == '"' || *q == '\'') { quote = *q; continue; }
+                if (*q == '>') break;
+            }
+            if (!*q) break;  // Unterminated tag: nothing trustworthy follows.
+            const char *name = p + 1;
+            const bool closing = *name == '/';
+            if (closing) ++name;
+            const char *end = name;
+            while (end < q && ((*end >= 'a' && *end <= 'z') || (*end >= 'A' && *end <= 'Z') ||
+                               (*end >= '0' && *end <= '9') || *end == '-' || *end == '_' || *end == ':')) ++end;
+            if (!closing && end - name == 2 &&
+                (name[0] == 'b' || name[0] == 'B') && (name[1] == 'r' || name[1] == 'R')) keep('\n');
+            p = q + 1;
+            continue;
+        }
+        if (*p == '&') {
+            static const struct { const char *name; char value; } entities[] = {
+                {"&lt;", '<'}, {"&gt;", '>'}, {"&quot;", '"'},
+                {"&#39;", '\''}, {"&apos;", '\''}, {"&amp;", '&'},
+            };
+            bool matched = false;
+            for (const auto &entity : entities) {
+                const size_t n = strlen(entity.name);
+                if (!strncmp(p, entity.name, n)) { keep(entity.value); p += n; matched = true; break; }
+            }
+            if (matched) continue;
+        }
+        keep(*p++);
+    }
+    out[used] = 0;
+    return used;
+}
 struct EventBus {
     pthread_mutex_t mutex;
     int fd;

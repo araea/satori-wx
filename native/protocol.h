@@ -16,6 +16,10 @@ cJSON *Json(const char *data, size_t size);
 bool Utf8(const char *data, size_t size);
 // Structured content helpers preserve Satori markup instead of stripping it.
 bool EscapeText(const char *text, char *out, size_t capacity);
+// Flattens a Satori `content` string for a text-only adapter: keeps escaped text,
+// turns <br/> into a newline, and drops elements it cannot carry (quote, at, emoji,
+// img, audio, video, file, forward...). Always NUL-terminates; returns bytes written.
+size_t PlainText(const char *content, char *out, size_t capacity);
 
 struct EventBus;
 EventBus *CreateBus();

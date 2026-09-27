@@ -71,10 +71,19 @@ Response Call(void *, const Request &request) {
         const char *content = Text(request, "content");
         if (!*channel_id || !*content) return {400, nullptr};
         if (strlen(content) > kOutgoingMax) return {400, nullptr};
-        SendResult sent = SendText(channel_id, content);
+        // WeChat carries plain text only. Flatten the Satori content first, or a reply or
+        // an @ would reach the chat as literal <quote>/<at> tags. Nothing text-shaped
+        // (a photo alone) is not sendable here, so report it rather than send tags.
+        char plain[kOutgoingMax + 1];
+        PlainText(content, plain, sizeof(plain));
+        char *tail = plain + strlen(plain);
+        while (tail > plain && (tail[-1] == '\n' || tail[-1] == '\r' || tail[-1] == ' ' || tail[-1] == '\t')) --tail;
+        *tail = 0;
+        if (!*plain) return {400, nullptr};
+        SendResult sent = SendText(channel_id, plain);
         if (!sent.ok) return Failure("send_failed", sent.detail, sent.rejected);
         if (!store) return {503, nullptr};
-        cJSON *message = SentMessage(store, channel_id, content, sent.local_id);
+        cJSON *message = SentMessage(store, channel_id, plain, sent.local_id);
         return message ? Response{200, message} : Response{500, nullptr};
     }
 
