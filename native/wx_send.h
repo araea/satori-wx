@@ -9,23 +9,21 @@
 // app does. Nothing is hooked, no ArtMethod is rewritten and no dex is loaded.
 //
 // The sender is opt-in: only usable after SendInit() (JavaVM from postAppSpecialize) and when
-// the config says send=on. There is no target whitelist any more; pacing still applies.
+// the config says send=on. There is neither a target whitelist nor a rate limit: once on, a
+// client's message.create is dispatched immediately, like any other Satori implementation.
 // Delivery is asynchronous: a successful call means the scene was accepted for dispatch, not
 // that the peer received anything.
 namespace satori {
 void SendInit(void *vm);
-// Clears the pacing window. The module never needs it; tests call it between independent
-// scenarios because pacing is intentionally sticky across calls.
-void SendPacingReset();
 bool SendReady();
 struct SendResult {
     bool ok;
-    bool rejected;      // refused before dispatch by configuration or pacing
+    bool rejected;      // refused before dispatch because send is disabled
     long long local_id; // WeChat local message id (msgId), or -1
     int net_id;         // dispatcher return; negative means the scene was rejected
     char detail[160];   // human-readable reason when ok is false
 };
-// Sends plain text to a talker (wxid or <id>@chatroom). Thread-safe, rate limited.
+// Sends plain text to a talker (wxid or <id>@chatroom). Thread-safe; no rate limit.
 SendResult SendText(const char *talker, const char *content);
 // Recalls one of our own messages by its local id (the id message.create returned, decimal
 // string). Uses WeChat's own NetSceneRevokeMsg scene. Refused for
@@ -47,7 +45,7 @@ struct SendStatus {
     bool dispatcher;       // the network dispatcher was reachable at the last probe
     long long sent;        // dispatched successfully
     long long failed;      // reached the send pipeline but failed
-    long long rejected;    // refused before dispatch (disabled / pacing)
+    long long rejected;    // refused before dispatch (send disabled)
     long long recalled;    // revoke scenes accepted for dispatch
     long long last_age_ms; // ms since the last attempt, or -1 when there was none
     bool last_ok;

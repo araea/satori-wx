@@ -15,8 +15,8 @@
 | 方法可用性 | 登录快照 features 控制；不支持返回 404，声明支持但无 handler 返回 501，离线返回 503 |
 | login.get / meta / READY | 同一份登录快照；登录身份由只读偏好解析得到，无账号时为空 |
 | message.create / update 的 content | 保留 Satori 标记字符串；提供 native 文本转义 helper，不把标记当 HTML 执行 |
-| message.create（可选发送） | v0.7.0：`send=on` 时反射调微信自己的 NetSceneSendMsg 发纯文本；默认关闭，开启后不限目标、只限速；成功＝已派发，非投递确认；2026-09-27 真机向 filehelper 实发成功 |
-| message.delete（可选撤回） | v0.7.0：`send=on` 时用 `ex0.k0.F0.k(talker,localId)` 取 MsgInfo，反射调 `com.tencent.mm.modelsimple.d1`（cgi revokemsg）；只撤回本账号消息，复用同一套开关/限速 |
+| message.create（可选发送） | v0.7.1：`send=on` 时反射调微信自己的 NetSceneSendMsg 发纯文本；默认关闭，开启后不限目标、不限速；成功＝已派发，非投递确认；2026-09-27 真机向 filehelper 实发成功 |
+| message.delete（可选撤回） | v0.7.1：`send=on` 时用 `ex0.k0.F0.k(talker,localId)` 取 MsgInfo，反射调 `com.tencent.mm.modelsimple.d1`（cgi revokemsg）；只撤回本账号消息，复用同一套开关 |
 | guild.member.get / list | 读 `chatroom` 的 memberlist + displayname（`、` 分隔）+ roomowner；`next` 是成员偏移；displayname 与 memberlist 数量不一致时忽略群昵称、回落到 rcontact |
 | guild.role.list / guild.member.role.list | 合成角色：`owner`（群主）/ `member`（成员）；非成员返回空列表；未知群返回 404 |
 | user.channel.create | 返回该 wxid 的私聊频道（`type=1`） |
@@ -63,7 +63,7 @@ HTTP 请求体 / WS 消息最大 16 KiB、HTTP 头 8 KiB、单事件 4 KiB、最
 
 `./tests/run.sh`：22 项 HTTP/WebSocket socket 测试、10 项协议测试、账号解析/状态机/Hub 集成测试、
 账号端到端适配测试、能力/配置测试（features 开关、`send` 解析、旧 `send_allow` 仍被接受、
-发送门禁与限速）、探针并发/资源/权限测试。
+发送门禁）、探针并发/资源/权限测试。
 协议测试遍历 37 个方法，并验证上传二进制、标记保留、分页、广播、登录状态、元信息、
 历史窗口淘汰以及超过发送缓冲容量的分段回放。
 账号端到端测试用夹具偏好文件驱动真实适配层，验证 meta / login.get / READY 的一致快照、

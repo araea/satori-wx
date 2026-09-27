@@ -135,97 +135,133 @@ void Clear(JNIEnv *env) {
     if (env->ExceptionCheck()) env->ExceptionClear();
 }
 
+// Every speculative lookup may fail on another framework version and leaves a pending
+// NoSuchMethod/NoSuchFieldError. ART aborts the process when the next lookup throws on top
+// of one, so each helper drops the pending exception immediately. The caller only sees a
+// null id (or class), which the `complete` checks below turn into "notification disabled".
+jclass Class(JNIEnv *env, const char *name) {
+    jclass cls = env->FindClass(name);
+    if (env->ExceptionCheck()) env->ExceptionClear();
+    return cls;
+}
+
+jmethodID Method(JNIEnv *env, jclass cls, const char *name, const char *signature) {
+    if (!cls) return nullptr;
+    jmethodID id = env->GetMethodID(cls, name, signature);
+    if (env->ExceptionCheck()) env->ExceptionClear();
+    return id;
+}
+
+jmethodID StaticMethod(JNIEnv *env, jclass cls, const char *name, const char *signature) {
+    if (!cls) return nullptr;
+    jmethodID id = env->GetStaticMethodID(cls, name, signature);
+    if (env->ExceptionCheck()) env->ExceptionClear();
+    return id;
+}
+
+jfieldID Field(JNIEnv *env, jclass cls, const char *name, const char *signature) {
+    if (!cls) return nullptr;
+    jfieldID id = env->GetFieldID(cls, name, signature);
+    if (env->ExceptionCheck()) env->ExceptionClear();
+    return id;
+}
+
+jfieldID StaticField(JNIEnv *env, jclass cls, const char *name, const char *signature) {
+    if (!cls) return nullptr;
+    jfieldID id = env->GetStaticFieldID(cls, name, signature);
+    if (env->ExceptionCheck()) env->ExceptionClear();
+    return id;
+}
+
 // Builds the class cache. Requires a PushLocalFrame; the kept objects are global refs.
 bool ResolveJava(JNIEnv *env) {
-    jclass activity_thread = env->FindClass("android/app/ActivityThread");
-    if (!activity_thread) { Clear(env); return false; }
-    jmethodID current = env->GetStaticMethodID(activity_thread, "currentApplication", "()Landroid/app/Application;");
+    jclass activity_thread = Class(env, "android/app/ActivityThread");
+    if (!activity_thread) return false;
+    jmethodID current = StaticMethod(env, activity_thread, "currentApplication", "()Landroid/app/Application;");
     jobject application = current ? env->CallStaticObjectMethod(activity_thread, current) : nullptr;
     Clear(env);
     if (!application) return false;
     g_j.started = true;
 
-    g_j.cls_context = static_cast<jclass>(env->NewGlobalRef(env->FindClass("android/content/Context")));
-    Clear(env);
+    g_j.cls_context = static_cast<jclass>(env->NewGlobalRef(Class(env, "android/content/Context")));
     if (!g_j.cls_context) return false;
-    jclass app_info_class = env->FindClass("android/content/pm/ApplicationInfo");
-    jclass package_manager = env->FindClass("android/content/pm/PackageManager");
-    g_j.cls_pm = static_cast<jclass>(env->NewGlobalRef(env->FindClass("android/os/PowerManager")));
-    g_j.cls_nm = static_cast<jclass>(env->NewGlobalRef(env->FindClass("android/app/NotificationManager")));
-    g_j.cls_builder = static_cast<jclass>(env->NewGlobalRef(env->FindClass("android/app/Notification$Builder")));
-    g_j.cls_big = static_cast<jclass>(env->NewGlobalRef(env->FindClass("android/app/Notification$BigTextStyle")));
-    g_j.cls_pi = static_cast<jclass>(env->NewGlobalRef(env->FindClass("android/app/PendingIntent")));
-    g_j.cls_intent = static_cast<jclass>(env->NewGlobalRef(env->FindClass("android/content/Intent")));
-    g_j.cls_component = static_cast<jclass>(env->NewGlobalRef(env->FindClass("android/content/ComponentName")));
-    g_j.cls_channel = static_cast<jclass>(env->NewGlobalRef(env->FindClass("android/app/NotificationChannel")));
-    g_j.cls_sbn = static_cast<jclass>(env->NewGlobalRef(env->FindClass("android/service/notification/StatusBarNotification")));
-    Clear(env);
+    jclass app_info_class = Class(env, "android/content/pm/ApplicationInfo");
+    jclass package_manager = Class(env, "android/content/pm/PackageManager");
+    g_j.cls_pm = static_cast<jclass>(env->NewGlobalRef(Class(env, "android/os/PowerManager")));
+    g_j.cls_nm = static_cast<jclass>(env->NewGlobalRef(Class(env, "android/app/NotificationManager")));
+    g_j.cls_builder = static_cast<jclass>(env->NewGlobalRef(Class(env, "android/app/Notification$Builder")));
+    g_j.cls_big = static_cast<jclass>(env->NewGlobalRef(Class(env, "android/app/Notification$BigTextStyle")));
+    g_j.cls_pi = static_cast<jclass>(env->NewGlobalRef(Class(env, "android/app/PendingIntent")));
+    g_j.cls_intent = static_cast<jclass>(env->NewGlobalRef(Class(env, "android/content/Intent")));
+    g_j.cls_component = static_cast<jclass>(env->NewGlobalRef(Class(env, "android/content/ComponentName")));
+    g_j.cls_channel = static_cast<jclass>(env->NewGlobalRef(Class(env, "android/app/NotificationChannel")));
+    g_j.cls_sbn = static_cast<jclass>(env->NewGlobalRef(Class(env, "android/service/notification/StatusBarNotification")));
 
     const bool resolved = g_j.cls_pm && g_j.cls_nm && g_j.cls_builder && g_j.cls_big && g_j.cls_pi &&
                           g_j.cls_intent && g_j.cls_component && g_j.cls_channel && g_j.cls_sbn &&
                           app_info_class && package_manager;
     if (!resolved) return false;
 
-    g_j.get_service = env->GetMethodID(g_j.cls_context, "getSystemService", "(Ljava/lang/String;)Ljava/lang/Object;");
-    g_j.get_package_name = env->GetMethodID(g_j.cls_context, "getPackageName", "()Ljava/lang/String;");
-    g_j.get_app_context = env->GetMethodID(g_j.cls_context, "getApplicationContext", "()Landroid/content/Context;");
-    g_j.get_app_info = env->GetMethodID(g_j.cls_context, "getApplicationInfo", "()Landroid/content/pm/ApplicationInfo;");
-    g_j.get_package_manager = env->GetMethodID(g_j.cls_context, "getPackageManager", "()Landroid/content/pm/PackageManager;");
-    g_j.start_service = env->GetMethodID(g_j.cls_context, "startService", "(Landroid/content/Intent;)Landroid/content/ComponentName;");
-    g_j.app_icon = env->GetFieldID(app_info_class, "icon", "I");
-    g_j.launch_intent = env->GetMethodID(package_manager, "getLaunchIntentForPackage", "(Ljava/lang/String;)Landroid/content/Intent;");
+    g_j.get_service = Method(env, g_j.cls_context, "getSystemService", "(Ljava/lang/String;)Ljava/lang/Object;");
+    g_j.get_package_name = Method(env, g_j.cls_context, "getPackageName", "()Ljava/lang/String;");
+    g_j.get_app_context = Method(env, g_j.cls_context, "getApplicationContext", "()Landroid/content/Context;");
+    g_j.get_app_info = Method(env, g_j.cls_context, "getApplicationInfo", "()Landroid/content/pm/ApplicationInfo;");
+    g_j.get_package_manager = Method(env, g_j.cls_context, "getPackageManager", "()Landroid/content/pm/PackageManager;");
+    g_j.start_service = Method(env, g_j.cls_context, "startService", "(Landroid/content/Intent;)Landroid/content/ComponentName;");
+    g_j.app_icon = Field(env, app_info_class, "icon", "I");
+    g_j.launch_intent = Method(env, package_manager, "getLaunchIntentForPackage", "(Ljava/lang/String;)Landroid/content/Intent;");
 
-    g_j.nm_create = env->GetMethodID(g_j.cls_nm, "createNotificationChannel", "(Landroid/app/NotificationChannel;)V");
-    g_j.nm_notify = env->GetMethodID(g_j.cls_nm, "notify", "(ILandroid/app/Notification;)V");
-    g_j.nm_enabled = env->GetMethodID(g_j.cls_nm, "areNotificationsEnabled", "()Z");
-    g_j.nm_active = env->GetMethodID(g_j.cls_nm, "getActiveNotifications", "()[Landroid/service/notification/StatusBarNotification;");
-    g_j.sbn_id = env->GetMethodID(g_j.cls_sbn, "getId", "()I");
+    g_j.nm_create = Method(env, g_j.cls_nm, "createNotificationChannel", "(Landroid/app/NotificationChannel;)V");
+    g_j.nm_notify = Method(env, g_j.cls_nm, "notify", "(ILandroid/app/Notification;)V");
+    g_j.nm_enabled = Method(env, g_j.cls_nm, "areNotificationsEnabled", "()Z");
+    g_j.nm_active = Method(env, g_j.cls_nm, "getActiveNotifications", "()[Landroid/service/notification/StatusBarNotification;");
+    g_j.sbn_id = Method(env, g_j.cls_sbn, "getId", "()I");
 
+    // The chain signatures embed the full Builder descriptor (34 chars), so the buffer has
+    // to hold the longest one (addAction: 88 chars) plus the terminator. Truncating it makes
+    // GetMethodID fail and, before the helpers above, took the whole process down.
     const char *builder = "Landroid/app/Notification$Builder;";
-    char chain[64];
+    char chain[160];
     snprintf(chain, sizeof(chain), "(I)%s", builder);
-    g_j.b_icon = env->GetMethodID(g_j.cls_builder, "setSmallIcon", chain);
+    g_j.b_icon = Method(env, g_j.cls_builder, "setSmallIcon", chain);
     snprintf(chain, sizeof(chain), "(Ljava/lang/CharSequence;)%s", builder);
-    g_j.b_title = env->GetMethodID(g_j.cls_builder, "setContentTitle", chain);
-    g_j.b_text = env->GetMethodID(g_j.cls_builder, "setContentText", chain);
+    g_j.b_title = Method(env, g_j.cls_builder, "setContentTitle", chain);
+    g_j.b_text = Method(env, g_j.cls_builder, "setContentText", chain);
     snprintf(chain, sizeof(chain), "(Landroid/app/Notification$Style;)%s", builder);
-    g_j.b_style = env->GetMethodID(g_j.cls_builder, "setStyle", chain);
+    g_j.b_style = Method(env, g_j.cls_builder, "setStyle", chain);
     snprintf(chain, sizeof(chain), "(Z)%s", builder);
-    g_j.b_ongoing = env->GetMethodID(g_j.cls_builder, "setOngoing", chain);
-    g_j.b_alert = env->GetMethodID(g_j.cls_builder, "setOnlyAlertOnce", chain);
-    g_j.b_when = env->GetMethodID(g_j.cls_builder, "setShowWhen", chain);
+    g_j.b_ongoing = Method(env, g_j.cls_builder, "setOngoing", chain);
+    g_j.b_alert = Method(env, g_j.cls_builder, "setOnlyAlertOnce", chain);
+    g_j.b_when = Method(env, g_j.cls_builder, "setShowWhen", chain);
     snprintf(chain, sizeof(chain), "(Ljava/lang/String;)%s", builder);
-    g_j.b_category = env->GetMethodID(g_j.cls_builder, "setCategory", chain);
+    g_j.b_category = Method(env, g_j.cls_builder, "setCategory", chain);
     snprintf(chain, sizeof(chain), "(Landroid/app/PendingIntent;)%s", builder);
-    g_j.b_content_intent = env->GetMethodID(g_j.cls_builder, "setContentIntent", chain);
+    g_j.b_content_intent = Method(env, g_j.cls_builder, "setContentIntent", chain);
     snprintf(chain, sizeof(chain), "(ILjava/lang/CharSequence;Landroid/app/PendingIntent;)%s", builder);
-    g_j.b_action = env->GetMethodID(g_j.cls_builder, "addAction", chain);
-    g_j.b_build = env->GetMethodID(g_j.cls_builder, "build", "()Landroid/app/Notification;");
+    g_j.b_action = Method(env, g_j.cls_builder, "addAction", chain);
+    g_j.b_build = Method(env, g_j.cls_builder, "build", "()Landroid/app/Notification;");
 
-    g_j.builder_ctor = env->GetMethodID(g_j.cls_builder, "<init>", "(Landroid/content/Context;Ljava/lang/String;)V");
-    g_j.big_ctor = env->GetMethodID(g_j.cls_big, "<init>", "()V");
-    g_j.big_set = env->GetMethodID(g_j.cls_big, "setBigText",
-                                   "(Ljava/lang/CharSequence;)Landroid/app/Notification$BigTextStyle;");
-    if (!g_j.big_set) {
-        Clear(env);
-        g_j.big_set = env->GetMethodID(g_j.cls_big, "bigText",
-                                       "(Ljava/lang/CharSequence;)Landroid/app/Notification$BigTextStyle;");
-    }
+    g_j.builder_ctor = Method(env, g_j.cls_builder, "<init>", "(Landroid/content/Context;Ljava/lang/String;)V");
+    g_j.big_ctor = Method(env, g_j.cls_big, "<init>", "()V");
+    g_j.big_set = Method(env, g_j.cls_big, "setBigText",
+                         "(Ljava/lang/CharSequence;)Landroid/app/Notification$BigTextStyle;");
+    if (!g_j.big_set)
+        g_j.big_set = Method(env, g_j.cls_big, "bigText",
+                             "(Ljava/lang/CharSequence;)Landroid/app/Notification$BigTextStyle;");
 
     const char *pi_sig = "(Landroid/content/Context;ILandroid/content/Intent;I)Landroid/app/PendingIntent;";
-    g_j.pi_activity = env->GetStaticMethodID(g_j.cls_pi, "getActivity", pi_sig);
-    g_j.pi_broadcast = env->GetStaticMethodID(g_j.cls_pi, "getBroadcast", pi_sig);
-    g_j.intent_ctor = env->GetMethodID(g_j.cls_intent, "<init>", "()V");
-    g_j.intent_component = env->GetMethodID(g_j.cls_intent, "setComponent",
-                                            "(Landroid/content/ComponentName;)Landroid/content/Intent;");
-    g_j.intent_put_int = env->GetMethodID(g_j.cls_intent, "putExtra", "(Ljava/lang/String;I)Landroid/content/Intent;");
-    g_j.intent_put_string = env->GetMethodID(g_j.cls_intent, "putExtra", "(Ljava/lang/String;Ljava/lang/String;)Landroid/content/Intent;");
-    g_j.intent_put_bool = env->GetMethodID(g_j.cls_intent, "putExtra", "(Ljava/lang/String;Z)Landroid/content/Intent;");
-    g_j.component_ctor = env->GetMethodID(g_j.cls_component, "<init>", "(Ljava/lang/String;Ljava/lang/String;)V");
-    g_j.channel_ctor = env->GetMethodID(g_j.cls_channel, "<init>", "(Ljava/lang/String;Ljava/lang/CharSequence;I)V");
-    g_j.ch_desc = env->GetMethodID(g_j.cls_channel, "setDescription", "(Ljava/lang/String;)V");
-    g_j.ch_badge = env->GetMethodID(g_j.cls_channel, "setShowBadge", "(Z)V");
-    Clear(env);
+    g_j.pi_activity = StaticMethod(env, g_j.cls_pi, "getActivity", pi_sig);
+    g_j.pi_broadcast = StaticMethod(env, g_j.cls_pi, "getBroadcast", pi_sig);
+    g_j.intent_ctor = Method(env, g_j.cls_intent, "<init>", "()V");
+    g_j.intent_component = Method(env, g_j.cls_intent, "setComponent",
+                                  "(Landroid/content/ComponentName;)Landroid/content/Intent;");
+    g_j.intent_put_int = Method(env, g_j.cls_intent, "putExtra", "(Ljava/lang/String;I)Landroid/content/Intent;");
+    g_j.intent_put_string = Method(env, g_j.cls_intent, "putExtra", "(Ljava/lang/String;Ljava/lang/String;)Landroid/content/Intent;");
+    g_j.intent_put_bool = Method(env, g_j.cls_intent, "putExtra", "(Ljava/lang/String;Z)Landroid/content/Intent;");
+    g_j.component_ctor = Method(env, g_j.cls_component, "<init>", "(Ljava/lang/String;Ljava/lang/String;)V");
+    g_j.channel_ctor = Method(env, g_j.cls_channel, "<init>", "(Ljava/lang/String;Ljava/lang/CharSequence;I)V");
+    g_j.ch_desc = Method(env, g_j.cls_channel, "setDescription", "(Ljava/lang/String;)V");
+    g_j.ch_badge = Method(env, g_j.cls_channel, "setShowBadge", "(Z)V");
 
     if (!g_j.get_app_context || !g_j.get_service) return false;
     jobject app_context = env->CallObjectMethod(application, g_j.get_app_context);
@@ -252,28 +288,28 @@ bool ResolveJava(JNIEnv *env) {
 
     jclass power_class = env->GetObjectClass(power);
     jclass wifi_class = env->GetObjectClass(wifi);
-    g_j.pm_new_lock = env->GetMethodID(power_class, "newWakeLock", "(ILjava/lang/String;)Landroid/os/PowerManager$WakeLock;");
-    g_j.wifi_new_lock = env->GetMethodID(wifi_class, "createWifiLock", "(ILjava/lang/String;)Landroid/net/wifi/WifiManager$WifiLock;");
+    g_j.pm_new_lock = Method(env, power_class, "newWakeLock", "(ILjava/lang/String;)Landroid/os/PowerManager$WakeLock;");
+    g_j.wifi_new_lock = Method(env, wifi_class, "createWifiLock", "(ILjava/lang/String;)Landroid/net/wifi/WifiManager$WifiLock;");
     Clear(env);
     jobject lock = g_j.pm_new_lock ? env->CallObjectMethod(power, g_j.pm_new_lock, kPartialWakeLock, String(env, kLockTag)) : nullptr;
     jobject wifi_lock = g_j.wifi_new_lock ? env->CallObjectMethod(wifi, g_j.wifi_new_lock, kWifiFullHighPerf, String(env, kLockTag)) : nullptr;
     Clear(env);
     if (lock) {
         jclass lock_class = env->GetObjectClass(lock);
-        g_j.lock_acquire = env->GetMethodID(lock_class, "acquire", "()V");
-        g_j.lock_release = env->GetMethodID(lock_class, "release", "()V");
-        g_j.lock_held = env->GetMethodID(lock_class, "isHeld", "()Z");
-        g_j.lock_refcount = env->GetMethodID(lock_class, "setReferenceCounted", "(Z)V");
+        g_j.lock_acquire = Method(env, lock_class, "acquire", "()V");
+        g_j.lock_release = Method(env, lock_class, "release", "()V");
+        g_j.lock_held = Method(env, lock_class, "isHeld", "()Z");
+        g_j.lock_refcount = Method(env, lock_class, "setReferenceCounted", "(Z)V");
         if (g_j.lock_refcount) { env->CallVoidMethod(lock, g_j.lock_refcount, JNI_FALSE); Clear(env); }
         g_j.lock = env->NewGlobalRef(lock);
         env->DeleteLocalRef(lock_class);
     }
     if (wifi_lock) {
         jclass wlock_class = env->GetObjectClass(wifi_lock);
-        g_j.wlock_acquire = env->GetMethodID(wlock_class, "acquire", "()V");
-        g_j.wlock_release = env->GetMethodID(wlock_class, "release", "()V");
-        g_j.wlock_held = env->GetMethodID(wlock_class, "isHeld", "()Z");
-        g_j.wlock_refcount = env->GetMethodID(wlock_class, "setReferenceCounted", "(Z)V");
+        g_j.wlock_acquire = Method(env, wlock_class, "acquire", "()V");
+        g_j.wlock_release = Method(env, wlock_class, "release", "()V");
+        g_j.wlock_held = Method(env, wlock_class, "isHeld", "()Z");
+        g_j.wlock_refcount = Method(env, wlock_class, "setReferenceCounted", "(Z)V");
         if (g_j.wlock_refcount) { env->CallVoidMethod(wifi_lock, g_j.wlock_refcount, JNI_FALSE); Clear(env); }
         g_j.wifi_lock = env->NewGlobalRef(wifi_lock);
         env->DeleteLocalRef(wlock_class);
@@ -294,14 +330,12 @@ bool ResolveJava(JNIEnv *env) {
     }
     if (app_info) env->DeleteLocalRef(app_info);
     if (!g_j.icon) {
-        jclass drawable = env->FindClass("android/R$drawable");
+        jclass drawable = Class(env, "android/R$drawable");
         if (drawable) {
-            jfieldID field = env->GetStaticFieldID(drawable, "ic_dialog_info", "I");
-            if (!field) { Clear(env); field = env->GetStaticFieldID(drawable, "stat_sys_download", "I"); }
+            jfieldID field = StaticField(env, drawable, "ic_dialog_info", "I");
+            if (!field) field = StaticField(env, drawable, "stat_sys_download", "I");
             if (field) { g_j.icon = env->GetStaticIntField(drawable, field); Clear(env); }
             env->DeleteLocalRef(drawable);
-        } else {
-            Clear(env);
         }
     }
 

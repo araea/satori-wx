@@ -414,7 +414,6 @@ public final class Status {
     public static String reason(String error) {
         switch (error) {
             case "send is disabled by configuration": return "发送已关闭";
-            case "rate limited": return "发得太快，被限速";
             case "empty target or content": return "目标或内容为空";
             case "JavaVM unavailable": return "微信运行环境未就绪";
             default:

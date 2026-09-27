@@ -107,7 +107,6 @@ void TestSendGating() {
 
     // Any talker is eligible now; without a JavaVM the attempt reaches the environment step.
     satori::SetSendEnabled(true);
-    satori::SendPacingReset();
     satori::SendResult no_vm = satori::SendText("wxid_abc", "hello");
     Check(!no_vm.ok, "send without a JavaVM fails");
     Check(strstr(no_vm.detail, "JavaVM") != nullptr, "missing JavaVM reported");
@@ -115,12 +114,13 @@ void TestSendGating() {
     satori::SendResult empty = satori::SendText("123@chatroom", "");
     Check(!empty.ok, "empty content refused");
 
-    // The pacing window still admits the first attempt; the second lands inside it.
-    satori::SendPacingReset();
+    // There is no pacing any more: consecutive attempts all reach the environment step
+    // instead of being refused by the sender's own policy.
     satori::SendResult again = satori::SendText("123@chatroom", "hello");
-    Check(!again.ok, "first paced attempt still reaches the environment step");
-    satori::SendResult paced = satori::SendText("123@chatroom", "hello");
-    Check(paced.rejected && strstr(paced.detail, "rate limited") != nullptr, "second immediate attempt is paced");
+    Check(!again.ok && !again.rejected, "first follow-up attempt reaches the environment step");
+    satori::SendResult second = satori::SendText("123@chatroom", "hello");
+    Check(!second.ok && !second.rejected && strstr(second.detail, "JavaVM") != nullptr,
+          "consecutive sends are not rate limited");
 
     satori::SetSendEnabled(false);
 }
@@ -150,8 +150,7 @@ void TestSendStatus() {
     satori::SendStatusGet(&status);
     Check(status.enabled, "status: enabled follows configuration");
 
-    // A fresh pacing window, but no JavaVM: an environment failure, not a policy rejection.
-    satori::SendPacingReset();
+    // No JavaVM: an environment failure, not a policy rejection.
     const satori::SendResult no_vm = satori::SendText("wxid_x", "hi");
     Check(!no_vm.ok && !no_vm.rejected, "environment failure is not a policy rejection");
     satori::SendStatusGet(&status);

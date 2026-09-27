@@ -25,14 +25,8 @@
 
 namespace satori {
 namespace {
-constexpr long long kMinIntervalMs = 1500;
-constexpr int kMaxPerMinute = 10;
-
 JavaVM *g_vm = nullptr;
 pthread_mutex_t g_mu = PTHREAD_MUTEX_INITIALIZER;
-long long g_last_ms = 0;
-long long g_minute_start_ms = 0;
-int g_minute_count = 0;
 long long g_sent = 0;
 long long g_failed = 0;
 long long g_rejected = 0;
@@ -84,13 +78,44 @@ void Detail(char *out, size_t size, const char *format, ...) {
     va_end(args);
 }
 
+// A failed lookup leaves a pending NoSuchMethod/NoSuchFieldError; ART aborts the process if
+// the next lookup throws on top of one. These helpers clear it right away and report failure
+// as a null id, which the callers already treat as "capability unavailable".
+jmethodID Method(JNIEnv *env, jclass cls, const char *name, const char *signature) {
+    if (!cls) return nullptr;
+    jmethodID id = env->GetMethodID(cls, name, signature);
+    if (env->ExceptionCheck()) env->ExceptionClear();
+    return id;
+}
+
+jmethodID StaticMethod(JNIEnv *env, jclass cls, const char *name, const char *signature) {
+    if (!cls) return nullptr;
+    jmethodID id = env->GetStaticMethodID(cls, name, signature);
+    if (env->ExceptionCheck()) env->ExceptionClear();
+    return id;
+}
+
+jfieldID Field(JNIEnv *env, jclass cls, const char *name, const char *signature) {
+    if (!cls) return nullptr;
+    jfieldID id = env->GetFieldID(cls, name, signature);
+    if (env->ExceptionCheck()) env->ExceptionClear();
+    return id;
+}
+
+jfieldID StaticField(JNIEnv *env, jclass cls, const char *name, const char *signature) {
+    if (!cls) return nullptr;
+    jfieldID id = env->GetStaticFieldID(cls, name, signature);
+    if (env->ExceptionCheck()) env->ExceptionClear();
+    return id;
+}
+
 // The send pipeline creates arg-less Handlers on the calling thread once the Looper is
 // present; without one those paths throw. Prepare one so dispatch degrades cleanly.
 void PrepareLooper(JNIEnv *env) {
     jclass looper = env->FindClass("android/os/Looper");
     if (!looper) { env->ExceptionClear(); return; }
-    jmethodID mine = env->GetStaticMethodID(looper, "myLooper", "()Landroid/os/Looper;");
-    jmethodID prepare = env->GetStaticMethodID(looper, "prepare", "()V");
+    jmethodID mine = StaticMethod(env, looper, "myLooper", "()Landroid/os/Looper;");
+    jmethodID prepare = StaticMethod(env, looper, "prepare", "()V");
     if (mine && prepare && !env->CallStaticObjectMethod(looper, mine)) {
         env->ExceptionClear();
         env->CallStaticVoidMethod(looper, prepare);
@@ -122,12 +147,12 @@ jclass LoadClass(JNIEnv *env, jobject loader, jmethodID load, const char *name) 
 bool Resolve(JNIEnv *env, char *detail, size_t size) {
     jclass activity_thread = env->FindClass("android/app/ActivityThread");
     if (!activity_thread) { env->ExceptionClear(); Detail(detail, size, "ActivityThread missing"); return false; }
-    jmethodID current = env->GetStaticMethodID(activity_thread, "currentApplication", "()Landroid/app/Application;");
+    jmethodID current = StaticMethod(env, activity_thread, "currentApplication", "()Landroid/app/Application;");
     jobject application = current ? env->CallStaticObjectMethod(activity_thread, current) : nullptr;
     if (env->ExceptionCheck()) { env->ExceptionClear(); application = nullptr; }
     if (!application) { env->DeleteLocalRef(activity_thread); Detail(detail, size, "application not ready"); return false; }
     jclass application_class = env->FindClass("android/app/Application");
-    jmethodID get_loader = application_class ? env->GetMethodID(application_class, "getClassLoader", "()Ljava/lang/ClassLoader;") : nullptr;
+    jmethodID get_loader = Method(env, application_class, "getClassLoader", "()Ljava/lang/ClassLoader;");
     jobject loader = get_loader ? env->CallObjectMethod(application, get_loader) : nullptr;
     if (env->ExceptionCheck()) { env->ExceptionClear(); loader = nullptr; }
     if (!loader) {
@@ -138,7 +163,7 @@ bool Resolve(JNIEnv *env, char *detail, size_t size) {
         return false;
     }
     jclass loader_class = env->FindClass("java/lang/ClassLoader");
-    jmethodID load = loader_class ? env->GetMethodID(loader_class, "loadClass", "(Ljava/lang/String;)Ljava/lang/Class;") : nullptr;
+    jmethodID load = Method(env, loader_class, "loadClass", "(Ljava/lang/String;)Ljava/lang/Class;");
     if (!load) {
         env->ExceptionClear();
         env->DeleteLocalRef(loader);
@@ -160,11 +185,11 @@ bool Resolve(JNIEnv *env, char *detail, size_t size) {
         Detail(detail, size, "send classes not found (version mismatch?)");
     }
     if (ok) {
-        g_r0_ctor = env->GetMethodID(r0, "<init>", "(Ljava/lang/String;Ljava/lang/String;IIJLjava/lang/String;)V");
-        g_r0_local = env->GetFieldID(r0, "f", "J");
-        g_r0_do_scene = env->GetMethodID(r0, "doScene", "(Lcom/tencent/mm/network/s;Lcom/tencent/mm/modelbase/u0;)I");
-        g_y2_ctor = env->GetMethodID(y2, "<init>", "()V");
-        g_a3_dispatcher = env->GetStaticMethodID(a3, "c", "()Lcom/tencent/mm/network/j1;");
+        g_r0_ctor = Method(env, r0, "<init>", "(Ljava/lang/String;Ljava/lang/String;IIJLjava/lang/String;)V");
+        g_r0_local = Field(env, r0, "f", "J");
+        g_r0_do_scene = Method(env, r0, "doScene", "(Lcom/tencent/mm/network/s;Lcom/tencent/mm/modelbase/u0;)I");
+        g_y2_ctor = Method(env, y2, "<init>", "()V");
+        g_a3_dispatcher = StaticMethod(env, a3, "c", "()Lcom/tencent/mm/network/j1;");
         if (!g_r0_ctor || !g_r0_local || !g_r0_do_scene || !g_y2_ctor || !g_a3_dispatcher) {
             env->ExceptionClear();
             ok = false;
@@ -174,8 +199,8 @@ bool Resolve(JNIEnv *env, char *detail, size_t size) {
     // The dispatcher in the main process is the remote one held by the MMKernel network
     // holder; a3's j1 only exists in :push. Not fatal if absent, so it is resolved leniently.
     if (ok && r1) {
-        g_r1_singleton = env->GetStaticFieldID(r1, "y", "Lcom/tencent/mm/modelbase/r1;");
-        g_r1_dispatcher = env->GetMethodID(r1, "k", "()Lcom/tencent/mm/network/s;");
+        g_r1_singleton = StaticField(env, r1, "y", "Lcom/tencent/mm/modelbase/r1;");
+        g_r1_dispatcher = Method(env, r1, "k", "()Lcom/tencent/mm/network/s;");
         if (!g_r1_singleton || !g_r1_dispatcher) env->ExceptionClear();
     }
     // Recall is a separate capability: resolve it without failing text sends when a class
@@ -185,11 +210,11 @@ bool Resolve(JNIEnv *env, char *detail, size_t size) {
     jclass j0 = LoadClass(env, loader, load, "ex0.j0");
     jclass e9 = LoadClass(env, loader, load, "com.tencent.mm.storage.e9");
     if (ok && d1 && k0 && j0 && e9) {
-        g_d1_ctor = env->GetMethodID(d1, "<init>", "(Lcom/tencent/mm/storage/e9;Ljava/lang/String;Ljava/lang/String;)V");
-        g_d1_do_scene = env->GetMethodID(d1, "doScene", "(Lcom/tencent/mm/network/s;Lcom/tencent/mm/modelbase/u0;)I");
-        g_k0_store = env->GetStaticFieldID(k0, "F0", "Lex0/j0;");
-        g_j0_get = env->GetMethodID(j0, "k", "(Ljava/lang/String;J)Lcom/tencent/mm/storage/e9;");
-        g_e9_is_send = env->GetMethodID(e9, "z0", "()I");
+        g_d1_ctor = Method(env, d1, "<init>", "(Lcom/tencent/mm/storage/e9;Ljava/lang/String;Ljava/lang/String;)V");
+        g_d1_do_scene = Method(env, d1, "doScene", "(Lcom/tencent/mm/network/s;Lcom/tencent/mm/modelbase/u0;)I");
+        g_k0_store = StaticField(env, k0, "F0", "Lex0/j0;");
+        g_j0_get = Method(env, j0, "k", "(Ljava/lang/String;J)Lcom/tencent/mm/storage/e9;");
+        g_e9_is_send = Method(env, e9, "z0", "()I");
         if (!g_d1_ctor || !g_d1_do_scene || !g_k0_store || !g_j0_get || !g_e9_is_send) {
             env->ExceptionClear();
             g_d1_ctor = nullptr;
@@ -254,36 +279,9 @@ jobject Dispatcher(JNIEnv *env, int *mask) {
     return dispatcher;
 }
 
-// Consumes one slot from the pacing window. Returns false when the caller must wait.
-bool Pacing() {
-    const long long now = NowMs();
-    pthread_mutex_lock(&g_mu);
-    bool allowed = false;
-    if (g_last_ms == 0 || now - g_last_ms >= kMinIntervalMs) {
-        if (g_minute_start_ms == 0 || now - g_minute_start_ms >= 60000) {
-            g_minute_start_ms = now;
-            g_minute_count = 0;
-        }
-        if (g_minute_count < kMaxPerMinute) {
-            ++g_minute_count;
-            g_last_ms = now;
-            allowed = true;
-        }
-    }
-    pthread_mutex_unlock(&g_mu);
-    return allowed;
-}
 } // namespace
 
 void SendInit(void *vm) { g_vm = static_cast<JavaVM *>(vm); }
-
-void SendPacingReset() {
-    pthread_mutex_lock(&g_mu);
-    g_last_ms = 0;
-    g_minute_start_ms = 0;
-    g_minute_count = 0;
-    pthread_mutex_unlock(&g_mu);
-}
 
 bool SendDispatcherReady() {
     pthread_mutex_lock(&g_mu);
@@ -345,11 +343,6 @@ static SendResult SendTextInner(const char *talker, const char *content) {
     if (!SendEnabled()) {
         result.rejected = true;
         Detail(result.detail, sizeof(result.detail), "send is disabled by configuration");
-        return result;
-    }
-    if (!Pacing()) {
-        result.rejected = true;
-        Detail(result.detail, sizeof(result.detail), "rate limited");
         return result;
     }
     JNIEnv *env = Env();
@@ -469,11 +462,6 @@ SendResult SendRecall(const char *talker, const char *message_id) {
         return result;
     }
     result.local_id = local_id;
-    if (!Pacing()) {
-        result.rejected = true;
-        Detail(result.detail, sizeof(result.detail), "rate limited");
-        return result;
-    }
     JNIEnv *env = Env();
     if (!env) {
         Detail(result.detail, sizeof(result.detail), "JavaVM unavailable");

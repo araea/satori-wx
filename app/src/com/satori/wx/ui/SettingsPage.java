@@ -91,7 +91,7 @@ final class SettingsPage {
         content.addView(ui.sectionTitle("消息发送"), Ui.stack(t.space2xl));
         Ui.Group sendGroup = ui.group();
         sendSwitch = sendGroup.add(new Item(t, Item.SWITCH, "允许客户端发送消息",
-                "只发纯文本，发给任意会话；每分钟至多 10 条"));
+                "只发纯文本，发给任意会话，不限速"));
         sendSwitch.setId(R.id.send_switch);
         sendSwitch.setOnToggle((item, checked) -> {
             if (!checked) {

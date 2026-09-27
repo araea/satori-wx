@@ -60,8 +60,8 @@ com.tencent.mm.network.y2.<init>()   微信自己在 a3.b 里用的空回调（�
   `com.tencent.mm.modelbase.r1` → 缓存 `GetMethodID` / `GetFieldID`（jmethodID 跨线程稳定）。
 - 调用线程 attach 到 JVM 并 `Looper.prepare()`；`m1.dispatch` 里有无 Looper 两条分支，
   prepare 之后「无参 `new Handler()`」的错误路径不会抛。
-- **默认关闭**：配置 `send=on` 才进 features；开启后不限目标（`send_allow` 白名单已取消，
-  旧键仍被接受但忽略）。另加 1.5s 最小间隔、每分钟 10 条上限。
+- **默认关闭**：配置 `send=on` 才进 features；开启后不限目标、不限速（`send_allow` 白名单已取消，
+  旧键仍被接受但忽略）。客户端要求发就立即交给微信派发。
 - 返回的是「场景已被接受派发」（`netId >= 0`），**不是投递确认**；`message.create`
   返回的消息 id 是本地 id，形状由实现端按 Satori Message 构造，不回读数据库。
 - 全程不 hook、不改 ArtMethod、不加载 dex、不写微信代码段。
@@ -89,13 +89,13 @@ com.tencent.mm.network.y2.<init>()   微信自己在 a3.b 里用的空回调（�
 `ready` 只表示 JavaVM 已接上；能不能发看 `resolved` + `dispatcher`。
 
 计数含义：`sent` = 已交微信派发；`failed` = 到了发送管线但失败（含解析不到类、派发返回负值）；
-`rejected` = 在派发前被策略拒绝（未开启 / 限速）。计数按进程计，重启归零。
+`rejected` = 在派发前被策略拒绝（`send=off`）。计数按进程计，重启归零。
 `message.create` 失败时返回的 502 体会带 `rejected: true` 以示区别。
 
 ## 四、验证状态
 
-- 离线：`tests/capabilities_test.cpp` 覆盖 features 开关、配置解析（旧 `send_allow` 仍接受）、限速与无 VM 的拒绝路径；
-  `./tests/run.sh` 全绿。
+- 离线：`tests/capabilities_test.cpp` 覆盖 features 开关、配置解析（旧 `send_allow` 仍接受）、
+  连续发送不限速与无 VM 的拒绝路径；`./tests/run.sh` 全绿。
 - **真机 v0.6.1（2026-09-27）：发送打通。** 开机自检自动向 `filehelper` 调一次
   `message.create`，得到 `{"channel":{"id":"filehelper","type":1},"id":"3257",...}`，
   logcat `SatoriWx: sent to filehelper (local id 3257, netId 0)`，`SEND verdict ok=1`。
@@ -113,4 +113,4 @@ com.tencent.mm.network.y2.<init>()   微信自己在 a3.b 里用的空回调（�
   detail，不影响协议层与只读后端。
 - 只有纯文本（`type=1`）；富文本/图片/引用等未做。
 - 发送失败时微信库里可能残留一条 SENDING 消息（构造器先入库），这是微信自己的重发语义。
-- 未做并发上限（依赖微信自己的场景队列），限速在实现端。
+- 不做实现端限速或并发上限：请求原样交给微信自己的场景队列。

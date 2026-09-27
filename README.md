@@ -1,6 +1,6 @@
 # 知言（satori-wx）
 
-微信 `com.tencent.mm` 的 Zygisk 模块。v0.7.0 在 **Satori v1 服务端**
+微信 `com.tencent.mm` 的 Zygisk 模块。v0.7.1 在 **Satori v1 服务端**
 （C++ + POSIX socket，无 DEX、Java 助手、APK、ArtMethod 偏移或 hook 引擎）之上，
 加入**只读的微信账号身份 / 消息库适配层**，以及一个**默认关闭的反射消息发送与撤回**。
 
@@ -55,8 +55,8 @@ send=off
 ```
 
 配置权限为 `0600`；缺失、过长、重复字段或无效 token 时服务端不启动。`send=on` 后所有会话
-都允许发送，只需限速（1.5 秒最小间隔、每分钟 10 条）。旧配置里的 `send_allow=` 行仍被接受、
-但值被忽略，升级后不用手改文件。
+都允许发送，没有限速也没有白名单。旧配置里的 `send_allow=` 行仍被接受、但值被忽略，
+升级后不用手改文件。
 配置在 `preAppSpecialize` 读取，文件描述符立即关闭；服务在 `postAppSpecialize` 启动。
 只在精确匹配的微信主进程内运行。非目标进程和 system_server 请求卸载模块。
 服务端只监听 **127.0.0.1**，随微信主进程结束而退出；配置更改在下一次进程启动生效。
@@ -179,13 +179,14 @@ AppOps、待机桶与流量白名单，不改全局 LMK / Doze 开关。
 
 - 只支持纯文本；`channel_id` 是 wxid（私聊）或 `<数字>@chatroom`（群）。
 - 返回的 `Message.id` 是微信本地消息 id；**成功表示「场景已交给微信派发」，不是投递确认**。
-- 额外限速：1.5 秒最小间隔、每分钟 10 条；解析失败或派发返回负值时返回 502 并写明原因。
+- 没有实现端限速，也没有目标白名单：客户端要求发就立即交给微信派发；解析失败或派发返回
+  负值时返回 502 并写明原因。
 - **2026-09-27 真机验证通过**（v0.6.1 向「文件传输助手」实发成功）。
 - 诊断：`POST /v1/internal/status` 与 `/v1/internal/capabilities` 的响应里带 `send` 块
   （`enabled`/`ready`/`resolved`/`dispatcher`、`sent`/`failed`/`rejected`/`recalled`
   计数、上次尝试的目标/结果/`netId`/本地 id）；`resolved`/`dispatcher` 由登录后的预热线程
   主动探测（不发消息），`message.create` 被策略拒绝时 502 体带 `rejected: true`。
-- 这是本模块里风控最敏感的能力，请保持默认关闭；`features` 与 `internal/capabilities`
+- 发送默认关闭（`send=off`），但开启后不做限速或白名单；`features` 与 `internal/capabilities`
   会如实反映当前是否可用。
 
 ## 数据库密钥捕获

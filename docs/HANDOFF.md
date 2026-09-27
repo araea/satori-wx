@@ -12,7 +12,7 @@
 **纯 native C++**：无 DEX、无 Java 助手、无 ArtMethod 改写、无 hook 引擎。连发送都是纯反射调用
 微信自己的代码，不加载任何额外东西。
 
-- **装机版本 v0.6.7**；**repo 版本 v0.7.0**（v0.6.8：账号身份改为优先读 MMKV `MMKV_Name_LastLoginInfo`，微信 8.0.78 会把 `com.tencent.mm_preferences.xml` 重写成不含登录键；v0.7.0：取消发送白名单、微信内常驻状态通知 + 唤醒锁按钮、root 侧 `wxguard` 保活，随下次重启一起上）。
+- **当前版本 v0.7.1**（v0.6.8：账号身份改为优先读 MMKV `MMKV_Name_LastLoginInfo`，微信 8.0.78 会把 `com.tencent.mm_preferences.xml` 重写成不含登录键；v0.7.0：取消发送白名单、微信内常驻状态通知 + 唤醒锁按钮、root 侧 `wxguard` 保活；v0.7.1：修 keepalive 通知构造的 JNI 签名截断导致的微信 SIGABRT 崩溃，并去掉发送侧限速）。
 - 家账号：`wxid_8zxjsghrk8vz41`。模块配置：`send=on`（白名单已取消，任意会话可发）。
 
 ## 2. 协议覆盖（37 个标准方法）
@@ -55,8 +55,8 @@ send=off            # 默认关闭；on 才进 features 并允许向任意会话
 # send_allow=...    # 已取消；旧行仍被接受、值被忽略
 ```
 
-未知键、非法值会让 `ReadConfig` 失败 → 服务端不启动（fail-closed）。`send=on` 后只保留
-限速（1.5 秒最小间隔、每分钟 10 条），不再有白名单。`app/src/com/satori/wx/core/Conf.java`
+未知键、非法值会让 `ReadConfig` 失败 → 服务端不启动（fail-closed）。`send=on` 后既没有白名单
+也没有实现端限速。`app/src/com/satori/wx/core/Conf.java`
 必须与 `ReadConfig` 判得完全一致（`app/test.sh` 的 `ConfTest` 逐条比对）。
 
 ## 4. 文件职责
@@ -74,7 +74,7 @@ send=off            # 默认关闭；on 才进 features 并允许向任意会话
 | `native/wx_live.cpp/.h` | 读主模块捕获的 key.log，只读打开库，轮询新消息 → `message-created` |
 | `native/wx_backend.cpp/.h` | Backend：13 个读方法 + `message.create`（`send=on` 时） |
 | `native/wx_capabilities.cpp/.h` | 唯一 features 列表 + `unsupported` 列表 |
-| `native/wx_send.cpp/.h` | 反射发送器 + 状态/计数快照（无白名单，只有限速） |
+| `native/wx_send.cpp/.h` | 反射发送器 + 状态/计数快照（无白名单、无限速） |
 | `native/wx_keepalive.cpp/.h` | 微信进程内常驻状态通知、唤醒锁、每 10 分钟重启微信自己的 CoreService；`keepalive` 状态块 |
 | `native/wx_key.cpp/.h` | 捕获 SQLCipher 密钥：RegisterNatives 指针替换，只取 setCipherKey/nativeSetKey |
 | `tools/wxguard.sh` | root 侧看守（`service.sh` 开机恢复，`action.sh` 切换，`docs/keepalive.md`） |
@@ -135,7 +135,7 @@ mars 在 `com.tencent.mm:push`；主进程（服务端所在）拿不到 `a3.c()
 ### 6.3 纪律
 
 - **派发器要在构造场景之前拿到**：构造器会写库，拿不到派发器时不该先落一条 SENDING 行
-- 默认 `send=off`；开启后不限目标（旧的 `send_allow` 已取消）；1.5s 最小间隔 + 每分钟 10 条
+- 默认 `send=off`；开启后不限目标、不限速（旧的 `send_allow` 已取消）
 - 成功 = 「已交给微信派发」，**不是投递确认**；不伪造成功
 - 微信 `doScene` 会把库里所有待发（SENDING）消息一起派发，所以历史遗留的孤儿行会跟着出去
 
@@ -180,7 +180,7 @@ MsgInfo = ex0.k0.F0.k(talker, localId)          // ex0.j0，按 talker+本地 ms
 - `message.delete` 收 `channel_id` + `message_id`；id 是 `message.create` 回执里的**本地 id**（十进制）。
 - 只撤回本账号发出的消息（`MsgInfo.z0()==1`）；别人的消息返回 502 + `rejected:true`。
   群主撤回他人消息要走另一套 ticket，未做。
-- 与发送同一套开关与限速；`internal/status.send` 多一个 `recalled` 计数。
+- 与发送同一套开关；`internal/status.send` 多一个 `recalled` 计数。
 - `d1` 构造器对文本类消息会先改本地库（标记已撤回），派发失败也不会回滚——跟微信自己一致。
 
 ## 7. 协议层要点
@@ -261,7 +261,7 @@ JADX 也可用：`~/tools/jadx/bin/jadx --single-class <点分名> -d <输出目
 2. 密钥捕获把明文写进 `files/satori-wx/key.log`（0600）；后续可改为只在内存里传给 `wx_live`
 3. 微信 `:push` 子进程有 mars；服务端只在主进程（发送靠反射，不依赖子进程）
 4. 只支持 arm64
-5. 发送是风控最敏感动作：默认关闭 + 限速，不伪造成功；白名单已取消，风控责任在调用方
+5. 发送默认关闭，但开启后不做实现端限速/白名单，不伪造成功；风控责任在调用方
 6. 写操作只做了 `message.delete`（仅本账号消息）；其余 13 个（§2）**一个都没做**，每个都必须默认关闭，
    且要先证明是谁做的再动
 7. 发送只支持纯文本。图片/语音/视频/文件需要先用微信的 CDN 上传再发场景；
@@ -275,14 +275,14 @@ JADX 也可用：`~/tools/jadx/bin/jadx --single-class <点分名> -d <输出目
    唤醒锁是否持有、进程 `oom_score_adj` / `wchan`。要接真实用例（自己的测试群）直接发即可，无需白名单。
 3. 想继续写功能：从 §2 的 13 个写操作里挑一个，按发送/撤回的老路子做——
    **先只读地找到微信自己的接口**（离线 DEX 反查 + 必要时 Java 栈），再反射调用，
-   再默认关闭 + 限速，最后真机验一条。建议顺序：群管理（改名 → 禁言 → 踢人），
+   再默认关闭，最后真机验一条。建议顺序：群管理（改名 → 禁言 → 踢人），
    好友审批与上传最后做。想接媒体发送先读 `docs/wechat-send-types.md`。
 4. 纪律：**每个方法真实实现后才进 `features`**；`unsupported` 只放微信真的没有的能力；
    破坏性/风控敏感动作默认关闭。
 
 ## 12. 版本与提交
 
-- `module.prop` / `native/version.h`：当前 **v0.7.0**（装机 **v0.6.7**；v0.7.0 取消白名单 + 常驻通知/唤醒锁 + wxguard）
+- `module.prop` / `native/version.h`：当前 **v0.7.1**（v0.7.1 修 keepalive JNI 截断崩溃 + 发送不限速；v0.7.0 取消白名单 + 常驻通知/唤醒锁 + wxguard）
 - 近期：`56cbac5` 预热等派发器 → `f797dcb` 读侧补齐 + unsupported → `1b34615` v0.6.4 读侧 →
   `62228ec` 状态语义+预热 → `0895aac` 状态计数 → `d92ee8f` r1.y.k() 修复 → `8e71852` 发送打通
 
