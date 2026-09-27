@@ -227,22 +227,23 @@ void CaptureStartTask(JNIEnv *env, jobject thiz, jobject task) {
     static int entered = 0;
     if (__atomic_add_fetch(&entered, 1, __ATOMIC_RELAXED) <= 300) AppendLine("starttask.log", "entered");
     static int seen = 0;
-    if (task && !env->ExceptionCheck() && __atomic_load_n(&seen, __ATOMIC_RELAXED) < 300) {
+    if (task && !env->ExceptionCheck() && __atomic_load_n(&seen, __ATOMIC_RELAXED) < 400) {
         __atomic_add_fetch(&seen, 1, __ATOMIC_RELAXED);
+        jstring cgi_text = nullptr;
         jclass task_class = env->GetObjectClass(task);
         if (task_class) {
-            jmethodID to_string = env->GetMethodID(task_class, "toString", "()Ljava/lang/String;");
-            if (to_string) {
-                auto text = static_cast<jstring>(env->CallObjectMethod(task, to_string));
-                if (text && !env->ExceptionCheck()) {
-                    const char *chars = env->GetStringUTFChars(text, nullptr);
-                    if (chars) {
-                        AppendLine("tasks.log", chars);
-                        if (ContainsCI(chars, "send") && !__atomic_exchange_n(&g_stack_dumped, 1, __ATOMIC_ACQ_REL))
-                            DumpJavaStack(env, chars);
-                        env->ReleaseStringUTFChars(text, chars);
-                    }
-                }
+            // toString() only prints the object id, so read the cgi field directly.
+            jfieldID cgi_field = env->GetFieldID(task_class, "cgi", "Ljava/lang/String;");
+            if (cgi_field) cgi_text = static_cast<jstring>(env->GetObjectField(task, cgi_field));
+        }
+        if (env->ExceptionCheck()) env->ExceptionClear();
+        if (cgi_text) {
+            const char *chars = env->GetStringUTFChars(cgi_text, nullptr);
+            if (chars) {
+                AppendLine("tasks.log", chars);
+                if (ContainsCI(chars, "send") && !__atomic_exchange_n(&g_stack_dumped, 1, __ATOMIC_ACQ_REL))
+                    DumpJavaStack(env, chars);
+                env->ReleaseStringUTFChars(cgi_text, chars);
             }
         }
         if (env->ExceptionCheck()) env->ExceptionClear();
