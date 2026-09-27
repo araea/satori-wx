@@ -6,14 +6,14 @@
 
 ## 安全边界（重要教训）
 
-**不要在 probe 里用候选密钥去打开微信正在使用的活库。** 2026-09-27 的一次实验就是这样做：
+**不要用候选密钥去打开微信正在使用的活库。** 2026-09-27 的一次实验就是这样做：
 捕获 spec 后立即用 libWCDB 反复 `sqlite3_open_v2` + `sqlite3_key` 打开 `EnMicroMsg.db` 试读，
 结果微信主进程在 WCDB 内部 `__memset_aarch64_nt` 触发 `SIGBUS BUS_ADRERR` 崩溃（多个 mmap 页面失效）。
 原因：错误密钥会让 SQLite 把库当成损坏库，而第二个连接与微信共享 WAL/`-shm`，并发下导致 mmap 失效。
 
 修正后的原则：
 
-- probe **只捕获 spec**（`(key, page, version)`）并写入应用私有的 0600 `key.log`，**不打开任何活库**。
+- 密钥捕获（现在是主模块的 `native/wx_key.cpp`，以前是独立 probe）**只捕获 spec**（`(key, page, version)`）并写入应用私有的 0600 `key.log`，**不打开任何活库**。
 - 解密验证、参数匹配全部在**离线副本**上做（先 `cp` 出 `EnMicroMsg.db`/`-wal`/`-shm`，再试）。
 - 只有拿到**确定的**正确密钥与参数后，主模块才去开一个只读连接；且打开后先 `PRAGMA query_only`，
   只发 `SELECT`。
@@ -52,7 +52,7 @@
 - 不改微信代码段、不写 `mprotect`、无 trampoline、不碰 ArtMethod、不做 inline hook。
 - 包装函数行为与微信原实现一致，只是多复制一份密钥；捕获一次后不再记录。
 - 密钥只留在内存，不写盘、不进日志、不出现在任何 HTTP 响应里。
-- 这比 JNI 表 CAS（probe 已有）、GOT 改写、inline hook 的特征都低。
+- 这比 JNI 表 CAS（`native/wx_key.cpp` 已有）、GOT 改写、inline hook 的特征都低。
 
 ### 2. 只读客户端：`native/wcdb.cpp`
 
@@ -86,16 +86,16 @@
 
 | 步骤 | 内容 | 验证 |
 | --- | --- | --- |
-| M3.1 | probe 在 RegisterNatives 边界替换 nativeSetKey/setCipherKey 函数指针，只把 spec 写进私有 key.log，**不打开活库** | 微信正常运行；key.log 出现全部 spec（含 page/version） |
+| M3.1 | 在 RegisterNatives 边界替换 nativeSetKey/setCipherKey 函数指针，只把 spec 写进私有 key.log，**不打开活库** | 微信正常运行；key.log 出现全部 spec（含 page/version）；已完成，现为主模块 `native/wx_key.cpp` |
 | M3.1b | **离线**用副本（.db/-wal/-shm）匹配正确密钥与参数 | 副本上能 `SELECT count(*) FROM message`，微信不受影响 |
 | M3.2 | 用确定后的密钥开只读连接（或读副本）接成 `message-created` 事件 | 真机收到真实消息事件，WebHook/WS 都能看到 |
 | M3.3 | 读 `rcontact`/`chatroom`，实现 user/friend/guild/channel/message.list/get | 已完成：另含 `guild.member.get/list`、`guild.role.list`、`guild.member.role.list`、`user.channel.create` |
 | M3.4 | 反射微信发送 API，实现 `message.create` 等写操作 | 真机发出真实消息，并做失败回滚 |
-M3.1 先在**可选 probe**（独立模块，不影响已上线的 v0.5.0）里做，确认真机可行且无副作用后，
-再把同一个小包装接进主模块。
+M3.1 先在可选 probe（独立模块）里验证，真机确认可行且无副作用后，v0.6.7 已把同一个小包装
+并进主模块 `native/wx_key.cpp`，可选 probe 已删除。
 
 ## 与已上线版本的关系
 
-- v0.5.0 服务端（纯 native、无 hook）保持不变；本设计的第 1 步只进可选 probe。
+- v0.5.0 服务端（纯 native、无 hook）保持不变；第 1 步先在可选 probe 里做，现已并入主模块。
 - 主模块引入密钥捕获后，仍应保持"只在取到密钥时启用消息层、失败即降级为空 features"，
   不让消息后端影响协议层稳定性。

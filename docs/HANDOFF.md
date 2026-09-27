@@ -12,7 +12,7 @@
 **纯 native C++**：无 DEX、无 Java 助手、无 ArtMethod 改写、无 hook 引擎。连发送都是纯反射调用
 微信自己的代码，不加载任何额外东西。
 
-- **装机版本 v0.6.4**；**repo 版本 v0.6.6**（预热重试 §6.4 + 发送前把 Satori `content` 拍平成纯文本 §6.5 + `message.delete` 反射撤回 §6.6，随下次重启一起上）。
+- **装机版本 v0.6.6**；**repo 版本 v0.6.7**（v0.6.6：预热重试 §6.4 + Satori `content` 拍平 §6.5 + `message.delete` 撤回 §6.6；v0.6.7：密钥捕获并入主模块、删掉独立 probe、模块名改为“知言”，随下次重启一起上）。
 - 家账号：`wxid_8zxjsghrk8vz41`。模块配置：`send=on` + `send_allow=filehelper`。
 
 ## 2. 协议覆盖（37 个标准方法）
@@ -30,15 +30,14 @@
 
 - 设备：Android 16 / arm64-v8a，KernelSU，Zygisk Next 1.5.0
 - 构建：arm64 Termux，`clang` / `python3` / `readelf` / `patchelf` / `zip`；不需要 JDK/SDK/D8
-- 模块目录：`/data/adb/modules/satori_wx`（服务端）、`/data/adb/modules/satori_wx_probe`（可选探针）
+- 模块目录：`/data/adb/modules/satori_wx`（服务端；密钥捕获已并入主模块）
 
 ```sh
 cd /data/data/com.termux/files/home/dev/araea/satori-wx
 ./build.sh          # 服务端 ZIP + satori-wx-check + satori-wx-account + satori-wx-wcdb
-./build.sh probe    # 可选探针 ZIP
-./tests/run.sh      # 22 socket + 10 协议 + account + wcdb + store + capabilities + webhook + 探针
+./tests/run.sh      # 22 socket + 10 协议 + account + wcdb + store + capabilities + webhook
 
-su -c 'ksud module install build/satori-wx-server-v0.6.6.zip'   # 装机（暂存，重启才生效）
+su -c 'ksud module install build/satori-wx-server-v0.6.7.zip'   # 装机（暂存，重启才生效）
 su -c 'setsid sh -c "sleep 60; /system/bin/reboot" </dev/null >/dev/null 2>&1 &'
 ```
 
@@ -70,11 +69,11 @@ send=off            # 默认关闭；on 才进 features 并允许发送
 | `native/wx_adapter.cpp/.h` | 每 3 秒扫描身份状态机（added/updated/removed） |
 | `native/wcdb.cpp/.h` | `dlopen("libWCDB.so")` + SQLCipher 只读客户端 |
 | `native/wx_store.cpp/.h` | 只读 store：message / rcontact / chatroom → Satori JSON |
-| `native/wx_live.cpp/.h` | 读 probe 的 key.log，只读打开库，轮询新消息 → `message-created` |
+| `native/wx_live.cpp/.h` | 读主模块捕获的 key.log，只读打开库，轮询新消息 → `message-created` |
 | `native/wx_backend.cpp/.h` | Backend：13 个读方法 + `message.create`（`send=on` 时） |
 | `native/wx_capabilities.cpp/.h` | 唯一 features 列表 + `unsupported` 列表 |
 | `native/wx_send.cpp/.h` | 反射发送器 + 状态/计数快照 |
-| `native/probe.cpp` | 可选探针：RegisterNatives 指针替换（密钥 / spec / mars 任务栈） |
+| `native/wx_key.cpp/.h` | 捕获 SQLCipher 密钥：RegisterNatives 指针替换，只取 setCipherKey/nativeSetKey |
 | `tools/*.py` | 离线 DEX 分析工具（见 §9） |
 | `tools/verify-onboot.sh` | 一次性开机自检脚本（见 §8） |
 
@@ -94,7 +93,7 @@ send=off            # 默认关闭；on 才进 features 并允许发送
 
 - 只用**确定的正确密钥**（来自 `setCipherKey` spec）开只读连接
 - **离线验证一律在副本上做**：`cp EnMicroMsg.db EnMicroMsg.db-wal EnMicroMsg.db-shm` 到 `/data/local/tmp/`
-- 探针只捕获 spec，不打开活库；用完删掉副本
+- 密钥捕获只写 spec，不打开活库；用完删掉副本
 
 ### 5.3 已经确认的字段语义
 
@@ -226,7 +225,7 @@ arm：`su -c ': > /data/adb/satori-wx-research/pending'`。
 ```sh
 D=/data/data/com.tencent.mm/MicroMsg/aef94886e37998da5c4325f13c5caa62
 C=/data/local/tmp/dbcopy; su -c "mkdir -p $C; cp $D/EnMicroMsg.db* $C/; chmod 0644 $C/*"
-KEY=$(su -c 'grep "ver=1 " /data/data/com.tencent.mm/files/satori-wx-probe/key.log | sed "s/.*hex=//"' | tr -d ' \n')
+KEY=$(su -c 'grep "ver=1 " /data/data/com.tencent.mm/files/satori-wx/key.log | sed "s/.*hex=//"' | tr -d ' \n')
 LIB=/data/app/~~*/com.tencent.mm-*/lib/arm64/libWCDB.so   # 按实际展开
 su -c "SATORI_WCDB_COMPAT=1 ./build/satori-wx-wcdb <展开后的LIB> $C/EnMicroMsg.db hex:$KEY \
   'PRAGMA table_info(chatroom)'"
@@ -253,7 +252,7 @@ JADX 也可用：`~/tools/jadx/bin/jadx --single-class <点分名> -d <输出目
 ## 10. 已知限制 / 安全项
 
 1. 微信被系统冻结时轮询暂停，需要保活（前台服务 / 唤醒锁）
-2. probe 把密钥明文写 `key.log`；最终版应搬进主模块内存
+2. 密钥捕获把明文写进 `files/satori-wx/key.log`（0600）；后续可改为只在内存里传给 `wx_live`
 3. 微信 `:push` 子进程有 mars；服务端只在主进程（发送靠反射，不依赖子进程）
 4. 只支持 arm64
 5. 发送是风控最敏感动作：默认关闭 + 限速 + 白名单，不伪造成功
@@ -268,7 +267,7 @@ JADX 也可用：`~/tools/jadx/bin/jadx --single-class <点分名> -d <输出目
 2. 读 `internal/status` 的 `send` 块确认线上状态；`send_allow` 只有 `filehelper`，
    要接真实用例（自己的测试群）就加进去并重启。
 3. 想继续写功能：从 §2 的 13 个写操作里挑一个，按发送/撤回的老路子做——
-   **先只读地找到微信自己的接口**（离线 DEX 反查 + 必要时探针栈），再反射调用，
+   **先只读地找到微信自己的接口**（离线 DEX 反查 + 必要时 Java 栈），再反射调用，
    再默认关闭 + 白名单 + 限速，最后真机验一条。建议顺序：群管理（改名 → 禁言 → 踢人），
    好友审批与上传最后做。想接媒体发送先读 `docs/wechat-send-types.md`。
 4. 纪律：**每个方法真实实现后才进 `features`**；`unsupported` 只放微信真的没有的能力；
@@ -276,6 +275,6 @@ JADX 也可用：`~/tools/jadx/bin/jadx --single-class <点分名> -d <输出目
 
 ## 12. 版本与提交
 
-- `module.prop` / `native/version.h`：当前 **v0.6.6**（装机 **v0.6.4**，含 §6.4 预热重试、§6.5 纯文本拍平与 §6.6 撤回）
+- `module.prop` / `native/version.h`：当前 **v0.6.7**（装机 **v0.6.6**；v0.6.7 把密钥捕获并入主模块、删除独立 probe、模块名改为“知言”）
 - 近期：`56cbac5` 预热等派发器 → `f797dcb` 读侧补齐 + unsupported → `1b34615` v0.6.4 读侧 →
   `62228ec` 状态语义+预热 → `0895aac` 状态计数 → `d92ee8f` r1.y.k() 修复 → `8e71852` 发送打通

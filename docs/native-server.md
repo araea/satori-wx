@@ -1,4 +1,4 @@
-> v0.3.0 历史设计记录。当前版本见 [v0.6.6 协议矩阵](satori-conformance.md)、[消息发送路径](wechat-send.md) 和 [部署记录](deployment-v0.4.0.md)。
+> v0.3.0 历史设计记录。当前版本见 [v0.6.7 协议矩阵](satori-conformance.md)、[消息发送路径](wechat-send.md) 和 [部署记录](deployment-v0.4.0.md)。
 
 # v0.3.0 native 服务端研究记录
 
@@ -28,7 +28,7 @@ ZygiskNext 的 `zygisk_next_api.h` 是另一套公开接口，有自己的 `zn_m
 | `native/wx_account.{h,cpp}` | v0.5.0：只读解析微信偏好，生成 Satori 登录事件 |
 | `native/wx_adapter.{h,cpp}` | v0.5.0：每 3 秒扫描一次并做身份状态机（added/updated/removed） |
 | `native/webhook.{h,cpp}` | v0.5.0：可选 WebHook 推送，独立线程 + 有界队列，仅 http |
-| `native/probe.cpp`、`native/data_slot.h` | 单独构建的可选 JNI 观测实验 |
+| `native/wx_key.cpp`、`native/data_slot.h` | 密钥捕获：RegisterNatives 指针替换（v0.6.7 起并入主模块，原独立 probe 已删） |
 
 ## 协议边界
 
@@ -64,7 +64,7 @@ worker 和 socket 在 specialize 后创建，避免继承特权网络 fd 或跨 
 `tests/run.sh` 使用同一份 `native/server.cpp` 编译独立原生进程，Python 标准库通过真实 socket
 验证 HTTP 状态、鉴权、JSON 错误、大小限制、WebSocket 握手参考向量、分片、掩码、控制帧、
 合包/分包、会话恢复拒绝、IDENTIFY 超时、慢连接隔离。
-探针测试以假的 JNI 表验证引用计数、并发队列、原异常保留和还原竞争，并在真实 mmap 页面验证权限处理。
+密钥捕获复用 `native/data_slot.h`；旧探针测试已随独立模块删除。
 
 已验证 Termux 原生编译和协议行为；这不能代替装入微信进程后的验证。
 尚未验证：设备当前 ZygiskNext 的实际加载、SELinux 下监听、微信启动稳定性、后台保活和真实微信账号/消息适配。

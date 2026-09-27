@@ -57,11 +57,9 @@ while [ "$i" -lt 90 ]; do
             echo
         fi
         logcat -d -s SatoriWx:V '*:S' | tail -n 60
-        PROBE=/data/data/com.tencent.mm/files/satori-wx-probe
-        echo "--- probe key ---"
-        cat "$PROBE/key.log" 2>/dev/null || echo "(none)"
-        echo "--- probe meta ---"
-        cat "$PROBE/meta.log" 2>/dev/null || echo "(none)"
+        KEYS=/data/data/com.tencent.mm/files/satori-wx
+        echo "--- cipher key ---"
+        cat "$KEYS/key.log" 2>/dev/null || echo "(none)"
         printf 'SEND verdict: expected=%s ok=%s target=%s\n' "$SEND_EXPECTED" "$SEND_OK" "$TARGET"
         printf 'END exit=%s time=%s boot_id=%s\n' "$rc" "$(date -u +%FT%TZ)" "$(cat /proc/sys/kernel/random/boot_id)"
         if [ "$rc" -eq 0 ] && { [ "$SEND_EXPECTED" -eq 0 ] || [ "$SEND_OK" -eq 1 ]; }; then

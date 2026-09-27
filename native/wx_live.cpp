@@ -97,10 +97,11 @@ bool FindDatabase(const char *app_data, char *out, size_t capacity) {
 }
 
 // Returns the one spec that came from setCipherKey (it carries page_size + cipher version).
-// Only that spec is ever used against the live database.
+// Only that spec is ever used against the live database. The main module captures it itself
+// (native/wx_key.cpp); there is no separate probe module any more.
 bool LoadCipherSpec(const char *app_data, Spec *spec) {
     char path[1300];
-    snprintf(path, sizeof(path), "%s/files/satori-wx-probe/key.log", app_data);
+    snprintf(path, sizeof(path), "%s/files/satori-wx/key.log", app_data);
     FILE *file = fopen(path, "r");
     if (!file) return false;
     char line[512];

@@ -1,11 +1,13 @@
 # 知言（satori-wx）
 
-微信 `com.tencent.mm` 的实验性 Zygisk 模块。v0.6.6 在 **纯 native Satori v1 服务端**
+微信 `com.tencent.mm` 的 Zygisk 模块。v0.6.7 在 **Satori v1 服务端**
 （C++ + POSIX socket，无 DEX、Java 助手、APK、ArtMethod 偏移或 hook 引擎）之上，
-加入**只读的微信账号身份 / 消息库适配层**，以及一个**默认关闭的反射消息发送器**。
+加入**只读的微信账号身份 / 消息库适配层**，以及一个**默认关闭的反射消息发送与撤回**。
 
 账号身份来自微信自己持久化的 SharedPreferences（同 uid 直接读文件，不 hook、不改写、
-不访问数据库）。消息读取用微信自己的 `libWCDB.so` 只读打开 `EnMicroMsg.db`。
+不访问数据库）。消息读取用微信自己的 `libWCDB.so` 只读打开 `EnMicroMsg.db`；
+数据库密钥由模块自身在 `RegisterNatives` 边界捕获（见 `native/wx_key.cpp`），
+不再需要单独的探针模块。
 **发送是可选项**：`send=on` 后，实现端用**宿主 ClassLoader 反射调用微信自己的
 `v51.r0`（NetSceneSendMsg）与网络派发器**，由微信完成入库、加密、发送；不发任何原始包、
 不 hook、不加载 dex。默认 `send=off`，且只对 `send_allow` 白名单内的会话开放。
@@ -19,18 +21,16 @@
 在 arm64 Termux 中，需要 clang、Python 3、readelf、patchelf、zip；不需要 JDK、Android SDK 或 D8。
 
 ```sh
-./build.sh               # 默认 native 服务端 + 账号只读探针
-./tests/run.sh           # HTTP/WebSocket socket 测试 + 账号解析/事件测试 + 探针资源/还原测试
-./build.sh probe         # 独立、可选的 JNI 边界探针
+./build.sh               # 服务端 ZIP + 三个诊断工具
+./tests/run.sh           # HTTP/WebSocket socket 测试 + 账号解析/事件测试
 ```
 
 产物：
 
-- `build/satori-wx-server-v0.6.6.zip`，模块 ID `satori_wx`。
+- `build/satori-wx-server-v0.6.7.zip`，模块 ID `satori_wx`。
 - `build/module-server/`，服务端模块目录。
 - `build/satori-wx-account`，读取某个微信数据目录并打印推导出的登录事件（诊断用，不联网）。
 - `build/satori-wx-wcdb`，只读 SQLCipher/SQLite 客户端，用微信自己的 libWCDB 读导出数据库（诊断用）。
-- `build/satori-wx-probe-v0.6.6.zip`，模块 ID `satori_wx_probe`。
 
 构建检查 AArch64、Zygisk 导出入口、动态依赖白名单及 DEX/旧引导标记。
 构建会移除 Termux RUNPATH，运行时不依赖 Termux 库目录。C++ 不链接共享 STL；JSON 解析器为静态编译的 cJSON 1.7.19（MIT，许可证随包附带）。
@@ -144,29 +144,20 @@ HTTP 每次响应后关闭连接；暂不提供 TLS、chunked 请求体、资源
 - 额外限速：1.5 秒最小间隔、每分钟 10 条；解析失败或派发返回负值时返回 502 并写明原因。
 - **2026-09-27 真机验证通过**（v0.6.1 向「文件传输助手」实发成功）。
 - 诊断：`POST /v1/internal/status` 与 `/v1/internal/capabilities` 的响应里带 `send` 块
-  （`enabled`/`ready`/`resolved`/`dispatcher`/`allowed_any`/`allow`、`sent`/`failed`/`rejected`
+  （`enabled`/`ready`/`resolved`/`dispatcher`/`allowed_any`/`allow`、`sent`/`failed`/`rejected`/`recalled`
   计数、上次尝试的目标/结果/`netId`/本地 id）；`resolved`/`dispatcher` 由登录后的预热线程
   主动探测（不发消息），`message.create` 被策略拒绝时 502 体带 `rejected: true`。
 - 这是本模块里风控最敏感的能力，请保持默认关闭；`features` 与 `internal/capabilities`
   会如实反映当前是否可用。
 
-## 可选 native 探针
+## 数据库密钥捕获
 
-`./build.sh probe` 构建独立探针，不是服务端的运行依赖。
-它观察成功的 `RegisterNatives` 注册，原调用结果和异常原样保留；仅在可读、非执行数据页上
-比较并交换 JNI 表中的一个函数指针。仍然属于实验性全局表修改，并非“零侵入”。
-不替换微信 native 方法，不采集消息正文或数据库密钥。
-
-worker attach 成功后才启用观测，避免主线程等待 Java 初始化；因此可能漏掉最早的一部分注册。
-观察窗口 90 秒、最多 20000 次成功注册调用，1024 条有界队列；满时丢弃并计数。
-到期停止生产、还原自有槽位、排空并释放所有全局引用。遇到外部槽位改动不覆盖；
-`mprotect` 失败不写页面。模块保留映射，保障已缓存 wrapper 的调用仍可转发。
-
-日志位于 Zygisk 提供的应用数据目录下 `files/satori-wx-probe/`：
-`boundary.log`、`maps.log`、`meta.log`。每次运行覆盖旧日志，单文件最多 16 MiB。
-`boundary.log` 的时间为 monotonic 毫秒，库偏移为 backing-file offset。
-还原结果、保护位恢复、丢弃数及 I/O 状态写入 meta；失败必须结合 logcat 判断。
-JNI 表来自主线程；CheckJNI 或其他模块使用不同表时，不保证覆盖所有注册。
+微信在运行时派生出 `EnMicroMsg.db` 的 SQLCipher 密钥，磁盘上没有；要读消息库只能观察
+`com.tencent.wcdb.core.Database.setCipherKey` / `nativeSetKey`。模块在
+`env->functions->RegisterNatives` 这个可写数据表上替换这两个 native 的 `fnPtr`，
+原调用结果和异常原样保留，不替换微信方法本身、不改代码段。捕获到的 spec 写入
+`<应用数据目录>/files/satori-wx/key.log`（0600），`wx_live` 只读打开库并轮询新消息。
+观察器常驻，账号切换后新密钥会覆盖写入。这条链路以前是一个独立探针模块，v0.6.7 起并回主模块。
 
 ## 参考与下一步
 
@@ -177,9 +168,10 @@ JNI 表来自主线程；CheckJNI 或其他模块使用不同表时，不保证�
 - [研究记录与已知边界](docs/native-server.md)。
 - [只读账号身份说明](docs/wechat-account.md)。
 - [消息后端设计（native、低特征）](docs/wechat-store.md)。
-- [微信消息发送路径（反射，v0.6.6）](docs/wechat-send.md)。
-- [v0.6.6 协议覆盖矩阵](docs/satori-conformance.md)。
+- [微信消息发送路径（反射，v0.6.7）](docs/wechat-send.md)。
+- [v0.6.7 协议覆盖矩阵](docs/satori-conformance.md)。
 - [v0.4.0 安装与重启验收记录](docs/deployment-v0.4.0.md)。
 
-下一步：写操作（撤回、改名、禁言、踢人、好友审批、上传）需要逐个逆向微信内部接口，
-每个都像发送那样是一次独立研究；读侧与发送已经齐了。
+下一步：写操作（群改名/退群/禁言、踢人/管理员、好友删除与审批、上传）需要逐个逆向微信
+内部接口，每个都像发送/撤回那样是一次独立研究；读侧、发送与撤回已经齐了。
+媒体发送（图片/语音/视频/文件）的接口位置见 [docs/wechat-send-types.md](docs/wechat-send-types.md)。

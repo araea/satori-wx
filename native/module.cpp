@@ -4,6 +4,7 @@
 #include "wx_adapter.h"
 #include "wx_backend.h"
 #include "wx_capabilities.h"
+#include "wx_key.h"
 #include "wx_live.h"
 #include "wx_send.h"
 #include <android/log.h>
@@ -168,8 +169,10 @@ public:
         } else {
             pthread_detach(account);
         }
-        // Read-only message store: reads the probe's captured cipher spec and publishes
-        // message-created events. Disabled automatically if the key is unavailable.
+        // Capture the SQLCipher key ourselves (no separate probe module) and read the
+        // database read-only to publish message-created events. Disabled if the key never
+        // appears.
+        if (g_data_dir[0]) satori::KeyCaptureStart(vm, g_data_dir);
         if (g_data_dir[0] && !satori::StartLiveStore(g_data_dir, g_bus, 1))
             __android_log_print(ANDROID_LOG_WARN, "SatoriWx", "live message store not started");
         // Resolve the sender once the account is online so status reflects real capability.

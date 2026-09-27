@@ -1,7 +1,7 @@
 #!/system/bin/sh
 # Sourced by the Magisk/KernelSU module installer.
 SKIPUNZIP=0
-[ "$ARCH" = arm64 ] || abort "此实验包仅支持 arm64"
+[ "$ARCH" = arm64 ] || abort "此模块仅支持 arm64"
 ui_print "知言：安装 native Satori 服务端"
 old_config=/data/adb/modules/satori_wx/satori-wx.conf
 if [ -f "$old_config" ]; then
