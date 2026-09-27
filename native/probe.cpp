@@ -201,8 +201,19 @@ void DumpJavaStack(JNIEnv *env, const char *reason) {
     fclose(file);
 }
 
+void AppendLine(const char *name, const char *text) {
+    char path[1300];
+    snprintf(path, sizeof(path), "%s/%s", g_dir, name);
+    FILE *file = fopen(path, "a");
+    if (!file) return;
+    fprintf(file, "%s\n", text);
+    fclose(file);
+}
+
 void CaptureStartTask(JNIEnv *env, jobject thiz, jobject task) {
-    if (!__atomic_load_n(&g_stack_dumped, __ATOMIC_ACQUIRE) && task && !env->ExceptionCheck()) {
+    static int seen = 0;
+    if (task && !env->ExceptionCheck() && __atomic_load_n(&seen, __ATOMIC_RELAXED) < 300) {
+        __atomic_add_fetch(&seen, 1, __ATOMIC_RELAXED);
         jclass task_class = env->GetObjectClass(task);
         if (task_class) {
             jmethodID to_string = env->GetMethodID(task_class, "toString", "()Ljava/lang/String;");
@@ -210,11 +221,12 @@ void CaptureStartTask(JNIEnv *env, jobject thiz, jobject task) {
                 auto text = static_cast<jstring>(env->CallObjectMethod(task, to_string));
                 if (text && !env->ExceptionCheck()) {
                     const char *chars = env->GetStringUTFChars(text, nullptr);
-                    if (chars && ContainsCI(chars, "sendmsg")) {
-                        __atomic_store_n(&g_stack_dumped, 1, __ATOMIC_RELEASE);
-                        DumpJavaStack(env, chars);
+                    if (chars) {
+                        AppendLine("tasks.log", chars);
+                        if (ContainsCI(chars, "send") && !__atomic_exchange_n(&g_stack_dumped, 1, __ATOMIC_ACQ_REL))
+                            DumpJavaStack(env, chars);
+                        env->ReleaseStringUTFChars(text, chars);
                     }
-                    if (chars) env->ReleaseStringUTFChars(text, chars);
                 }
             }
         }
