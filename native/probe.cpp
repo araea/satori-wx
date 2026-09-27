@@ -521,7 +521,7 @@ public:
     void preAppSpecialize(zygisk::AppSpecializeArgs *args) override {
         if (args && args->nice_name && args->app_data_dir && !env_->ExceptionCheck()) {
             const char *name = env_->GetStringUTFChars(args->nice_name, nullptr);
-            target_ = name && strcmp(name, kTarget) == 0;
+            target_ = name && strncmp(name, kTarget, sizeof(kTarget) - 1) == 0;
             if (name) env_->ReleaseStringUTFChars(args->nice_name, name);
             if (env_->ExceptionCheck()) env_->ExceptionClear();
             if (target_) {
