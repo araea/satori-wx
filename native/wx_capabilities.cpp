@@ -25,6 +25,10 @@ const char *const kWithSend[] = {
     "upload.create",
     "message.create",
     "message.delete",
+    "channel.delete",
+    "guild.member.kick",
+    "guild.member.role.set",
+    "guild.member.role.unset",
 };
 // Standard methods WeChat has no concept for. Reported so clients can mark them unusable
 // instead of retrying: WeChat messages cannot be edited and carry no reactions, and groups

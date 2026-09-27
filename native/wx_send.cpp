@@ -41,6 +41,7 @@ char g_last_error[160] = {};
 bool g_resolved = false;
 bool g_dispatcher_ok = false;
 jobject g_loader = nullptr;      // java.lang.ClassLoader (app)
+jmethodID g_loader_load = nullptr; // ClassLoader.loadClass(String), cached by Resolve
 jclass g_r0 = nullptr;           // v51.r0
 jmethodID g_r0_ctor = nullptr;   // (String,String,int,int,long,String)V
 jfieldID g_r0_local = nullptr;   // f:J
@@ -226,6 +227,7 @@ bool Resolve(JNIEnv *env, char *detail, size_t size) {
     }
     if (ok) {
         g_loader = env->NewGlobalRef(loader);
+        g_loader_load = load;
         g_r0 = static_cast<jclass>(env->NewGlobalRef(r0));
         g_y2 = static_cast<jclass>(env->NewGlobalRef(y2));
         g_a3 = static_cast<jclass>(env->NewGlobalRef(a3));
@@ -282,6 +284,61 @@ jobject Dispatcher(JNIEnv *env, int *mask) {
 } // namespace
 
 void SendInit(void *vm) { g_vm = static_cast<JavaVM *>(vm); }
+
+void *ReflectEnv() { return Env(); }
+
+bool ReflectResolve(char *detail, size_t size) {
+    JNIEnv *env = Env();
+    if (!env) { if (detail && size) Detail(detail, size, "JavaVM unavailable"); return false; }
+    pthread_mutex_lock(&g_mu);
+    const bool ok = g_resolved || Resolve(env, detail, size);
+    pthread_mutex_unlock(&g_mu);
+    return ok;
+}
+
+void *ReflectLoad(const char *name) {
+    JNIEnv *env = Env();
+    if (!env || !g_loader || !g_loader_load) return nullptr;
+    return LoadClass(env, g_loader, g_loader_load, name);
+}
+
+// Creates a no-op onSceneEnd callback (com.tencent.mm.network.y2) as a local reference.
+void *ReflectCallback() {
+    JNIEnv *env = Env();
+    if (!env || !g_y2 || !g_y2_ctor) return nullptr;
+    jobject callback = env->NewObject(g_y2, g_y2_ctor);
+    if (env->ExceptionCheck()) { env->ExceptionClear(); return nullptr; }
+    return callback;
+}
+
+// Calls scene.doScene(dispatcher, callback); returns the netId, or -1 with a reason.
+int ReflectDispatchScene(void *scene, void *do_scene, char *detail, size_t size) {
+    JNIEnv *env = Env();
+    if (!env || !scene || !do_scene) { Detail(detail, size, "scene unavailable"); return -1; }
+    int probe = 0;
+    jobject dispatcher = Dispatcher(env, &probe);
+    if (!dispatcher) {
+        Detail(detail, size, "network dispatcher unavailable (probe=0x%x)", probe);
+        return -1;
+    }
+    jobject callback = env->NewObject(g_y2, g_y2_ctor);
+    if (env->ExceptionCheck()) { env->ExceptionClear(); callback = nullptr; }
+    if (!callback) {
+        env->DeleteLocalRef(dispatcher);
+        Detail(detail, size, "callback allocation failed");
+        return -1;
+    }
+    const jint net = env->CallIntMethod(static_cast<jobject>(scene), reinterpret_cast<jmethodID>(do_scene), dispatcher, callback);
+    if (env->ExceptionCheck()) {
+        env->ExceptionClear();
+        Detail(detail, size, "dispatch threw");
+    } else if (net < 0) {
+        Detail(detail, size, "dispatch rejected (netId=%d)", static_cast<int>(net));
+    }
+    env->DeleteLocalRef(callback);
+    env->DeleteLocalRef(dispatcher);
+    return net;
+}
 
 bool SendDispatcherReady() {
     pthread_mutex_lock(&g_mu);

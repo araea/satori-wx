@@ -1,6 +1,7 @@
 #include "wx_backend.h"
 #include "wx_capabilities.h"
 #include "wx_live.h"
+#include "wx_room.h"
 #include "wx_send.h"
 #include "wx_store.h"
 #include <stdio.h>
@@ -104,6 +105,38 @@ Response Call(void *, const Request &request) {
     }
 
     if (!store) return {503, nullptr};
+
+    // Write actions reuse the sender's opt-in switch. Success means WeChat's own scene was
+    // accepted for dispatch, not that the group server applied it.
+    if (!strcmp(name, "channel.delete")) {
+        if (!SendEnabled()) return {404, nullptr};
+        const char *channel_id = Text(request, "channel_id");
+        if (!*channel_id || !strstr(channel_id, "@chatroom")) return {400, nullptr};
+        ActionResult action = RoomRemoveMember(channel_id, StoreSelfId(store));
+        if (!action.ok) return Failure("leave_failed", action.detail, action.rejected);
+        return {200, cJSON_CreateObject()};
+    }
+    if (!strcmp(name, "guild.member.kick")) {
+        if (!SendEnabled()) return {404, nullptr};
+        const char *guild_id = Text(request, "guild_id"), *user_id = Text(request, "user_id");
+        if (!*guild_id || !*user_id) return {400, nullptr};
+        ActionResult action = RoomRemoveMember(guild_id, user_id);
+        if (!action.ok) return Failure("kick_failed", action.detail, action.rejected);
+        return {200, cJSON_CreateObject()};
+    }
+    if (!strcmp(name, "guild.member.role.set") || !strcmp(name, "guild.member.role.unset")) {
+        if (!SendEnabled()) return {404, nullptr};
+        const char *guild_id = Text(request, "guild_id"), *user_id = Text(request, "user_id");
+        const char *role_id = Text(request, "role_id");
+        if (!*guild_id || !*user_id || !*role_id) return {400, nullptr};
+        // Only WeChat's group-admin bit is mutable through the server; owner/member are fixed.
+        if (strcmp(role_id, "admin")) return Failure("role_not_supported", "only the admin role is mutable", false);
+        const bool enable = !strcmp(name, "guild.member.role.set");
+        ActionResult action = RoomSetAdmin(guild_id, user_id, enable);
+        if (!action.ok) return Failure(enable ? "role_set_failed" : "role_unset_failed", action.detail, action.rejected);
+        return {200, cJSON_CreateObject()};
+    }
+
     if (!strcmp(name, "message.get"))
         return Read(StoreMessageGet(store, Text(request, "channel_id"), Text(request, "message_id")));
     if (!strcmp(name, "message.list")) {

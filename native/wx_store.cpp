@@ -638,6 +638,7 @@ cJSON *StoreGuildRoleList(Store *store, const char *guild_id) {
     if (!result || !data) { cJSON_Delete(result); cJSON_Delete(data); return nullptr; }
     cJSON_AddItemToObject(result, "data", data);
     cJSON_AddItemToArray(data, RoleObject("owner", "群主"));
+    cJSON_AddItemToArray(data, RoleObject("admin", "管理员"));
     cJSON_AddItemToArray(data, RoleObject("member", "成员"));
     return result;
 }

@@ -55,4 +55,14 @@ struct SendStatus {
     char last_error[160];
 };
 void SendStatusGet(SendStatus *status);
+
+// ---- Reflection helpers shared with the room/contact actions (implemented in wx_send.cpp).
+// The host class loader and the network dispatcher are resolved once for the whole module.
+// `ReflectEnv` attaches the calling thread to the JavaVM; `ReflectLoad` returns a local class
+// reference or null; `ReflectDispatchScene` calls scene.doScene(dispatcher, no-op callback).
+void *ReflectEnv();
+bool ReflectResolve(char *detail, size_t size);
+void *ReflectLoad(const char *name);
+void *ReflectCallback();
+int ReflectDispatchScene(void *scene, void *do_scene, char *detail, size_t size);
 } // namespace satori

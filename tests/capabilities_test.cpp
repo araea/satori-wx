@@ -48,9 +48,13 @@ void TestFeatures() {
 
     satori::SetSendEnabled(true);
     list = satori::WeChatFeatures(&count);
-    Check(count == 16, "feature count is 16 when the sender is on");
+    Check(count == 20, "feature count is 20 when the sender is on");
     Check(HasFeature(list, count, "message.create"), "message.create present when the sender is on");
     Check(HasFeature(list, count, "message.delete"), "message.delete present when the sender is on");
+    Check(HasFeature(list, count, "channel.delete"), "channel.delete present when the sender is on");
+    Check(HasFeature(list, count, "guild.member.kick"), "guild.member.kick present when the sender is on");
+    Check(HasFeature(list, count, "guild.member.role.set"), "guild.member.role.set present when the sender is on");
+    Check(HasFeature(list, count, "guild.member.role.unset"), "guild.member.role.unset present when the sender is on");
     Check(HasFeature(list, count, "upload.create"), "upload.create present when the sender is on");
     satori::SetSendEnabled(false);
 

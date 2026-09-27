@@ -163,7 +163,7 @@ int main() {
     Check(satori::StoreGuildMemberList(store, "999@chatroom", nullptr, 50) == nullptr, "member.list unknown guild");
 
     cJSON *roles = satori::StoreGuildRoleList(store, "123@chatroom");
-    Check(roles && cJSON_GetArraySize(Item(roles, "data")) == 2, "guild.role.list");
+    Check(roles && cJSON_GetArraySize(Item(roles, "data")) == 3, "guild.role.list");
     cJSON_Delete(roles);
     Check(satori::StoreGuildRoleList(store, "999@chatroom") == nullptr, "role.list unknown guild");
     cJSON *owner_roles = satori::StoreMemberRoleList(store, "123@chatroom", "wxid_abc");
