@@ -260,6 +260,13 @@ void SendConfigure(const char *allow_semicolon_list) {
 
 bool SendReady() { return g_resolved; }
 
+bool SendDispatcherReady() {
+    pthread_mutex_lock(&g_mu);
+    const bool ready = g_dispatcher_ok;
+    pthread_mutex_unlock(&g_mu);
+    return ready;
+}
+
 void SendStatusGet(SendStatus *status) {
     if (!status) return;
     pthread_mutex_lock(&g_mu);

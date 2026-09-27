@@ -27,8 +27,10 @@ struct SendResult {
 SendResult SendText(const char *talker, const char *content);
 // Resolves the WeChat send classes and probes the dispatcher ahead of the first send so the
 // status block reports real capability instead of "not tried yet". Safe to call repeatedly;
-// does nothing until the JavaVM is available. Returns true once the classes are resolved.
+// does nothing until the JavaVM is available. Returns true once the classes are resolved
+// (the dispatcher may still be down right after login, hence SendDispatcherReady()).
 bool SendWarmUp();
+bool SendDispatcherReady();
 
 // Snapshot for /v1/internal/status and /v1/internal/capabilities. Counters are per process
 // and reset on restart.

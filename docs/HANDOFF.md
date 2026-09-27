@@ -1,4 +1,4 @@
-# 知言 satori-wx —— 交接文档（截至 v0.6.4 实验）
+# 知言 satori-wx —— 交接文档（截至 v0.6.5 实验）
 
 > 给下一个对话/会话的完整上下文。仓库：`/data/data/com.termux/files/home/dev/araea/satori-wx`
 > 先读这份，再读 `README.md`、`docs/wechat-store.md`、`docs/wechat-send.md`、`docs/wechat-account.md`、`docs/satori-conformance.md`。
@@ -53,7 +53,7 @@ cd /data/data/com.termux/files/home/dev/araea/satori-wx
 ./tests/run.sh      # 22 socket + 10 协议 + account + wcdb + store + capabilities + 3 webhook + 探针测试
 
 # 部署（KernelSU，需重启生效）
-su -c 'ksud module install build/satori-wx-server-v0.6.4.zip'
+su -c 'ksud module install build/satori-wx-server-v0.6.5.zip'
 su -c 'nohup sh -c "sleep 20; reboot" >/dev/null 2>&1 &'
 ```
 

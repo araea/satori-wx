@@ -78,8 +78,10 @@ void *WarmSend(void *) {
         nanosleep(&second, nullptr);
     }
     if (satori::g_login_count <= 0) return nullptr;
-    for (int i = 0; i < 30; ++i) {
-        if (satori::SendWarmUp()) break;
+    // Classes resolve as soon as the app class loader is usable, but the network dispatcher
+    // only appears once the connection is up: keep probing until both are true.
+    for (int i = 0; i < 90; ++i) {
+        if (satori::SendWarmUp() && satori::SendDispatcherReady()) break;
         const timespec delay{10, 0};
         nanosleep(&delay, nullptr);
     }
