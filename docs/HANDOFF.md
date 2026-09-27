@@ -1,4 +1,4 @@
-# 知言 satori-wx —— 交接文档（截至 v0.6.0 实验）
+# 知言 satori-wx —— 交接文档（截至 v0.6.1 实验）
 
 > 给下一个对话/会话的完整上下文。仓库：`/data/data/com.termux/files/home/dev/araea/satori-wx`
 > 先读这份，再读 `README.md`、`docs/wechat-store.md`、`docs/wechat-send.md`、`docs/wechat-account.md`、`docs/satori-conformance.md`。
@@ -18,7 +18,7 @@
 | 联系人/群/频道 | ✅ 真机验证 | `user.get` / `friend.list` / `guild.get,list` / `channel.get,list` |
 | 协议可选 WebHook | ✅ | `/v1/meta/webhook.create|delete`，`Satori-Opcode` 推送 |
 | 协议服务端 | ✅ | HTTP RPC、WebSocket、鉴权、37 方法目录、事件回放 |
-| **消息发送** | 🔶 已实现、待真机 | `send=on` 时反射调微信自己的 `v51.r0`+派发器发纯文本；默认关闭、白名单、限速；离线测试过，真机未验 |
+| **消息发送** | 🔶 已实现、待真机 | `send=on` 时反射调微信自己的 `v51.r0`+派发器发纯文本；默认关闭、白名单、限速。v0.6.0 真机：解析全通过、`a3.c()` 主进程为 null；v0.6.1 改 `r1.y.k()` 优先，待验 |
 | guild.member.* / guild.role.* | ⬜ 未做 | 需要 `chatroom` 表成员/角色 |
 
 **已实现并写入 `login.features` 的方法（8 个，`send=on` 时 9 个）**：
@@ -47,7 +47,7 @@ cd /data/data/com.termux/files/home/dev/araea/satori-wx
 ./tests/run.sh      # 22 socket + 10 协议 + account + wcdb + store + capabilities + 3 webhook + 探针测试
 
 # 部署（KernelSU，需重启生效）
-su -c 'ksud module install build/satori-wx-server-v0.6.0.zip'
+su -c 'ksud module install build/satori-wx-server-v0.6.1.zip'
 su -c 'nohup sh -c "sleep 20; reboot" >/dev/null 2>&1 &'
 ```
 
@@ -105,7 +105,7 @@ su -c 'nohup sh -c "sleep 20; reboot" >/dev/null 2>&1 &'
 
 **待办**：最终版应把捕获搬进主模块内存，不再落盘 key.log（安全项）。
 
-## 7. 发送（v0.6.0 已解决路径，待真机）
+## 7. 发送（v0.6.1 已解决路径，待真机）
 
 **结论：不需要 hook、不需要 dex、不需要碰编译化 `libapp.so`。** 完整结论见
 [docs/wechat-send.md](wechat-send.md)。要点：
@@ -115,9 +115,11 @@ su -c 'nohup sh -c "sleep 20; reboot" >/dev/null 2>&1 &'
    `m1.doScene(j1, new y2())`——现成的派发入口。
 2. 消息场景 `v51.r0`（NetSceneSendMsg）的 6 参构造器、`doScene`、字段 `f`（本地消息 id）
    与回调 `com.tencent.mm.network.y2` 也都在 dex 里。
-3. 实现用宿主 ClassLoader 反射：`a3.c()` 取派发器 → `new v51.r0(talker, content, 1, 0, 0, "")`
-   （构造器自己入库）→ `scene.doScene(dispatcher, new y2())`。返回 `netId >= 0` 表示已交给
-   微信派发。**加密/序号/重发全是微信自己的代码**。
+3. 实现用宿主 ClassLoader 反射：派发器取 **`r1.y.k()` 优先、`a3.c()` 兜底**
+   （主进程没有 mars 的 `j1`，只有 MMKernel 网络壳里的远端派发器；见 [wechat-send.md](wechat-send.md) §二）
+   → `new v51.r0(talker, content, 1, 0, 0, "")`（构造器自己入库）→
+   `scene.doScene(dispatcher, new y2())`。返回 `netId >= 0` 表示已交给微信派发。
+   **加密/序号/重发全是微信自己的代码**。派发器必须在构造场景**之前**拿到（构造器写库）。
 
 实现：`native/wx_send.cpp`。默认关闭（`send=off`），`send_allow` 白名单外一律拒绝，
 1.5s 最小间隔 + 每分钟 10 条。**真机尚未验证**；发送是风控最敏感动作，保持默认关闭。

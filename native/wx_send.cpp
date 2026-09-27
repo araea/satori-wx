@@ -41,8 +41,11 @@ jfieldID g_r0_local = nullptr;   // f:J
 jmethodID g_r0_do_scene = nullptr; // (com.tencent.mm.network.s, com.tencent.mm.modelbase.u0)I
 jclass g_y2 = nullptr;           // com.tencent.mm.network.y2
 jmethodID g_y2_ctor = nullptr;   // ()V
-jclass g_a3 = nullptr;           // com.tencent.mm.network.a3
+jclass g_a3 = nullptr;           // com.tencent.mm.network.a3 (MMPushCore, :push only)
 jmethodID g_a3_dispatcher = nullptr; // ()Lcom/tencent/mm/network/j1;
+jclass g_r1 = nullptr;           // com.tencent.mm.modelbase.r1 (MMKernel network holder)
+jfieldID g_r1_singleton = nullptr;   // y:Lcom/tencent/mm/modelbase/r1;
+jmethodID g_r1_dispatcher = nullptr; // k()Lcom/tencent/mm/network/s;
 
 long long NowMs() {
     timespec ts{};
@@ -128,6 +131,7 @@ bool Resolve(JNIEnv *env, char *detail, size_t size) {
     jclass r0 = LoadClass(env, loader, load, "v51.r0");
     jclass y2 = LoadClass(env, loader, load, "com.tencent.mm.network.y2");
     jclass a3 = LoadClass(env, loader, load, "com.tencent.mm.network.a3");
+    jclass r1 = LoadClass(env, loader, load, "com.tencent.mm.modelbase.r1");
     if (!r0 || !y2 || !a3) {
         ok = false;
         Detail(detail, size, "send classes not found (version mismatch?)");
@@ -144,11 +148,19 @@ bool Resolve(JNIEnv *env, char *detail, size_t size) {
             Detail(detail, size, "send methods not found (version mismatch?)");
         }
     }
+    // The dispatcher in the main process is the remote one held by the MMKernel network
+    // holder; a3's j1 only exists in :push. Not fatal if absent, so it is resolved leniently.
+    if (ok && r1) {
+        g_r1_singleton = env->GetStaticFieldID(r1, "y", "Lcom/tencent/mm/modelbase/r1;");
+        g_r1_dispatcher = env->GetMethodID(r1, "k", "()Lcom/tencent/mm/network/s;");
+        if (!g_r1_singleton || !g_r1_dispatcher) env->ExceptionClear();
+    }
     if (ok) {
         g_loader = env->NewGlobalRef(loader);
         g_r0 = static_cast<jclass>(env->NewGlobalRef(r0));
         g_y2 = static_cast<jclass>(env->NewGlobalRef(y2));
         g_a3 = static_cast<jclass>(env->NewGlobalRef(a3));
+        g_r1 = r1 ? static_cast<jclass>(env->NewGlobalRef(r1)) : nullptr;
         if (!g_loader || !g_r0 || !g_y2 || !g_a3) {
             ok = false;
             Detail(detail, size, "global reference allocation failed");
@@ -159,12 +171,36 @@ bool Resolve(JNIEnv *env, char *detail, size_t size) {
     if (r0) env->DeleteLocalRef(r0);
     if (y2) env->DeleteLocalRef(y2);
     if (a3) env->DeleteLocalRef(a3);
+    if (r1) env->DeleteLocalRef(r1);
     env->DeleteLocalRef(loader);
     env->DeleteLocalRef(loader_class);
     env->DeleteLocalRef(application);
     env->DeleteLocalRef(application_class);
     env->DeleteLocalRef(activity_thread);
     return ok;
+}
+
+// Returns the scene dispatcher for this process, or null.
+// The main process holds the MMKernel network wrapper (the remote dispatcher that forwards
+// to :push); MMFushCore's j1, which owns the mars transport, only exists in :push.
+jobject Dispatcher(JNIEnv *env, int *mask) {
+    int found = 0;
+    if (g_r1 && g_r1_singleton && g_r1_dispatcher) {
+        jobject holder = env->GetStaticObjectField(g_r1, g_r1_singleton);
+        if (env->ExceptionCheck()) { env->ExceptionClear(); holder = nullptr; }
+        if (holder) {
+            found |= 1;
+            jobject local = env->CallObjectMethod(holder, g_r1_dispatcher);
+            env->DeleteLocalRef(holder);
+            if (env->ExceptionCheck()) env->ExceptionClear();
+            else if (local) { if (mask) *mask = found | 2; return local; }
+        }
+    }
+    jobject dispatcher = env->CallStaticObjectMethod(g_a3, g_a3_dispatcher);
+    if (env->ExceptionCheck()) { env->ExceptionClear(); dispatcher = nullptr; }
+    if (dispatcher) found |= 4;
+    if (mask) *mask = found;
+    return dispatcher;
 }
 
 bool Allowed(const char *talker) {
@@ -253,6 +289,14 @@ SendResult SendText(const char *talker, const char *content) {
     pthread_mutex_unlock(&g_mu);
     if (!resolved) return result;
 
+    // Resolve the dispatcher before touching WeChat's database: the scene constructor below
+    // inserts a SENDING row, so a send that cannot be dispatched must not get that far.
+    int probe = 0;
+    jobject dispatcher = Dispatcher(env, &probe);
+    if (!dispatcher) {
+        Detail(result.detail, sizeof(result.detail), "network dispatcher unavailable (probe=0x%x)", probe);
+        return result;
+    }
     jstring jtalker = env->NewStringUTF(talker);
     jstring jcontent = env->NewStringUTF(content);
     jstring jempty = env->NewStringUTF("");
@@ -260,6 +304,7 @@ SendResult SendText(const char *talker, const char *content) {
         if (jtalker) env->DeleteLocalRef(jtalker);
         if (jcontent) env->DeleteLocalRef(jcontent);
         if (jempty) env->DeleteLocalRef(jempty);
+        env->DeleteLocalRef(dispatcher);
         Detail(result.detail, sizeof(result.detail), "string allocation failed");
         return result;
     }
@@ -272,21 +317,16 @@ SendResult SendText(const char *talker, const char *content) {
     env->DeleteLocalRef(jempty);
     if (env->ExceptionCheck()) {
         env->ExceptionClear();
+        env->DeleteLocalRef(dispatcher);
         Detail(result.detail, sizeof(result.detail), "scene construction failed");
         return result;
     }
     if (!scene) {
+        env->DeleteLocalRef(dispatcher);
         Detail(result.detail, sizeof(result.detail), "scene construction returned null");
         return result;
     }
     result.local_id = env->GetLongField(scene, g_r0_local);
-    jobject dispatcher = env->CallStaticObjectMethod(g_a3, g_a3_dispatcher);
-    if (env->ExceptionCheck()) { env->ExceptionClear(); dispatcher = nullptr; }
-    if (!dispatcher) {
-        env->DeleteLocalRef(scene);
-        Detail(result.detail, sizeof(result.detail), "network dispatcher unavailable (logged in?)");
-        return result;
-    }
     jobject callback = env->NewObject(g_y2, g_y2_ctor);
     if (env->ExceptionCheck()) { env->ExceptionClear(); callback = nullptr; }
     if (!callback) {

@@ -1,6 +1,6 @@
 # 知言（satori-wx）
 
-微信 `com.tencent.mm` 的实验性 Zygisk 模块。v0.6.0 在 **纯 native Satori v1 服务端**
+微信 `com.tencent.mm` 的实验性 Zygisk 模块。v0.6.1 在 **纯 native Satori v1 服务端**
 （C++ + POSIX socket，无 DEX、Java 助手、APK、ArtMethod 偏移或 hook 引擎）之上，
 加入**只读的微信账号身份 / 消息库适配层**，以及一个**默认关闭的反射消息发送器**。
 
@@ -26,11 +26,11 @@
 
 产物：
 
-- `build/satori-wx-server-v0.6.0.zip`，模块 ID `satori_wx`。
+- `build/satori-wx-server-v0.6.1.zip`，模块 ID `satori_wx`。
 - `build/module-server/`，服务端模块目录。
 - `build/satori-wx-account`，读取某个微信数据目录并打印推导出的登录事件（诊断用，不联网）。
 - `build/satori-wx-wcdb`，只读 SQLCipher/SQLite 客户端，用微信自己的 libWCDB 读导出数据库（诊断用）。
-- `build/satori-wx-probe-v0.6.0.zip`，模块 ID `satori_wx_probe`。
+- `build/satori-wx-probe-v0.6.1.zip`，模块 ID `satori_wx_probe`。
 
 构建检查 AArch64、Zygisk 导出入口、动态依赖白名单及 DEX/旧引导标记。
 构建会移除 Termux RUNPATH，运行时不依赖 Termux 库目录。C++ 不链接共享 STL；JSON 解析器为静态编译的 cJSON 1.7.19（MIT，许可证随包附带）。
@@ -171,8 +171,8 @@ JNI 表来自主线程；CheckJNI 或其他模块使用不同表时，不保证�
 - [研究记录与已知边界](docs/native-server.md)。
 - [只读账号身份说明](docs/wechat-account.md)。
 - [消息后端设计（native、低特征）](docs/wechat-store.md)。
-- [微信消息发送路径（反射，v0.6.0）](docs/wechat-send.md)。
-- [v0.6.0 协议覆盖矩阵](docs/satori-conformance.md)。
+- [微信消息发送路径（反射，v0.6.1）](docs/wechat-send.md)。
+- [v0.6.1 协议覆盖矩阵](docs/satori-conformance.md)。
 - [v0.4.0 安装与重启验收记录](docs/deployment-v0.4.0.md)。
 
 下一步：在真机上验证可选发送器（默认关闭、白名单内真发一条），以及补上 `guild.member.*` /

@@ -21,14 +21,54 @@ while [ "$i" -lt 90 ]; do
         cat "$TASK/latest-check.log"
         "$TASK/satori-wx-check" "$MOD/satori-wx.conf" --soak --expect-login
         rc=$?
-        logcat -d -s SatoriWx:I '*:S' | tail -n 40
+        SEND_EXPECTED=0
+        SEND_OK=1
+        TARGET=none
+        # v0.6.0: exercise the opt-in reflection sender when the config enables it.
+        if grep -q '^send=on' "$MOD/satori-wx.conf"; then
+            SEND_EXPECTED=1
+            SEND_OK=0
+            TOKEN=$(sed -n 's/^token=//p' "$MOD/satori-wx.conf")
+            TARGET=$(sed -n 's/^send_allow=//p' "$MOD/satori-wx.conf" | cut -d';' -f1)
+            META=$(curl -s -X POST http://127.0.0.1:5601/v1/meta \
+                -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' -d '{}')
+            echo "--- meta ---"
+            echo "$META"
+            WXID=$(echo "$META" | sed -n 's/.*"user":{"id":"\([^"]*\)".*/\1/p')
+            echo "--- send verify target=$TARGET wxid=$WXID ---"
+            n=0
+            while [ "$n" -lt 12 ]; do
+                RESP=$(curl -s -X POST http://127.0.0.1:5601/v1/message.create \
+                    -H "Authorization: Bearer $TOKEN" -H 'Satori-Platform: wechat' -H "Satori-User-ID: $WXID" \
+                    -H 'Content-Type: application/json' \
+                    -d "{\"channel_id\":\"$TARGET\",\"content\":\"[satori-wx v0.6.1 send verify]\"}")
+                echo "attempt $n: $RESP"
+                case "$RESP" in
+                    *'"id"'*) SEND_OK=1; break ;;
+                    *'dispatcher unavailable'*) sleep 6 ;;
+                    *) break ;;
+                esac
+                n=$((n+1))
+            done
+            echo "--- readback ---"
+            curl -s -X POST http://127.0.0.1:5601/v1/message.list \
+                -H "Authorization: Bearer $TOKEN" -H 'Satori-Platform: wechat' -H "Satori-User-ID: $WXID" \
+                -H 'Content-Type: application/json' -d "{\"channel_id\":\"$TARGET\",\"limit\":3}"
+            echo
+        fi
+        logcat -d -s SatoriWx:V '*:S' | tail -n 60
         PROBE=/data/data/com.tencent.mm/files/satori-wx-probe
         echo "--- probe key ---"
         cat "$PROBE/key.log" 2>/dev/null || echo "(none)"
         echo "--- probe meta ---"
         cat "$PROBE/meta.log" 2>/dev/null || echo "(none)"
+        printf 'SEND verdict: expected=%s ok=%s target=%s\n' "$SEND_EXPECTED" "$SEND_OK" "$TARGET"
         printf 'END exit=%s time=%s boot_id=%s\n' "$rc" "$(date -u +%FT%TZ)" "$(cat /proc/sys/kernel/random/boot_id)"
-        if [ "$rc" -eq 0 ]; then mv "$TASK/running" "$TASK/done"; else mv "$TASK/running" "$TASK/failed"; fi
+        if [ "$rc" -eq 0 ] && { [ "$SEND_EXPECTED" -eq 0 ] || [ "$SEND_OK" -eq 1 ]; }; then
+            mv "$TASK/running" "$TASK/done"
+        else
+            mv "$TASK/running" "$TASK/failed"
+        fi
         exit "$rc"
     fi
     sleep 4

@@ -22,8 +22,19 @@ v0.5.0 的交接文档（`HANDOFF.md` §7）判定「高层发送 API 在编译�
 
 ## 二、真实路径（微信 8.0.78 / versionCode 671108664）
 
+**派发器有两个来源，取决于进程**：
+
+- **主进程**（服务端所在）：mars 在 `com.tencent.mm:push` 里，`a3.c()`（`j1`）在主进程是 **null**。
+  主进程用的是 MMKernel 网络壳里的**远端派发器**：
+  `com.tencent.mm.modelbase.r1` 的静态字段 `y` → `k()` 返回 `com.tencent.mm.network.s`
+  （由 `com.tencent.mm.network.p3.a()` → `gp0.y.e(sVar)` 装入，日志 "setting up remote dispatcher"；
+  `gp0.t/u.a()` 就是 `r1.y.d`）。
+- **`:push` 进程**：`a3.c()` 返回真实的 `j1`（`f60887f[0]` 由 `a3.m(j1)` 设置）。
+
+所以 `native/wx_send.cpp` 的取法顺序是 **`r1.y.k()` 优先，`a3.c()` 兜底**（打印解析掩码便于排障）。
+
 ```
-com.tencent.mm.network.a3.c()                  static → j1（即 com.tencent.mm.network.s 派发器）
+r1.y.k() 或 a3.c()                              → com.tencent.mm.network.s（派发器）
 v51.r0.<init>(String talker, String content, int type, int flags, long localId, String msgSource)
         ↑ 该构造器内部把消息插入微信自己的 message 表（状态=SENDING，日志 "new msg inserted to db, local id = "）
 v51.r0.f                    long，构造器返回的本地消息 id（即 message.msgId）
@@ -33,6 +44,7 @@ com.tencent.mm.network.y2.<init>()   微信自己在 a3.b 里用的空回调（�
 
 `v51.r0.doScene(s, cb)` 内部：读回 SENDING 消息 → 组装 `/cgi-bin/micromsg-bin/newsendmsg`
 （cmd 522 / 237 / 1000000237）→ 交给 mars。**发送、加密、序号全在微信侧**。
+派发器在构造场景**之前**就要拿到：构造器会写库，拿不到派发器时绝不能先写这一行。
 
 参考（同一路径的其它证据）：
 - `com.tencent.mm.network.a3.b(j1, m1)` 的字节码就是 `m1.doScene(j1, new y2())`。
@@ -44,8 +56,8 @@ com.tencent.mm.network.y2.<init>()   微信自己在 a3.b 里用的空回调（�
 ## 三、实现（`native/wx_send.cpp`）
 
 - 只做反射：`ActivityThread.currentApplication()` 取宿主 ClassLoader → `loadClass`
-  `v51.r0` / `com.tencent.mm.network.y2` / `com.tencent.mm.network.a3` → 缓存
-  `GetMethodID` / `GetFieldID`（jmethodID 跨线程稳定）。
+  `v51.r0` / `com.tencent.mm.network.y2` / `com.tencent.mm.network.a3` /
+  `com.tencent.mm.modelbase.r1` → 缓存 `GetMethodID` / `GetFieldID`（jmethodID 跨线程稳定）。
 - 调用线程 attach 到 JVM 并 `Looper.prepare()`；`m1.dispatch` 里有无 Looper 两条分支，
   prepare 之后「无参 `new Handler()`」的错误路径不会抛。
 - **默认关闭**：配置 `send=on` 才进 features；`send_allow=<talker;talker>` 白名单之外一律拒绝
@@ -58,8 +70,12 @@ com.tencent.mm.network.y2.<init>()   微信自己在 a3.b 里用的空回调（�
 
 - 离线：`tests/capabilities_test.cpp` 覆盖 features 开关、配置解析、白名单/限速/无 VM 的拒绝路径；
   `./tests/run.sh` 全绿。
-- 真机：**尚未验证**（需要装模块 + 重启 + 在 `send=on` 下真发一条）。发送是风控最敏感动作，
-  线上必须保持默认关闭、只对白名单开放。
+- 真机 v0.6.0（2026-09-27）：模块/协议/身份全部 PASS，`features` 已含 `message.create`，
+  **反射解析全部成功**（类、构造器、字段、方法都拿到），唯独 `a3.c()` 在主进程返回 null
+  → 报 `network dispatcher unavailable`。即：主进程没有 mars 的 `j1`，需改用
+  `com.tencent.mm.modelbase.r1.y.k()`（见 §二）。
+- 真机 v0.6.1：改用 `r1.y.k()` 优先 + `a3.c()` 兜底，**待验**。
+- 发送是风控最敏感动作，线上必须保持默认关闭、只对白名单开放。
 
 ## 五、已知边界
 
