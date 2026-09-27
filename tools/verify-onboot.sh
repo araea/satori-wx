@@ -42,7 +42,7 @@ while [ "$i" -lt 90 ]; do
                 RESP=$(curl -s -X POST http://127.0.0.1:5601/v1/message.create \
                     -H "Authorization: Bearer $TOKEN" -H 'Satori-Platform: wechat' -H "Satori-User-ID: $WXID" \
                     -H 'Content-Type: application/json' \
-                    -d "{\"channel_id\":\"$TARGET\",\"content\":\"[satori-wx v0.7.0 send verify]\"}")
+                    -d "{\"channel_id\":\"$TARGET\",\"content\":\"[satori-wx v0.7.1 send verify]\"}")
                 echo "attempt $n: $RESP"
                 case "$RESP" in
                     *'"id"'*) SEND_OK=1; break ;;
