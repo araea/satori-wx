@@ -1,10 +1,11 @@
-# Satori v1 协议层验收（v0.6.7）
+# Satori v1 协议层验收（v0.8.0）
 
-本版本提供 native 协议服务端、native 后端接口、只读账号身份与消息库适配层，
-以及一个**默认关闭**的反射消息发送与撤回。**读侧 13 个方法已实现**（消息、历史、联系人/群/频道、
-群成员与角色、私聊频道），发送 1 个 + 撤回 1 个（可选），`login.get` 1 个；8 个方法微信无法表达（见下），
-其余 13 个是
-尚未实现的写操作。下表中的“完成”指协议层及带独立测试后端/账号适配层的验收，
+本版本提供 native 协议服务端、native 后端接口、只读账号身份与消息库适配层、**内置资源路由**
+（`upload.create` 与 `/v1/proxy`），以及一个**默认关闭**的反射写操作集（消息发送/撤回 + 群管理）。
+读侧 13 个方法已实现（消息、历史、联系人/群/频道、群成员与角色、私聊频道），`upload.create` 1 个；
+`send=on` 时另实现 `message.create/delete`、`channel.delete`（退群）、`guild.member.kick`、
+`guild.member.role.set/unset` 共 6 个；`login.get` 1 个；8 个方法微信无法表达（见下），
+其余为尚未实现的写操作。下表中的“完成”指协议层及带独立测试后端/账号适配层的验收，
 不代表微信支持或已适配所有 API。
 
 | 标准项目 | 实现 / 验证 |
@@ -15,13 +16,17 @@
 | 方法可用性 | 登录快照 features 控制；不支持返回 404，声明支持但无 handler 返回 501，离线返回 503 |
 | login.get / meta / READY | 同一份登录快照；登录身份由只读偏好解析得到，无账号时为空 |
 | message.create / update 的 content | 保留 Satori 标记字符串；提供 native 文本转义 helper，不把标记当 HTML 执行 |
-| message.create（可选发送） | v0.7.1：`send=on` 时反射调微信自己的 NetSceneSendMsg 发纯文本；默认关闭，开启后不限目标、不限速；成功＝已派发，非投递确认；2026-09-27 真机向 filehelper 实发成功 |
-| message.delete（可选撤回） | v0.7.1：`send=on` 时用 `ex0.k0.F0.k(talker,localId)` 取 MsgInfo，反射调 `com.tencent.mm.modelsimple.d1`（cgi revokemsg）；只撤回本账号消息，复用同一套开关 |
+| message.create（可选发送） | v0.8.0：`send=on` 时反射调微信自己的 NetSceneSendMsg 发纯文本；**返回 `Message[]`（官方客户端对结果调用 `.map()`）**；默认关闭，开启后不限目标、不限速；成功＝已派发，非投递确认 |
+| message.delete（可选撤回） | v0.8.0：`send=on` 时用 `ex0.k0.F0.k(talker,localId)` 取 MsgInfo，反射调 `com.tencent.mm.modelsimple.d1`（cgi revokemsg）；只撤回本账号消息，复用同一套开关 |
+| channel.delete / guild.member.kick（可选） | v0.8.0：反射 `qn.p`（cgi delchatroommember），退群用 `[self]`，踢人用目标 wxid；`send=on` 才进 features |
+| guild.member.role.set / unset（可选） | v0.8.0：反射 `qn.b`/`qn.e`（cgi add/delchatroomadmin），经 `com.tencent.mm.modelbase.z2.d(o,null,false)` 走微信 Cgi 运行器；只变更 `admin` 角色 |
+| upload.create | v0.8.0：core 内置 SDK 默认实现，`multipart/form-data` 落盘为 `internal:wechat/<user>/_tmp/<name>`（5 分钟、随机名、0600） |
+| /v1/proxy/{url} | v0.8.0：`internal:` 链接按登录号解析并回文件；未登记 http(s) 前缀 403；非法 400；未知登录 404；带 CORS，不需 Satori 登录头 |
 | guild.member.get / list | 读 `chatroom` 的 memberlist + displayname（`、` 分隔）+ roomowner；`next` 是成员偏移；displayname 与 memberlist 数量不一致时忽略群昵称、回落到 rcontact |
-| guild.role.list / guild.member.role.list | 合成角色：`owner`（群主）/ `member`（成员）；非成员返回空列表；未知群返回 404 |
+| guild.role.list / guild.member.role.list | 合成角色：`owner`（群主）/ `admin`（管理员）/ `member`（成员）；`guild.member.role.list` 目前只反映 owner/member（管理员位未解析）；非成员返回空列表；未知群返回 404 |
 | user.channel.create | 返回该 wxid 的私聊频道（`type=1`） |
 | 微信无法表达（`internal/capabilities.unsupported`） | `message.update`、`reaction.create/delete/clear/list`、`guild.role.create/update/delete` —— 微信不能编辑消息、无表态、无自定义角色 |
-| 未实现的写操作 | 群改名/退群/禁言、踢人/管理员、好友删除与三种审批、`upload.create`：各自需逆向微信内部接口，返回 404 |
+| 未实现的写操作 | 群改名、禁言、好友删除/审批、入群审批：卡点见 [群管理写操作](wechat-room.md)。只有真实实现的方法才进 features，否则返回 404 |
 | 分页 | params 的 next/direction/limit/order 与后端返回的 data/prev/next 原样传递 |
 | upload.create | multipart/form-data，有界二进制零拷贝解析，字段名与返回 URL 映射由后端实现 |
 | WebSocket | RFC 6455 握手、掩码、文本分片、控制帧交错、UTF-8、关闭、大小限制 |

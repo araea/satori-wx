@@ -12,18 +12,18 @@
 **纯 native C++**：无 DEX、无 Java 助手、无 ArtMethod 改写、无 hook 引擎。连发送都是纯反射调用
 微信自己的代码，不加载任何额外东西。
 
-- **当前版本 v0.7.1**（v0.6.8：账号身份改为优先读 MMKV `MMKV_Name_LastLoginInfo`，微信 8.0.78 会把 `com.tencent.mm_preferences.xml` 重写成不含登录键；v0.7.0：取消发送白名单、微信内常驻状态通知 + 唤醒锁按钮、root 侧 `wxguard` 保活；v0.7.1：修 keepalive 通知构造的 JNI 签名截断导致的微信 SIGABRT 崩溃，并去掉发送侧限速）。
+- **当前版本 v0.8.0**（v0.8.0：按官方资源最佳实践内置 `upload.create` + `/v1/proxy`，`message.create` 改为返回 `Message[]`；新增反射群管理 `channel.delete`(退群)/`guild.member.kick`/`guild.member.role.set/unset`；v0.7.1：修 keepalive JNI 截断崩溃；v0.7.0：取消发送白名单 + 常驻通知/唤醒锁 + wxguard）。
 - 家账号：`wxid_8zxjsghrk8vz41`。模块配置：`send=on`（白名单已取消，任意会话可发）。
 
 ## 2. 协议覆盖（37 个标准方法）
 
 | | 数量 | 方法 |
 | --- | --- | --- |
-| ✅ 已实现、真机验证 | **16** | 读侧 13：`message.get/list`、`user.get`、`friend.list`、`guild.get/list`、`guild.member.get/list`、`guild.role.list`、`guild.member.role.list`、`channel.get/list`、`user.channel.create`；`message.create`（可选发送）；`message.delete`（撤回自己的消息，可选发送）；`login.get` |
+| ✅ 已实现、真机验证 | **20** | 读侧 13：`message.get/list`、`user.get`、`friend.list`、`guild.get/list`、`guild.member.get/list`、`guild.role.list`、`guild.member.role.list`、`channel.get/list`、`user.channel.create`；资源 1：`upload.create`；写侧 6（`send=on`）：`message.create`、`message.delete`、`channel.delete`(退群)、`guild.member.kick`、`guild.member.role.set/unset`；`login.get` |
 | ❌ 微信无此概念 | **8** | `message.update`（不能编辑已发消息）、`reaction.create/delete/clear/list`（没有表态）、`guild.role.create/update/delete`（没有自定义角色）——列在 `internal/capabilities.unsupported` |
-| ⬜ 待逆向的写操作 | **13** | `channel.create/update/delete/mute`、`guild.member.kick/mute/role.set/role.unset`、`friend.delete`、`friend.approve`、`guild.approve`、`guild.member.approve`、`upload.create` |
+| ⬜ 待逆向的写操作 | **9** | `channel.create/update/mute`、`guild.member.mute`、`friend.delete`、`friend.approve`、`guild.approve`、`guild.member.approve`——卡点见 [群管理写操作](wechat-room.md) |
 
-读侧 + 发送可以认为做完了。`features` 的唯一来源是 `native/wx_capabilities.cpp`（`WeChatFeatures()`）；
+读侧 + 资源 + 发送/撤回/群管理可以认为做完了。`features` 的唯一来源是 `native/wx_capabilities.cpp`（`WeChatFeatures()`）；
 `wx_backend.cpp` 与 `wx_account.cpp` 都读它，**不要各写一份**。
 
 ## 3. 环境 / 构建 / 部署
@@ -37,7 +37,7 @@ cd /data/data/com.termux/files/home/dev/araea/satori-wx
 ./build.sh          # 服务端 ZIP + satori-wx-check + satori-wx-account + satori-wx-wcdb
 ./tests/run.sh      # 22 socket + 10 协议 + account + wcdb + store + capabilities + webhook
 
-su -c 'ksud module install build/satori-wx-server-v0.7.0.zip'   # 装机（暂存，重启才生效）
+su -c 'ksud module install build/satori-wx-server-v0.8.0.zip'   # 装机（暂存，重启才生效）
 su -c 'setsid sh -c "sleep 60; /system/bin/reboot" </dev/null >/dev/null 2>&1 &'
 ```
 
@@ -74,7 +74,9 @@ send=off            # 默认关闭；on 才进 features 并允许向任意会话
 | `native/wx_live.cpp/.h` | 读主模块捕获的 key.log，只读打开库，轮询新消息 → `message-created` |
 | `native/wx_backend.cpp/.h` | Backend：13 个读方法 + `message.create`（`send=on` 时） |
 | `native/wx_capabilities.cpp/.h` | 唯一 features 列表 + `unsupported` 列表 |
-| `native/wx_send.cpp/.h` | 反射发送器 + 状态/计数快照（无白名单、无限速） |
+| `native/wx_send.cpp/.h` | 反射发送器 + 状态/计数快照（无白名单、无限速）；并对外暴露 ReflectEnv/ReflectResolve/ReflectLoad/ReflectDispatchScene 供群管理复用 |
+| `native/wx_room.cpp/.h` | 反射群管理写操作：`qn.p`（踢人/退群，`m1` 派发）与 `qn.b`/`qn.e`（设/撤管理员，`z2.d` Cgi 派发） |
+| `native/tempstore.cpp/.h` | 内置 `upload.create` 的落盘与 TTL；`/v1/proxy` 的 `internal:.../_tmp/...` 目标 |
 | `native/wx_keepalive.cpp/.h` | 微信进程内常驻状态通知、唤醒锁、每 10 分钟重启微信自己的 CoreService；`keepalive` 状态块 |
 | `native/wx_key.cpp/.h` | 捕获 SQLCipher 密钥：RegisterNatives 指针替换，只取 setCipherKey/nativeSetKey |
 | `tools/wxguard.sh` | root 侧看守（`service.sh` 开机恢复，`action.sh` 切换，`docs/keepalive.md`） |
@@ -110,7 +112,8 @@ send=off            # 默认关闭；on 才进 features 并允许向任意会话
   - `displayname` = 群内昵称，用 **U+3001 `、`（UTF-8 `E38081`）** 分隔，与 memberlist **同序**
   - `roomowner` = 群主 wxid；`memberCount` = 人数
   - 数量对不上时忽略群昵称、回落到 rcontact（已在 `wx_store.cpp` 处理）
-  - ⚠️ 微信**没有**自定义角色，角色只有合成的 `owner`(群主) / `member`(成员)
+  - ⚠️ 微信**没有**自定义角色，角色只有合成的 `owner`(群主) / `admin`(管理员) / `member`(成员)；
+    只有 `admin` 可被 `guild.member.role.set/unset` 变更（v0.8.0）；读侧目前只反映 owner/member
 
 ## 6. 发送（已打通）
 
@@ -182,6 +185,28 @@ MsgInfo = ex0.k0.F0.k(talker, localId)          // ex0.j0，按 talker+本地 ms
   群主撤回他人消息要走另一套 ticket，未做。
 - 与发送同一套开关；`internal/status.send` 多一个 `recalled` 计数。
 - `d1` 构造器对文本类消息会先改本地库（标记已撤回），派发失败也不会回滚——跟微信自己一致。
+
+### 6.7 `message.create` 返回数组（v0.8.0 的协议修正）
+
+官方 `Methods` 里 `createMessage` 返回 `Message[]`，客户端拿到结果会直接 `.map()`。
+旧实现返回单个 `Message` 对象，一调就报错；v0.8.0 起 `wx_backend.cpp` 把它包成数组。
+
+### 6.8 群管理写操作（v0.8.0）
+
+`send=on` 时另实现 `channel.delete`(退群)/`guild.member.kick`/`guild.member.role.set/unset`。
+微信这个版本有两套请求基类：
+
+- `com.tencent.mm.modelbase.m1`（如 `qn.p`）→ 复用发送的 `doScene(派发器, y2)`；
+- `com.tencent.mm.modelbase.i`（如 `qn.b`/`qn.e`，新版 Cgi）→ 构造后取继承字段 `f`（`o` 请求），
+  调 `com.tencent.mm.modelbase.z2.d(o, null, false)` 交给 Cgi 运行器。
+
+详情、参数与未做的方法（群改名/禁言/好友审批）见 [群管理写操作](wechat-room.md)。
+
+### 6.9 资源路由（v0.8.0）
+
+- `upload.create` 由 `native/tempstore.cpp` 落盘，返回 `internal:wechat/<user>/_tmp/<name>`（5 分钟）；
+- `/v1/proxy/{url}` 在 `server.cpp` 里：`internal:` 解析登录号后回文件；http(s) 前缀未登记则 403；
+  非法 400；未知登录 404；带 CORS，不需 Satori 登录头。`proxy_urls` 仍为空（微信没有公网资源 URL）。
 
 ## 7. 协议层要点
 
@@ -262,8 +287,9 @@ JADX 也可用：`~/tools/jadx/bin/jadx --single-class <点分名> -d <输出目
 3. 微信 `:push` 子进程有 mars；服务端只在主进程（发送靠反射，不依赖子进程）
 4. 只支持 arm64
 5. 发送默认关闭，但开启后不做实现端限速/白名单，不伪造成功；风控责任在调用方
-6. 写操作只做了 `message.delete`（仅本账号消息）；其余 13 个（§2）**一个都没做**，每个都必须默认关闭，
-   且要先证明是谁做的再动
+6. 写操作已做 `message.delete`（仅本账号消息）、`channel.delete`(退群)、`guild.member.kick`、
+   `guild.member.role.set/unset`；剩下 9 个（§2）没做，卡点见 [群管理写操作](wechat-room.md)。
+   每个都必须默认关闭；破坏性动作不伪造成功。
 7. 发送只支持纯文本。图片/语音/视频/文件需要先用微信的 CDN 上传再发场景；
    已确认接口在 `qs5.v5`（SendMsgMgr，`b`=图片、`nj/oj/pj`=文件/视频等）和 `v51.r1/v51.s1/v51.n1`
    （按本地路径构建并执行发送），但都依赖 Context/Kotlin 回调，尚未接（见 `docs/wechat-send-types.md`）
@@ -273,18 +299,19 @@ JADX 也可用：`~/tools/jadx/bin/jadx --single-class <点分名> -d <输出目
 1. `./tests/run.sh` 确认全绿；`git log --oneline -10`
 2. 读 `internal/status` 的 `send` 与 `keepalive` 块确认线上状态：发送是否开启、常驻通知是否发布、
    唤醒锁是否持有、进程 `oom_score_adj` / `wchan`。要接真实用例（自己的测试群）直接发即可，无需白名单。
-3. 想继续写功能：从 §2 的 13 个写操作里挑一个，按发送/撤回的老路子做——
-   **先只读地找到微信自己的接口**（离线 DEX 反查 + 必要时 Java 栈），再反射调用，
-   再默认关闭，最后真机验一条。建议顺序：群管理（改名 → 禁言 → 踢人），
-   好友审批与上传最后做。想接媒体发送先读 `docs/wechat-send-types.md`。
+3. 想继续写功能：从 §2 的 9 个写操作里挑一个，按发送/撤回的老路子做——
+   **先只读地找到微信自己的接口**（离线 DEX 反查 + 必要时 JADX），再反射调用，
+   再默认关闭，最后真机验一条。群改名/删除好友在可读 dex 里没有独立 cgi，入群/好友审批依赖
+   申请消息里的 ticket；建议先接着做后两类。想接媒体发送先读 `docs/wechat-send-types.md`。
 4. 纪律：**每个方法真实实现后才进 `features`**；`unsupported` 只放微信真的没有的能力；
    破坏性/风控敏感动作默认关闭。
 
 ## 12. 版本与提交
 
-- `module.prop` / `native/version.h`：当前 **v0.7.1**（v0.7.1 修 keepalive JNI 截断崩溃 + 发送不限速；v0.7.0 取消白名单 + 常驻通知/唤醒锁 + wxguard）
+- `module.prop` / `native/version.h`：当前 **v0.8.0**（v0.8.0 资源路由 upload/proxy + message.create 返回数组 + 反射群管理；v0.7.1 修 keepalive JNI 截断崩溃；v0.7.0 取消白名单 + 常驻通知/唤醒锁 + wxguard）
 - 近期：`56cbac5` 预热等派发器 → `f797dcb` 读侧补齐 + unsupported → `1b34615` v0.6.4 读侧 →
   `62228ec` 状态语义+预热 → `0895aac` 状态计数 → `d92ee8f` r1.y.k() 修复 → `8e71852` 发送打通
+  → `af751de` 协议资源路由 → `e5c9a1c` 群写操作
 
 ## 13. 管理应用（`app/`）
 
