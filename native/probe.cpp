@@ -53,6 +53,9 @@ struct CipherSpec {
 };
 SetKeyFn g_original_set_key = nullptr;
 SetCipherKeyFn g_original_cipher_key = nullptr;
+using StartTaskFn = void (*)(JNIEnv *, jobject, jobject);
+StartTaskFn g_original_start_task = nullptr;
+int g_stack_dumped = 0;
 pthread_mutex_t g_key_mu = PTHREAD_MUTEX_INITIALIZER;
 CipherSpec g_specs[kSpecMax];
 int g_spec_count = 0;
@@ -139,6 +142,87 @@ void CaptureCipherKey(JNIEnv *env, jobject thiz, jlong handle, jbyteArray key, j
     if (g_original_cipher_key) g_original_cipher_key(env, thiz, handle, key, page_size, version);
 }
 
+bool ContainsCI(const char *text, const char *needle) {
+    if (!text || !needle) return false;
+    for (const char *p = text; *p; ++p) {
+        const char *a = p;
+        const char *b = needle;
+        while (*a && *b) {
+            char ca = *a, cb = *b;
+            if (ca >= 'A' && ca <= 'Z') ca = static_cast<char>(ca + 32);
+            if (cb >= 'A' && cb <= 'Z') cb = static_cast<char>(cb + 32);
+            if (ca != cb) break;
+            ++a; ++b;
+        }
+        if (!*b) return true;
+    }
+    return false;
+}
+
+// Dumps the Java call stack at this native boundary. The send pipeline's top-level API
+// lives in the compiled dex, but it calls this native method, so the Java frames reveal it.
+void DumpJavaStack(JNIEnv *env, const char *reason) {
+    char path[1300];
+    snprintf(path, sizeof(path), "%s/java-stack.log", g_dir);
+    FILE *file = fopen(path, "w");
+    if (!file) return;
+    fprintf(file, "reason=%s\n", reason ? reason : "");
+    fflush(file);
+    jclass thread_class = env->FindClass("java/lang/Thread");
+    jclass element_class = env->FindClass("java/lang/StackTraceElement");
+    if (thread_class && element_class && !env->ExceptionCheck()) {
+        jmethodID current = env->GetStaticMethodID(thread_class, "currentThread", "()Ljava/lang/Thread;");
+        jmethodID stack = env->GetMethodID(thread_class, "getStackTrace", "()[Ljava/lang/StackTraceElement;");
+        jmethodID to_string = env->GetMethodID(element_class, "toString", "()Ljava/lang/String;");
+        if (current && stack && to_string && !env->ExceptionCheck()) {
+            jobject thread = env->CallStaticObjectMethod(thread_class, current);
+            auto frames = thread ? static_cast<jobjectArray>(env->CallObjectMethod(thread, stack)) : nullptr;
+            if (frames && !env->ExceptionCheck()) {
+                const jsize count = env->GetArrayLength(frames);
+                for (jsize i = 0; i < count; ++i) {
+                    jobject element = env->GetObjectArrayElement(frames, i);
+                    if (!element) continue;
+                    auto text = static_cast<jstring>(env->CallObjectMethod(element, to_string));
+                    if (text && !env->ExceptionCheck()) {
+                        const char *chars = env->GetStringUTFChars(text, nullptr);
+                        if (chars) {
+                            fprintf(file, "%s\n", chars);
+                            env->ReleaseStringUTFChars(text, chars);
+                        }
+                    }
+                    if (env->ExceptionCheck()) env->ExceptionClear();
+                    env->DeleteLocalRef(element);
+                }
+            }
+            if (env->ExceptionCheck()) env->ExceptionClear();
+        }
+    }
+    if (env->ExceptionCheck()) env->ExceptionClear();
+    fclose(file);
+}
+
+void CaptureStartTask(JNIEnv *env, jobject thiz, jobject task) {
+    if (!__atomic_load_n(&g_stack_dumped, __ATOMIC_ACQUIRE) && task && !env->ExceptionCheck()) {
+        jclass task_class = env->GetObjectClass(task);
+        if (task_class) {
+            jmethodID to_string = env->GetMethodID(task_class, "toString", "()Ljava/lang/String;");
+            if (to_string) {
+                auto text = static_cast<jstring>(env->CallObjectMethod(task, to_string));
+                if (text && !env->ExceptionCheck()) {
+                    const char *chars = env->GetStringUTFChars(text, nullptr);
+                    if (chars && ContainsCI(chars, "sendmsg")) {
+                        __atomic_store_n(&g_stack_dumped, 1, __ATOMIC_RELEASE);
+                        DumpJavaStack(env, chars);
+                    }
+                    if (chars) env->ReleaseStringUTFChars(text, chars);
+                }
+            }
+        }
+        if (env->ExceptionCheck()) env->ExceptionClear();
+    }
+    if (g_original_start_task) g_original_start_task(env, thiz, task);
+}
+
 jint ObserveRegister(JNIEnv *env, jclass clazz, const JNINativeMethod *methods, jint n) {
     // Substitute before the host registers, using a local copy so the app's array stays read-only.
     JNINativeMethod copy[kMethodCopyLimit];
@@ -155,6 +239,10 @@ jint ObserveRegister(JNIEnv *env, jclass clazz, const JNINativeMethod *methods, 
             } else if (!g_original_cipher_key && !strcmp(copy[i].name, "setCipherKey") && !strcmp(copy[i].signature, "(J[BII)V")) {
                 g_original_cipher_key = reinterpret_cast<SetCipherKeyFn>(copy[i].fnPtr);
                 copy[i].fnPtr = reinterpret_cast<void *>(CaptureCipherKey);
+            } else if (!g_original_start_task && !strcmp(copy[i].name, "OnJniStartTask") &&
+                       !strcmp(copy[i].signature, "(Lcom/tencent/mars/stn/StnManager$Task;)V")) {
+                g_original_start_task = reinterpret_cast<StartTaskFn>(copy[i].fnPtr);
+                copy[i].fnPtr = reinterpret_cast<void *>(CaptureStartTask);
             }
         }
         argument = copy;
