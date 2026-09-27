@@ -1,6 +1,6 @@
 id=satori_wx
 name=知言
-version=v0.6.8
-versionCode=25
+version=v0.7.0
+versionCode=26
 author=araea
-description=纯 native Satori v1 HTTP/WS 服务端；只读微信偏好接入账号身份；支持可选 WebHook；可选只读消息库事件；可选反射消息发送（默认关闭）。
+description=纯 native Satori v1 HTTP/WS 服务端；只读微信偏好接入账号身份；可选 WebHook；可选只读消息库事件；可选反射消息发送（默认关闭，开启后不限目标）；微信内常驻状态通知、唤醒锁与 root 侧 wxguard 保活。

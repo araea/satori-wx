@@ -12,21 +12,14 @@ import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
 import com.satori.wx.R;
-import com.satori.wx.core.Api;
 import com.satori.wx.core.Conf;
 import com.satori.wx.core.Status;
-import com.satori.wx.core.Talker;
-import java.util.ArrayList;
-import java.util.Collection;
-import java.util.List;
-import java.util.Map;
 
 /**
- * 设置：发送开关、发送白名单、端口与令牌。保存只写配置文件，微信下次启动时读取。
+ * 设置：发送开关、端口与令牌。保存只写配置文件，微信下次启动时读取。
  *
  * <p>交互约定（取自 HIG，外观全部是 M3E）：草稿跨页面切换与实例重建保留；有改动才出现底部工具栏；
- * 移除白名单里的会话可撤销（信息条），开启发送与放弃草稿先确认；令牌默认隐藏，显示期间禁止截屏；
- * 校验在保存时做，出错的字段就地显示原因并获得焦点。
+ * 开启发送先确认；令牌默认隐藏，显示期间禁止截屏；校验在保存时做，出错的字段就地显示原因并获得焦点。
  */
 final class SettingsPage {
     interface Actions {
@@ -34,7 +27,6 @@ final class SettingsPage {
         void save(Conf value);
         void discarded();
         void restartWeChat();
-        void pickTalkers(List<String> current);
         void copyToken(String token);
         void secure(boolean on);
         void message(String text, String action, Runnable run);
@@ -50,10 +42,6 @@ final class SettingsPage {
     private final Tokens t;
     private final Actions actions;
     private final Item sendSwitch;
-    private final TextView allowTitle;
-    private final Ui.Group allowGroup;
-    private final Item addItem;
-    private final TextView allowNote;
     private final Field port, token;
     private final ImageButton reveal;
     private final LinearLayout saveBar;
@@ -62,9 +50,7 @@ final class SettingsPage {
 
     /** 已保存的配置（基准）；文件无效或尚未读到时为 null。 */
     private Conf saved;
-    private final List<String> allow = new ArrayList<>();
     private boolean send;
-    private Map<String, Api.Contact> contacts;
     private boolean saving, revealing, loading, lastDirty, baseline;
     private int bottomInset;
 
@@ -92,7 +78,7 @@ final class SettingsPage {
 
         TextView title = ui.heading("设置", Tokens.DISPLAY_SMALL, t.onSurface);
         content.addView(title, Ui.stack(t.spaceSm));
-        content.addView(ui.text("发送白名单、令牌与端口。保存后，重新启动微信时生效。",
+        content.addView(ui.text("发送开关、令牌与端口。保存后，重新启动微信时生效。",
                 Tokens.BODY_LARGE, t.onSurfaceVariant), Ui.stack(t.spaceXs));
         bar.follow(scroll, title);
 
@@ -105,7 +91,7 @@ final class SettingsPage {
         content.addView(ui.sectionTitle("消息发送"), Ui.stack(t.space2xl));
         Ui.Group sendGroup = ui.group();
         sendSwitch = sendGroup.add(new Item(t, Item.SWITCH, "允许客户端发送消息",
-                "只发纯文本，只发给白名单里的会话；每分钟至多 10 条"));
+                "只发纯文本，发给任意会话；每分钟至多 10 条"));
         sendSwitch.setId(R.id.send_switch);
         sendSwitch.setOnToggle((item, checked) -> {
             if (!checked) {
@@ -115,8 +101,8 @@ final class SettingsPage {
             }
             item.setChecked(false, false);
             Dialogs.show(ui, "允许客户端发送消息？",
-                    "连接知言的客户端将能以你的微信账号，向白名单里的会话发送文字。"
-                            + "自动发送可能触发微信的风控；只加入你确定需要的会话。",
+                    "连接知言的客户端将能以你的微信账号，向任意会话发送文字。"
+                            + "自动发送可能触发微信的风控；请只让可信的客户端连接本机服务。",
                     new Dialogs.Action("取消", Btn.TEXT, null),
                     new Dialogs.Action("允许发送", Btn.TEXT, () -> {
                         send = true;
@@ -125,19 +111,6 @@ final class SettingsPage {
                     }));
         });
         content.addView(sendGroup, Ui.stack(0));
-
-        // ---- 发送白名单 ----
-        allowTitle = ui.sectionTitle("发送白名单");
-        content.addView(allowTitle, Ui.stack(t.space2xl));
-        allowGroup = ui.group();
-        allowGroup.setId(R.id.allow_list);
-        addItem = new Item(t, Item.ACTION, "添加会话", null).leading(Icon.ADD, t.primary);
-        addItem.headline.setTextColor(t.primary);
-        addItem.setId(R.id.allow_add);
-        addItem.setOnClickListener(v -> actions.pickTalkers(new ArrayList<>(allow)));
-        content.addView(allowGroup, Ui.stack(0));
-        allowNote = ui.text("", Tokens.BODY_SMALL, t.onSurfaceVariant);
-        content.addView(allowNote, Pages.note(t));
 
         // ---- 连接 ----
         content.addView(ui.sectionTitle("连接"), Ui.stack(t.space2xl));
@@ -209,7 +182,6 @@ final class SettingsPage {
         };
         port.input.addTextChangedListener(watcher);
         token.input.addTextChangedListener(watcher);
-        renderAllow();
     }
 
     boolean pinned() {
@@ -251,19 +223,10 @@ final class SettingsPage {
         token.setText(form.token);
         send = form.send;
         sendSwitch.setChecked(send, false);
-        allow.clear();
-        allow.addAll(form.allow);
         loading = false;
         port.error(null);
         token.error(null);
-        renderAllow();
         changed();
-    }
-
-    /** 联系人名字到了（或更新了）：白名单行换成人能认的名字。 */
-    void contacts(Map<String, Api.Contact> value) {
-        contacts = value;
-        renderAllow();
     }
 
     boolean dirty() {
@@ -271,8 +234,7 @@ final class SettingsPage {
         if (saved == null) return true;
         if (!port.text().equals(String.valueOf(saved.port))) return true;
         if (!token.text().equals(saved.token)) return true;
-        if (send != saved.send) return true;
-        return !allow.equals(saved.allow);
+        return send != saved.send;
     }
 
     private void changed() {
@@ -288,7 +250,6 @@ final class SettingsPage {
         discard.setEnabled(dirty && !saving && saved != null);
         discard.setVisibility(saved == null ? View.GONE : View.VISIBLE);
         Ui.set(save, saving ? "正在保存" : "保存");
-        updateAllowNote();
         if ((saveBar.getVisibility() == View.VISIBLE) == show) return;
         if (!show) {
             saveBar.setVisibility(View.GONE);
@@ -303,70 +264,6 @@ final class SettingsPage {
             saveBar.animate().alpha(1f).translationY(0).setDuration(t.spatialDefault.duration)
                     .setInterpolator(t.spatialDefault).start();
         }
-    }
-
-    // ------------------------------------------------------------------ 白名单
-
-    /** 选择页返回的会话：去重后追加到草稿。 */
-    void add(Collection<String> talkers) {
-        int before = allow.size();
-        for (String talker : talkers) if (Talker.valid(talker) && !allow.contains(talker)) allow.add(talker);
-        int added = allow.size() - before;
-        if (added == 0) return;
-        renderAllow();
-        changed();
-        actions.message(added == 1 ? "已加入「" + name(allow.get(allow.size() - 1)) + "」，保存后生效"
-                : "已加入 " + added + " 个会话，保存后生效", null, null);
-    }
-
-    private void remove(String talker) {
-        final int index = allow.indexOf(talker);
-        if (index < 0) return;
-        allow.remove(index);
-        renderAllow();
-        changed();
-        actions.message("已移除「" + name(talker) + "」", "撤销", () -> {
-            if (allow.contains(talker)) return;
-            allow.add(Math.min(index, allow.size()), talker);
-            renderAllow();
-            changed();
-        });
-    }
-
-    private String name(String talker) {
-        Api.Contact contact = contacts == null ? null : contacts.get(talker);
-        return contact != null ? contact.name : Talker.fallbackName(talker);
-    }
-
-    private void renderAllow() {
-        allowGroup.clear();
-        for (String talker : allow) {
-            Api.Contact contact = contacts == null ? null : contacts.get(talker);
-            int kind = Talker.kind(talker);
-            String title = contact != null ? contact.name : Talker.fallbackName(talker);
-            Item item = new Item(t, Item.STATIC, title, talker);
-            int container = kind == Talker.GROUP ? t.tertiaryContainer : kind == Talker.FILE ? t.primaryContainer : t.secondaryContainer;
-            int ink = kind == Talker.GROUP ? t.onTertiaryContainer : kind == Talker.FILE ? t.onPrimaryContainer : t.onSecondaryContainer;
-            item.avatar(Icon.talker(kind), container, ink);
-            ImageButton removeButton = ui.iconButton(Icon.CLOSE, "从白名单移除「" + title + "」", t.onSurfaceVariant);
-            removeButton.setOnClickListener(v -> remove(talker));
-            item.trailing(removeButton);
-            allowGroup.add(item);
-        }
-        allowGroup.add(addItem);
-        Ui.set(allowTitle, allow.isEmpty() ? "发送白名单" : "发送白名单 · " + allow.size());
-        updateAllowNote();
-    }
-
-    private void updateAllowNote() {
-        String note;
-        int used = Conf.allowLength(allow);
-        if (allow.isEmpty()) note = "白名单为空：发送开启时，任何目标都会被拒绝。";
-        else if (used > Conf.MAX_ALLOW) note = "白名单太长（" + used + " / " + Conf.MAX_ALLOW + " 字符），请移除一些会话才能保存。";
-        else if (!send) note = "发送关闭时白名单不起作用。已用 " + used + " / " + Conf.MAX_ALLOW + " 字符。";
-        else note = "只有这些会话能收到客户端发的消息。已用 " + used + " / " + Conf.MAX_ALLOW + " 字符。";
-        Ui.set(allowNote, note);
-        allowNote.setTextColor(used > Conf.MAX_ALLOW ? t.error : t.onSurfaceVariant);
     }
 
     // ------------------------------------------------------------------ 保存
@@ -391,7 +288,7 @@ final class SettingsPage {
             return;
         }
         token.error(null);
-        Conf value = new Conf(number, token.text(), send, allow);
+        Conf value = new Conf(number, token.text(), send);
         try {
             value.write();
         } catch (Conf.Invalid invalid) {
@@ -456,7 +353,6 @@ final class SettingsPage {
         out.putString("draft_port", port.text());
         out.putString("draft_token", token.text());
         out.putBoolean("draft_send", send);
-        out.putStringArrayList("draft_allow", new ArrayList<>(allow));
         out.putInt("settings_scroll", scroll.getScrollY());
     }
 
@@ -469,11 +365,7 @@ final class SettingsPage {
         token.setText(state.getString("draft_token", ""));
         send = state.getBoolean("draft_send");
         sendSwitch.setChecked(send, false);
-        allow.clear();
-        ArrayList<String> list = state.getStringArrayList("draft_allow");
-        if (list != null) allow.addAll(list);
         loading = false;
-        renderAllow();
         changed();
         final int y = state.getInt("settings_scroll");
         scroll.post(() -> scroll.scrollTo(0, y));

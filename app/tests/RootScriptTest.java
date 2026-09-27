@@ -1,6 +1,5 @@
 import com.satori.wx.core.Conf;
 import com.satori.wx.core.Root;
-import java.util.Arrays;
 
 /**
  * 在临时目录上真跑一遍 root 脚本（需要 su；没有时 test.sh 跳过这项）：
@@ -21,7 +20,7 @@ public final class RootScriptTest {
                 "printf 'token=old\\n' > " + module + "/satori-wx.conf", "chmod 0644 " + module + "/satori-wx.conf"));
         check(setup.ok(), "准备临时目录失败：" + setup.out);
         try {
-            String text = new Conf(5602, Conf.newToken(), true, Arrays.asList("filehelper", "123@chatroom")).write();
+            String text = new Conf(5602, Conf.newToken(), true).write();
             Root.Result write = Root.run(Root.writeScript(text, module, update));
             check(write.ok(), "写入失败：" + write.out);
             for (String dir : new String[]{module, update}) {
@@ -34,7 +33,7 @@ public final class RootScriptTest {
                     && device.updateVersion.equals("v9.9.10"), "探测读错了模块状态");
             check(text.equals(device.confText), "读回的配置与写入不一致");
             Conf back = Conf.parse(device.confText);
-            check(back.port == 5602 && back.send && back.allow.size() == 2, "读回的配置解析不对");
+            check(back.port == 5602 && back.send, "读回的配置解析不对");
             check(Root.parse(Root.run(Root.probeScript(module, update)).out).disabled, "停用标记没读到");
             // 模块目录不存在时必须报失败，而不是「成功地什么也没写」。
             check(!Root.run(Root.writeScript(text, BASE + "/nope", BASE + "/nope2")).ok(), "没有模块目录时应失败");

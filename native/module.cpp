@@ -4,6 +4,7 @@
 #include "wx_adapter.h"
 #include "wx_backend.h"
 #include "wx_capabilities.h"
+#include "wx_keepalive.h"
 #include "wx_key.h"
 #include "wx_live.h"
 #include "wx_send.h"
@@ -33,8 +34,6 @@ void AddBackendStatus(cJSON *object, bool capabilities) {
         cJSON_AddBoolToObject(send, "ready", status.ready);
         cJSON_AddBoolToObject(send, "resolved", status.resolved);
         cJSON_AddBoolToObject(send, "dispatcher", status.dispatcher);
-        cJSON_AddBoolToObject(send, "allowed_any", status.allowed_any);
-        if (status.allow[0]) cJSON_AddStringToObject(send, "allow", status.allow);
         cJSON_AddNumberToObject(send, "sent", static_cast<double>(status.sent));
         cJSON_AddNumberToObject(send, "failed", static_cast<double>(status.failed));
         cJSON_AddNumberToObject(send, "rejected", static_cast<double>(status.rejected));
@@ -48,6 +47,7 @@ void AddBackendStatus(cJSON *object, bool capabilities) {
             if (status.last_error[0]) cJSON_AddStringToObject(send, "last_error", status.last_error);
         }
     }
+    satori::KeepaliveStatus(object);
     if (!capabilities) return;
     size_t unsupported_count = 0;
     const char *const *unsupported = satori::WeChatUnsupported(&unsupported_count);
@@ -64,6 +64,7 @@ void *Serve(void *) {
         __android_log_print(ANDROID_LOG_ERROR, "SatoriWx", "listen failed: %s", strerror(errno));
         return nullptr;
     }
+    satori::g_server_ready = true;
     __android_log_print(ANDROID_LOG_INFO, "SatoriWx", "native Satori listening at 127.0.0.1:%u", g_config.port);
     satori::Run(listener, g_config, g_bus, satori::WeChatBackend());
     return nullptr;
@@ -132,16 +133,12 @@ public:
             if (fd >= 0) close(fd);
             if (dir >= 0) close(dir);
             if (!configured_) __android_log_print(ANDROID_LOG_ERROR, "SatoriWx", "missing or invalid satori-wx.conf; server disabled");
-            // The sender is opt-in and, when on, still restricted to the allow list.
+            // The sender is opt-in; once on, any talker is accepted and pacing still applies.
             satori::SetSendEnabled(configured_ && g_config.send);
-            satori::SendConfigure(g_config.send_allow);
             satori::SetStatusProvider(AddBackendStatus);
-            if (configured_ && g_config.send) {
-                if (g_config.send_allow[0])
-                    __android_log_print(ANDROID_LOG_WARN, "SatoriWx", "message sender enabled for: %s", g_config.send_allow);
-                else
-                    __android_log_print(ANDROID_LOG_WARN, "SatoriWx", "send=on but send_allow is empty; every target is refused");
-            }
+            satori::SetWakelockProvider(satori::KeepaliveWakelock);
+            if (configured_ && g_config.send)
+                __android_log_print(ANDROID_LOG_WARN, "SatoriWx", "message sender enabled for every talker");
         }
         if (!target_ || !configured_) api_->setOption(zygisk::DLCLOSE_MODULE_LIBRARY);
     }
@@ -151,6 +148,9 @@ public:
         JavaVM *vm = nullptr;
         if (env_->GetJavaVM(&vm) == JNI_OK) satori::SendInit(vm);
         else __android_log_print(ANDROID_LOG_ERROR, "SatoriWx", "GetJavaVM failed; message sender disabled");
+        // Resident notification + wake lock + in-process core-service keepalive. Needs the VM
+        // and the parsed config; no-ops when the context never appears.
+        if (vm) satori::KeepaliveStart(vm, g_config);
         g_bus = satori::CreateBus();
         if (!g_bus) {
             __android_log_print(ANDROID_LOG_ERROR, "SatoriWx", "event bus allocation failed; server disabled");

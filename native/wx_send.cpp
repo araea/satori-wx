@@ -27,11 +27,9 @@ namespace satori {
 namespace {
 constexpr long long kMinIntervalMs = 1500;
 constexpr int kMaxPerMinute = 10;
-constexpr size_t kAllowMax = 512;
 
 JavaVM *g_vm = nullptr;
 pthread_mutex_t g_mu = PTHREAD_MUTEX_INITIALIZER;
-char g_allow[kAllowMax] = {};
 long long g_last_ms = 0;
 long long g_minute_start_ms = 0;
 int g_minute_count = 0;
@@ -256,20 +254,6 @@ jobject Dispatcher(JNIEnv *env, int *mask) {
     return dispatcher;
 }
 
-bool Allowed(const char *talker) {
-    if (!g_allow[0]) return false;
-    const size_t length = strlen(talker);
-    const char *cursor = g_allow;
-    while (*cursor) {
-        const char *end = strchr(cursor, ';');
-        const size_t span = end ? static_cast<size_t>(end - cursor) : strlen(cursor);
-        if (span == length && !strncmp(cursor, talker, length)) return true;
-        if (!end) break;
-        cursor = end + 1;
-    }
-    return false;
-}
-
 // Consumes one slot from the pacing window. Returns false when the caller must wait.
 bool Pacing() {
     const long long now = NowMs();
@@ -293,17 +277,13 @@ bool Pacing() {
 
 void SendInit(void *vm) { g_vm = static_cast<JavaVM *>(vm); }
 
-void SendConfigure(const char *allow_semicolon_list) {
+void SendPacingReset() {
     pthread_mutex_lock(&g_mu);
-    if (allow_semicolon_list) snprintf(g_allow, sizeof(g_allow), "%s", allow_semicolon_list);
-    else g_allow[0] = 0;
     g_last_ms = 0;
     g_minute_start_ms = 0;
     g_minute_count = 0;
     pthread_mutex_unlock(&g_mu);
 }
-
-bool SendReady() { return g_resolved; }
 
 bool SendDispatcherReady() {
     pthread_mutex_lock(&g_mu);
@@ -319,7 +299,6 @@ void SendStatusGet(SendStatus *status) {
     status->ready = g_vm != nullptr;
     status->resolved = g_resolved;
     status->dispatcher = g_dispatcher_ok;
-    status->allowed_any = g_allow[0] != 0;
     status->sent = g_sent;
     status->failed = g_failed;
     status->rejected = g_rejected;
@@ -330,7 +309,6 @@ void SendStatusGet(SendStatus *status) {
     status->last_local_id = g_last_local;
     snprintf(status->last_target, sizeof(status->last_target), "%s", g_last_target);
     snprintf(status->last_error, sizeof(status->last_error), "%s", g_last_error);
-    snprintf(status->allow, sizeof(status->allow), "%s", g_allow);
     pthread_mutex_unlock(&g_mu);
 }
 
@@ -367,11 +345,6 @@ static SendResult SendTextInner(const char *talker, const char *content) {
     if (!SendEnabled()) {
         result.rejected = true;
         Detail(result.detail, sizeof(result.detail), "send is disabled by configuration");
-        return result;
-    }
-    if (!Allowed(talker)) {
-        result.rejected = true;
-        Detail(result.detail, sizeof(result.detail), "target not in send_allow");
         return result;
     }
     if (!Pacing()) {
@@ -486,11 +459,6 @@ SendResult SendRecall(const char *talker, const char *message_id) {
     if (!SendEnabled()) {
         result.rejected = true;
         Detail(result.detail, sizeof(result.detail), "send is disabled by configuration");
-        return result;
-    }
-    if (!Allowed(talker)) {
-        result.rejected = true;
-        Detail(result.detail, sizeof(result.detail), "target not in send_allow");
         return result;
     }
     char *tail = nullptr;

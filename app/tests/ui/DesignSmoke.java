@@ -17,7 +17,6 @@ import android.widget.ImageButton;
 import android.widget.LinearLayout;
 import android.widget.TextView;
 import com.satori.wx.R;
-import com.satori.wx.core.Api;
 import com.satori.wx.core.Conf;
 import com.satori.wx.core.Root;
 import com.satori.wx.core.Status;
@@ -25,10 +24,7 @@ import java.io.File;
 import java.io.FileOutputStream;
 import java.lang.reflect.Proxy;
 import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.HashMap;
 import java.util.List;
-import java.util.Map;
 import org.json.JSONObject;
 
 /**
@@ -72,22 +68,19 @@ public final class DesignSmoke extends Instrumentation {
     private void run() {
         try {
             // ---- 首页：各种结论 ----
-            home("light-home-ready", false, 1f, 360, ready(true));
-            home("dark-home-ready", true, 1f, 360, ready(true));
+            home("light-home-ready", false, 1f, 360, ready());
+            home("dark-home-ready", true, 1f, 360, ready());
             home("light-home-service-down", false, 1f, 360, serviceDown());
             home("dark-home-no-root", true, 1f, 360, noRoot());
             home("light-home-checking", false, 1f, 360, new Status.Snapshot());
-            home("large-home-ready", false, 2f, 360, ready(true));
+            home("large-home-ready", false, 2f, 360, ready());
             home("narrow-home-config-bad", false, 1.3f, 320, configBad());
             home("light-home-frozen", false, 1f, 360, frozen());
             home("dark-home-account-unseen", true, 1f, 360, accountUnseen());
-            // ---- 设置：有草稿、白名单有名字 ----
+            // ---- 设置：有草稿、无草稿 ----
             settings("light-settings", false, 1f, 360, true);
             settings("dark-settings", true, 1f, 360, true);
             settings("large-settings", false, 2f, 360, true);
-            // ---- 添加会话 ----
-            picker("light-picker", false, 1f, 360, false);
-            picker("dark-picker-error", true, 1f, 360, true);
             // ---- 宽屏双栏 ----
             wide("wide", false, 900);
         } catch (Exception error) {
@@ -97,20 +90,17 @@ public final class DesignSmoke extends Instrumentation {
 
     // ------------------------------------------------------------------ 状态样本
 
-    private static Status.Snapshot ready(boolean blocked) throws Exception {
+    private static Status.Snapshot ready() throws Exception {
         Status.Snapshot s = new Status.Snapshot();
         s.checked = true;
-        s.device = Root.parse("module=1\nversion=v0.6.7\npid=6312\n");
-        s.conf = new Conf(5601, TOKEN, true, Arrays.asList("filehelper", "39179319508@chatroom"));
+        s.device = Root.parse("module=1\nversion=v0.7.0\npid=6312\n");
+        s.conf = new Conf(5601, TOKEN, true);
         s.wechatVersion = "8.0.78";
         s.http = 200;
         s.port = 5601;
-        s.status = new JSONObject("{\"version\":\"0.6.7\",\"standard_methods\":37,\"event_replay\":true,\"replay_capacity\":64,"
-                + "\"send\":{\"enabled\":true,\"allow\":\"filehelper;39179319508@chatroom\",\"sent\":128,\"failed\":1,\"rejected\":3,\"recalled\":2}}");
-        if (blocked) {
-            s.status.getJSONObject("send").put("last_age_ms", 7 * 60_000).put("last_ok", false)
-                    .put("last_error", "target not in send_allow").put("last_target", "38992867588@chatroom");
-        }
+        s.status = new JSONObject("{\"version\":\"0.7.0\",\"standard_methods\":37,\"event_replay\":true,\"replay_capacity\":64,"
+                + "\"send\":{\"enabled\":true,\"sent\":128,\"failed\":1,\"rejected\":3,\"recalled\":2},"
+                + "\"keepalive\":{\"notification\":true,\"wakelock\":true}}");
         s.meta = new JSONObject("{\"logins\":[{\"sn\":1,\"status\":1,\"features\":[\"message.get\",\"message.list\",\"user.get\","
                 + "\"friend.list\",\"guild.get\",\"guild.list\",\"message.create\",\"message.delete\"],"
                 + "\"user\":{\"id\":\"wxid_example0001\",\"nick\":\"知言示例\",\"name\":\"zhiyan\"}}]}");
@@ -120,21 +110,21 @@ public final class DesignSmoke extends Instrumentation {
     private static Status.Snapshot serviceDown() {
         Status.Snapshot s = new Status.Snapshot();
         s.checked = true;
-        s.device = Root.parse("module=1\nversion=v0.6.7\npid=6312\n");
-        s.conf = new Conf(5601, TOKEN, false, new ArrayList<>());
+        s.device = Root.parse("module=1\nversion=v0.7.0\npid=6312\n");
+        s.conf = new Conf(5601, TOKEN, false);
         s.wechatVersion = "8.0.78";
         return s;
     }
 
     private static Status.Snapshot frozen() {
         Status.Snapshot s = serviceDown();
-        s.device = Root.parse("module=1\nversion=v0.6.7\npid=6312\nfrozen=1\nauth=1114861342\n");
+        s.device = Root.parse("module=1\nversion=v0.7.0\npid=6312\nfrozen=1\nauth=1114861342\n");
         return s;
     }
 
     private static Status.Snapshot accountUnseen() throws Exception {
-        Status.Snapshot s = ready(false);
-        s.device = Root.parse("module=1\nversion=v0.6.7\npid=6312\nauth=1114861342\n");
+        Status.Snapshot s = ready();
+        s.device = Root.parse("module=1\nversion=v0.7.0\npid=6312\nauth=1114861342\n");
         s.meta = new JSONObject("{\"logins\":[]}");
         return s;
     }
@@ -149,21 +139,9 @@ public final class DesignSmoke extends Instrumentation {
     private static Status.Snapshot configBad() {
         Status.Snapshot s = new Status.Snapshot();
         s.checked = true;
-        s.device = Root.parse("module=1\nversion=v0.6.7\npid=0\n");
+        s.device = Root.parse("module=1\nversion=v0.7.0\npid=0\n");
         s.confError = "无法识别的设置「sned」";
         return s;
-    }
-
-    private static List<Api.Contact> contacts() {
-        List<Api.Contact> list = new ArrayList<>();
-        list.add(new Api.Contact("39179319508@chatroom", "417", "", 1));
-        list.add(new Api.Contact("38992867588@chatroom", "远天乐海宿舍", "", 1));
-        list.add(new Api.Contact("59012484892@chatroom", "七个葫芦娃", "", 1));
-        list.add(new Api.Contact("wxid_example0002", "陈师傅", "渡一场风", 0));
-        list.add(new Api.Contact("wxid_example0003", "ALICE", "LMMALICE", 0));
-        list.add(new Api.Contact("wxid_example0004", "奶奶", "闲不住", 0));
-        list.add(new Api.Contact("weixin", "微信团队", "", 0));
-        return list;
     }
 
     // ------------------------------------------------------------------ 页面
@@ -196,31 +174,28 @@ public final class DesignSmoke extends Instrumentation {
         HomePage.Model model = new HomePage.Model();
         model.appVersion = "1.0.0";
         model.snapshot.copyFrom(s);
-        Map<String, String> names = new HashMap<>();
-        for (Api.Contact c : contacts()) names.put(c.id, c.name);
-        model.names = names;
         page.render(model);
         shoot(name, page.root, ui.t, widthDp, 0);
         check(name, page.root, ui.t);
         String title = ((TextView) page.root.findViewById(R.id.hero_title)).getText().toString();
         if (!title.equals(Status.hero(s).title)) failures.add(name + ": 状态标题未渲染（" + title + "）");
+        boolean secondary = page.root.findViewById(R.id.hero_secondary).getVisibility() == View.VISIBLE;
+        if (secondary != (Status.hero(s).secondary != Status.ACTION_NONE)) failures.add(name + ": 次要动作显隐不对");
     }
 
     private SettingsPage settingsPage(Ui ui, boolean dirty) throws Exception {
         SettingsPage page = new SettingsPage(ui, stub(SettingsPage.Actions.class), false);
-        Status.Snapshot s = ready(false);
+        Status.Snapshot s = ready();
         page.load(s.conf, s.conf, true);
-        Map<String, Api.Contact> map = new HashMap<>();
-        for (Api.Contact c : contacts()) map.put(c.id, c);
-        page.contacts(map);
-        page.notice(Status.applied(s));
         if (dirty) {
-            page.add(Arrays.asList("wxid_example0002"));
-            Status.Snapshot pending = ready(false);
-            pending.conf = new Conf(5601, TOKEN, true, Arrays.asList("filehelper", "39179319508@chatroom", "wxid_example0003"));
-            page.notice(Status.applied(pending));
+            Bundle draft = new Bundle();
+            draft.putString("draft_port", "5602");
+            draft.putString("draft_token", TOKEN);
+            draft.putBoolean("draft_send", true);
+            page.restoreState(draft);
+            page.notice(Status.applied(s));
         }
-        if (dirty && !page.dirty()) failures.add("加入会话后设置页应处于有草稿状态");
+        if (dirty && !page.dirty()) failures.add("改了端口后设置页应处于有草稿状态");
         return page;
     }
 
@@ -232,24 +207,15 @@ public final class DesignSmoke extends Instrumentation {
         if (page.root.findViewById(R.id.save_bar).getVisibility() != View.VISIBLE) failures.add(name + ": 有草稿时保存栏应出现");
     }
 
-    private void picker(String name, boolean dark, float font, int widthDp, boolean failed) throws Exception {
-        Ui ui = ui(dark, font, widthDp);
-        PickerPage page = new PickerPage(ui, stub(PickerPage.Actions.class));
-        page.open(Arrays.asList("39179319508@chatroom"));
-        page.contacts(failed ? null : contacts(), failed ? "知言服务没有返回联系人" : null);
-        shoot(name, page.root, ui.t, widthDp, 780);
-        check(name, page.root, ui.t);
-    }
-
     private void wide(String name, boolean dark, int widthDp) throws Exception {
         Ui ui = ui(dark, 1f, widthDp);
         if (!ui.layout.twoPane()) failures.add(name + ": " + widthDp + "dp 应为双栏");
         HomePage home = new HomePage(ui, stub(HomePage.Actions.class), false);
         HomePage.Model model = new HomePage.Model();
-        model.snapshot.copyFrom(ready(false));
+        model.snapshot.copyFrom(ready());
         home.render(model);
         SettingsPage settings = new SettingsPage(ui, stub(SettingsPage.Actions.class), true);
-        Status.Snapshot s = ready(false);
+        Status.Snapshot s = ready();
         settings.load(s.conf, s.conf, true);
         settings.notice(Status.applied(s));
         LinearLayout panes = ui.row();

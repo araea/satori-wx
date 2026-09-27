@@ -10,8 +10,6 @@ import android.widget.ScrollView;
 import android.widget.TextView;
 import com.satori.wx.R;
 import com.satori.wx.core.Status;
-import com.satori.wx.core.Talker;
-import java.util.Map;
 import org.json.JSONObject;
 
 /**
@@ -26,12 +24,12 @@ final class HomePage {
         void openSettings();
         void heroAction(int action);
         void openWeChat();
+        void openWeChatSettings();
         void restartWeChat();
         void copyEndpoint();
         void copyToken();
         void copyReport();
         void shareReport();
-        void allowBlocked(String target);
         void enableSend();
     }
 
@@ -40,8 +38,6 @@ final class HomePage {
         final Status.Snapshot snapshot = new Status.Snapshot();
         boolean probing;
         String appVersion = "";
-        /** 会话 ID → 名字（来自联系人列表缓存），用于把被拦下的目标说成人话。 */
-        Map<String, String> names;
     }
 
     final LinearLayout root;
@@ -54,7 +50,8 @@ final class HomePage {
     private final Badge badge;
     private final LoadingIndicator loading;
     private final TextView heroLabel, heroTitle, heroDetail;
-    private final Btn heroAction;
+    private final Btn heroAction, heroSecondary;
+    private final LinearLayout heroActions;
     private final Notice blocked;
     private final TextView sent, rejected;
     private final Item[] chain = new Item[4];
@@ -63,6 +60,7 @@ final class HomePage {
     private final ImageButton refresh;
     private int heroTone = -1;
     private int heroActionKind = Status.ACTION_NONE;
+    private int heroSecondaryKind = Status.ACTION_NONE;
     private int[] stepStates = new int[0];
     private Status.Blocked blockedNow;
 
@@ -128,10 +126,19 @@ final class HomePage {
         heroAction = ui.medium("", Btn.FILLED);
         heroAction.setId(R.id.hero_action);
         heroAction.setOnClickListener(v -> actions.heroAction(heroActionKind));
-        heroAction.setVisibility(View.GONE);
-        LinearLayout.LayoutParams actionParams = new LinearLayout.LayoutParams(-2, -2);
-        actionParams.topMargin = t.spaceXl;
-        hero.addView(heroAction, actionParams);
+        // 次要的下一步用同尺寸的文字按钮排在主按钮之后：每屏仍只有一个填充的主操作。
+        heroSecondary = ui.medium("", Btn.TEXT);
+        heroSecondary.setId(R.id.hero_secondary);
+        heroSecondary.setOnClickListener(v -> actions.heroAction(heroSecondaryKind));
+        boolean stacked = ui.layout.stackActions();
+        heroActions = stacked ? ui.column() : ui.row();
+        heroActions.addView(heroAction, new LinearLayout.LayoutParams(-2, -2));
+        LinearLayout.LayoutParams secondaryParams = new LinearLayout.LayoutParams(-2, -2);
+        if (stacked) secondaryParams.topMargin = t.spaceSm;
+        else secondaryParams.setMarginStart(t.spaceSm);
+        heroActions.addView(heroSecondary, secondaryParams);
+        heroActions.setVisibility(View.GONE);
+        hero.addView(heroActions, Ui.stack(t.spaceXl));
         content.addView(hero, Ui.stack(t.spaceXl));
 
         // ---- 被拦下的发送 ----
@@ -139,8 +146,7 @@ final class HomePage {
         blocked.setId(R.id.blocked);
         blocked.action("", v -> {
             if (blockedNow == null) return;
-            if (blockedNow.reason == Status.BLOCKED_NOT_ALLOWED) actions.allowBlocked(blockedNow.target);
-            else actions.enableSend();
+            actions.enableSend();
         });
         blocked.setVisibility(View.GONE);
         content.addView(blocked, Ui.stack(t.spaceMd));
@@ -208,6 +214,10 @@ final class HomePage {
                 .leading(Icon.RESTART, t.onSurfaceVariant));
         restartWeChat.setId(R.id.restart_wechat);
         restartWeChat.setOnClickListener(v -> actions.restartWeChat());
+        Item background = wechat.add(new Item(t, Item.ACTION, "后台运行设置", "打开微信的应用详情，允许它后台运行，减少被系统冻结")
+                .leading(Icon.SETTINGS, t.onSurfaceVariant).chevron());
+        background.setId(R.id.wechat_settings);
+        background.setOnClickListener(v -> actions.openWeChatSettings());
         content.addView(wechat, Ui.stack(0));
 
         // ---- 诊断 ----
@@ -253,8 +263,13 @@ final class HomePage {
         Ui.set(heroTitle, line.title);
         Ui.set(heroDetail, line.detail);
         heroActionKind = line.action;
-        heroAction.setVisibility(line.action == Status.ACTION_NONE ? View.GONE : View.VISIBLE);
+        heroSecondaryKind = line.secondary;
+        heroActions.setVisibility(line.action == Status.ACTION_NONE ? View.GONE : View.VISIBLE);
+        heroSecondary.setVisibility(line.secondary == Status.ACTION_NONE ? View.GONE : View.VISIBLE);
         if (line.actionLabel != null) Ui.set(heroAction, line.actionLabel);
+        if (line.secondaryLabel != null) Ui.set(heroSecondary, line.secondaryLabel);
+        // 文字按钮跟随卡片的语调色，与说明文字同一套对比度。
+        heroSecondary.setTextColor(line.tone == Status.NEUTRAL ? t.primary : t.toneOnContainer(line.tone));
 
         // ---- 被拦下 ----
         blockedNow = Status.blocked(s);
@@ -262,14 +277,7 @@ final class HomePage {
             blocked.setVisibility(View.GONE);
         } else {
             String when = Status.ago(blockedNow.ageMs);
-            if (blockedNow.reason == Status.BLOCKED_NOT_ALLOWED) {
-                String name = m.names == null ? null : m.names.get(blockedNow.target);
-                String who = name == null ? Talker.fallbackName(blockedNow.target) + " " + blockedNow.target : "「" + name + "」";
-                blocked.show(Status.WARNING, "有一条消息被白名单拦下",
-                        when + "，客户端想发给" + who + "，但它不在发送白名单里。", "加入白名单");
-            } else {
-                blocked.show(Status.WARNING, "有一条消息没有发出", when + "，客户端尝试发送，但发送已关闭。", "去开启发送");
-            }
+            blocked.show(Status.WARNING, "有一条消息没有发出", when + "，客户端尝试发送，但发送已关闭。", "去开启发送");
             blocked.setVisibility(View.VISIBLE);
         }
 

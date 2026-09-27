@@ -1,8 +1,6 @@
 package com.satori.wx.core;
 
-import java.util.LinkedHashSet;
 import java.util.List;
-import java.util.Set;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
@@ -44,6 +42,7 @@ public final class Status {
     public static final int ACTION_OPEN_WECHAT = 2;
     public static final int ACTION_RESTART_WECHAT = 3;
     public static final int ACTION_FIX_CONFIG = 4;
+    public static final int ACTION_WECHAT_SETTINGS = 5;
 
     // ---- 链路每一环 ----
     public static final int STEP_OK = 0;
@@ -93,17 +92,26 @@ public final class Status {
         public final String detail;
         public final int action;
         public final String actionLabel;
+        /** 次要的下一步（文字按钮）；没有时为 {@link #ACTION_NONE}。 */
+        public final int secondary;
+        public final String secondaryLabel;
 
         Line(int tone, String title, String detail) {
             this(tone, title, detail, ACTION_NONE, null);
         }
 
         Line(int tone, String title, String detail, int action, String actionLabel) {
+            this(tone, title, detail, action, actionLabel, ACTION_NONE, null);
+        }
+
+        Line(int tone, String title, String detail, int action, String actionLabel, int secondary, String secondaryLabel) {
             this.tone = tone;
             this.title = title;
             this.detail = detail;
             this.action = action;
             this.actionLabel = actionLabel;
+            this.secondary = secondary;
+            this.secondaryLabel = secondaryLabel;
         }
     }
 
@@ -162,8 +170,8 @@ public final class Status {
             case WECHAT_FROZEN:
                 return new Line(WARNING, "微信被系统冻结了",
                         "微信退到后台后被系统冻结，服务随之暂停，客户端收不到消息。打开微信即可恢复；"
-                                + "要长期在线，在系统设置的微信「耗电管理」里允许后台运行。",
-                        ACTION_OPEN_WECHAT, "打开微信");
+                                + "要减少被冻结，在微信的应用详情里允许它后台运行（「耗电管理」一项）。",
+                        ACTION_OPEN_WECHAT, "打开微信", ACTION_WECHAT_SETTINGS, "后台运行设置");
             case SERVICE_DOWN:
                 return new Line(ERROR, "服务没有响应",
                         d.updatePending
@@ -191,9 +199,7 @@ public final class Status {
     private static String sendSummary(Snapshot s) {
         JSONObject send = s.status == null ? null : s.status.optJSONObject("send");
         if (send == null || !send.optBoolean("enabled")) return "客户端可以接收消息；发送已关闭。";
-        int count = Conf.split(send.optString("allow", "")).size();
-        if (count == 0) return "发送已开启，但白名单为空，客户端暂时发不出消息。";
-        return "客户端可以接收消息，并向 " + count + " 个白名单会话发送。";
+        return "客户端可以接收消息，也可以向任意会话发送文字。";
     }
 
     /** 已登录（status = 1）的那个账号；没有则 null。 */
@@ -249,7 +255,7 @@ public final class Status {
         JSONObject block = serving ? s.status.optJSONObject("send") : null;
         if (block == null) send = STEP_UNKNOWN;
         else if (!block.optBoolean("enabled")) send = STEP_OFF;
-        else send = Conf.split(block.optString("allow", "")).isEmpty() ? STEP_WAIT : STEP_OK;
+        else send = STEP_OK;
         return new int[]{wechat, service, account, send};
     }
 
@@ -284,10 +290,7 @@ public final class Status {
         JSONObject block = serving ? s.status.optJSONObject("send") : null;
         if (block == null) send = "—";
         else if (!block.optBoolean("enabled")) send = "已关闭 · 只收不发";
-        else {
-            int count = Conf.split(block.optString("allow", "")).size();
-            send = count == 0 ? "已开启，但白名单为空" : "已开启 · 白名单 " + count + " 个会话";
-        }
+        else send = "已开启 · 可发任意会话";
         return new String[]{wechat, service, account, send};
     }
 
@@ -330,17 +333,14 @@ public final class Status {
         JSONObject send = s.status.optJSONObject("send");
         if (send == null) return out;
         if (send.optBoolean("enabled") != s.conf.send) out.add("发送开关");
-        Set<String> running = new LinkedHashSet<>(Conf.split(send.optString("allow", "")));
-        if (!running.equals(new LinkedHashSet<>(s.conf.allow))) out.add("发送白名单");
         return out;
     }
 
     // ------------------------------------------------------------------ 被拦下的发送
 
-    public static final int BLOCKED_NOT_ALLOWED = 1;
     public static final int BLOCKED_DISABLED = 2;
 
-    /** 最近一次发送被策略拦下：给首页一个「把它加进白名单 / 去开启发送」的捷径。 */
+    /** 最近一次发送被策略拦下：给首页一个「去开启发送」的捷径。 */
     public static final class Blocked {
         public final int reason;
         public final String target;
@@ -360,10 +360,6 @@ public final class Status {
         String error = send.optString("last_error", "");
         String target = send.optString("last_target", "");
         long age = send.optLong("last_age_ms");
-        if (error.equals("target not in send_allow") && Talker.valid(target)) {
-            // 已经加进文件（等重启生效）就不再催。
-            return s.conf.allow.contains(target) ? null : new Blocked(BLOCKED_NOT_ALLOWED, target, age);
-        }
         if (error.equals("send is disabled by configuration")) {
             return s.conf.send ? null : new Blocked(BLOCKED_DISABLED, target, age);
         }
@@ -397,6 +393,10 @@ public final class Status {
         }
         String replay = serving && s.status.optBoolean("event_replay")
                 ? "断线后补发最近 " + s.status.optInt("replay_capacity") + " 条" : "—";
+        JSONObject keep = serving ? s.status.optJSONObject("keepalive") : null;
+        String keepalive = keep == null ? "—"
+                : (keep.optBoolean("notification") ? "常驻通知已发布" : "常驻通知未发布")
+                        + " · 唤醒锁" + (keep.optBoolean("wakelock") ? "开启" : "关闭");
         return new String[][]{
                 {"知言应用", appVersion == null || appVersion.isEmpty() ? "未知" : appVersion},
                 {"已安装的模块", module},
@@ -405,6 +405,7 @@ public final class Status {
                 {"协议方法", methods},
                 {"发送计数", counts},
                 {"上次发送", last},
+                {"保活", keepalive},
                 {"事件回放", replay},
         };
     }
@@ -412,7 +413,6 @@ public final class Status {
     /** 服务端英文原因 → 界面上的中文说明。 */
     public static String reason(String error) {
         switch (error) {
-            case "target not in send_allow": return "目标不在白名单里";
             case "send is disabled by configuration": return "发送已关闭";
             case "rate limited": return "发得太快，被限速";
             case "empty target or content": return "目标或内容为空";
@@ -443,8 +443,7 @@ public final class Status {
         out.append("结论：").append(hero.title).append('\n');
         for (String[] row : diagnostics(s, appVersion)) out.append(row[0]).append("：").append(row[1]).append('\n');
         if (s.conf != null) {
-            out.append("配置：端口 ").append(s.conf.port).append(" · 发送").append(s.conf.send ? "开启" : "关闭")
-                    .append(" · 白名单 ").append(s.conf.allow.size()).append(" 个会话\n");
+            out.append("配置：端口 ").append(s.conf.port).append(" · 发送").append(s.conf.send ? "开启" : "关闭").append('\n');
         } else if (s.confError != null) {
             out.append("配置：无效（").append(s.confError).append("）\n");
         }

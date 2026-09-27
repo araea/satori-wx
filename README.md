@@ -1,6 +1,6 @@
 # 知言（satori-wx）
 
-微信 `com.tencent.mm` 的 Zygisk 模块。v0.6.8 在 **Satori v1 服务端**
+微信 `com.tencent.mm` 的 Zygisk 模块。v0.7.0 在 **Satori v1 服务端**
 （C++ + POSIX socket，无 DEX、Java 助手、APK、ArtMethod 偏移或 hook 引擎）之上，
 加入**只读的微信账号身份 / 消息库适配层**，以及一个**默认关闭的反射消息发送与撤回**。
 
@@ -10,7 +10,7 @@
 不再需要单独的探针模块。
 **发送是可选项**：`send=on` 后，实现端用**宿主 ClassLoader 反射调用微信自己的
 `v51.r0`（NetSceneSendMsg）与网络派发器**，由微信完成入库、加密、发送；不发任何原始包、
-不 hook、不加载 dex。默认 `send=off`，且只对 `send_allow` 白名单内的会话开放。
+不 hook、不加载 dex。默认 `send=off`；开启后不限目标（旧的 `send_allow` 白名单已取消）。
 已登录时 `READY` / `/v1/meta` 会带真实 `logins`；账号快照的 `features` 只声明后端
 真正实现的方法（见下表）；未实现的方法返回 404，不会伪造成功。
 旧 v0.2.x 的 `native/wx.cpp`、`native/jni_helpers.h`、`src/`、`AndroidManifest.xml` 和 `libs/`
@@ -27,7 +27,7 @@
 
 产物：
 
-- `build/satori-wx-server-v0.6.8.zip`，模块 ID `satori_wx`。
+- `build/satori-wx-server-v0.7.0.zip`，模块 ID `satori_wx`。
 - `build/module-server/`，服务端模块目录。
 - `build/satori-wx-account`，读取某个微信数据目录并打印推导出的登录事件（诊断用，不联网）。
 - `build/satori-wx-wcdb`，只读 SQLCipher/SQLite 客户端，用微信自己的 libWCDB 读导出数据库（诊断用）。
@@ -52,18 +52,17 @@
 port=5601
 token=<安装器生成的令牌>
 send=off
-# send=on 时才需要白名单；分号分隔，只允许这些会话（wxid 或 <数字>@chatroom）
-# send_allow=wxid_xxxxxxxx;1234567890@chatroom
 ```
 
-配置权限为 `0600`；缺失、过长、重复字段或无效 token 时服务端不启动。`send=on` 但
-`send_allow` 为空时，服务端照常启动，但**任何发送目标都会被拒绝**（记 logcat 警告）。
+配置权限为 `0600`；缺失、过长、重复字段或无效 token 时服务端不启动。`send=on` 后所有会话
+都允许发送，只需限速（1.5 秒最小间隔、每分钟 10 条）。旧配置里的 `send_allow=` 行仍被接受、
+但值被忽略，升级后不用手改文件。
 配置在 `preAppSpecialize` 读取，文件描述符立即关闭；服务在 `postAppSpecialize` 启动。
 只在精确匹配的微信主进程内运行。非目标进程和 system_server 请求卸载模块。
 服务端只监听 **127.0.0.1**，随微信主进程结束而退出；配置更改在下一次进程启动生效。
 
-也可以用 **知言应用**（[`app/`](app/README.md)）管理：查看连接链路、编辑发送开关与白名单
-（从服务读群与联系人挑选）、端口与令牌，并一键重新启动微信让配置生效。应用需要 Root 授权。
+也可以用 **知言应用**（[`app/`](app/README.md)）管理：查看连接链路、编辑发送开关、端口与令牌，
+并一键重新启动微信让配置生效。应用需要 Root 授权。
 
 Satori 客户端填写：
 
@@ -77,7 +76,8 @@ Satori 客户端填写：
 | --- | --- |
 | `POST /v1/meta` | 已登录时返回只读身份快照 `{"logins":[...],"proxy_urls":[]}`；无账号时 `logins` 为空 |
 | `POST /v1/meta/webhook.create` / `webhook.delete` | 注册/注销 WebHook（`url` 必填、`token` 可选）；标准可选功能 |
-| `POST /v1/internal/status` | 实验版版本、native 状态、backend unavailable；项目自定义诊断接口 |
+| `POST /v1/internal/status` | 实验版版本、native 状态、`send` 与 `keepalive`（常驻通知、唤醒锁、进程 adj/wchan）状态块；项目自定义诊断接口 |
+| `POST /v1/internal/wakelock` | 切换模块在微信进程内持有的 CPU / Wi-Fi 唤醒锁（`{"on":true|false}` 或 `{"toggle":true}`）；常驻通知上的按钮通过知言应用转到这个接口 |
 | `POST /v1/login.get` | 返回已登记账号快照；未登录或身份不匹配时返回 403 |
 | `POST /v1/{resource}.{method}` | 37 个标准方法的参数校验及 native 后端分发；已实现读侧 `message.get/list`、`user.get`、`friend.list`、`guild.get/list`、`guild.member.get/list`、`guild.role.list`、`guild.member.role.list`、`channel.get/list`、`user.channel.create`；`send=on` 时另实现 `message.create`（反射发送，见下）；其余返回 404 |
 | `POST /v1/internal/capabilities` | 除标准方法目录外，报告 `send` 状态块与 `unsupported`（微信无法表达的方法：`message.update`、`reaction.*`、`guild.role.create/update/delete`） |
@@ -114,6 +114,38 @@ HTTP 每次响应后关闭连接；暂不提供 TLS、chunked 请求体、资源
 
 停用或卸载模块后，结束已有微信进程并按模块管理器要求重启；已有进程中的线程不会因删除模块目录自行退出。
 
+## 常驻通知、唤醒锁与保活（v0.7.0）
+
+模块在微信主进程内提供三项保活能力，全部走 Android 公开框架 API 的 JNI 调用：不加载 dex、
+不定义类、不改 ArtMethod。
+
+- **常驻状态通知**：低重要性、静默的常驻条目，标题/正文跟随真实状态（等待登录 / 运行中 /
+  服务未启动）与唤醒锁开关，点击打开微信；微信在前台清掉自家通知后会自动补发。
+- **唤醒锁**：通知上的「获取/释放唤醒锁」按钮切换一个 `PARTIAL_WAKE_LOCK` 与一个尽力而为的
+  `WIFI_MODE_FULL_HIGH_PERF` 锁，锁由微信进程持有。按钮是一个显式广播，落到知言应用的
+  导出接收器 `com.satori.wx.keepalive.WakeToggleReceiver`，它再转到回环上的
+  `POST /v1/internal/wakelock`（模块纯 native，进程里没有能注册接收器的代码）。
+- **进程内保活**：每 10 分钟重新 `startService` 微信自己的 `com.tencent.mm.booter.CoreService`，
+  让主进程停在 SERVICE_ADJ 而不是 CACHED，从而不被系统 freezer 冻结。
+
+`/v1/internal/status` 与 `/v1/internal/capabilities` 的 `keepalive` 块报告通知是否发布、
+唤醒锁是否持有、上次 `startService` 结果，以及本进程的 `oom_score_adj` 与 `wchan`。
+
+**root 侧看守 `wxguard`**（模块自带，`service.sh` 开机恢复）：让微信在一台已 root 的设备上
+尽量不被冻结、不被回收。状态落盘在 `/data/adb/satori-wx/guard.state`，`ARMED` / `PAUSED` 区分
+「保活中」与「用户已暂停」；被冻住只写 freezer cgroup 解冻（有冷却），进程死亡才在冷却与
+每小时预算内拉起；用户在系统里手动强停会被尊重并转入 PAUSED。命令：
+
+```sh
+su -c 'sh /data/adb/satori-wx/wxguard.sh start'    # ARMED
+su -c 'sh /data/adb/satori-wx/wxguard.sh stop'     # PAUSED（不关微信）
+su -c 'sh /data/adb/satori-wx/wxguard.sh kill'     # PAUSED 并强停微信
+su -c 'sh /data/adb/satori-wx/wxguard.sh status --json'
+```
+
+KernelSU / Magisk 模块的「操作」按钮 = `wxguard toggle`。`wxguard` 只加 Doze 白名单、调整必要的
+AppOps、待机桶与流量白名单，不改全局 LMK / Doze 开关。
+
 ## 只读账号身份
 
 适配层在微信主进程内以微信自己的 uid 读取（只读、不解析数据库）:
@@ -121,7 +153,7 @@ HTTP 每次响应后关闭连接；暂不提供 TLS、chunked 请求体、资源
 - `shared_prefs/com.tencent.mm_preferences.xml`：`login_weixin_username`（wxid）、`last_login_uin`、
   `isLogin`、`last_login_alias`、`last_login_nick_name`、`last_login_bind_mobile`、`login_user_name`。
 - `shared_prefs/auth_info_key_prefs.xml`：`_auth_uin`，作为 uin 缺失时的回退。
-- `files/mmkv/MMKV_Name_LastLoginInfo`（v0.6.8 起）：微信 8.0.78 把上次登录的身份写进这个未加密的 MMKV 文件，
+- `files/mmkv/MMKV_Name_LastLoginInfo`（v0.7.0 起）：微信 8.0.78 把上次登录的身份写进这个未加密的 MMKV 文件，
   并可能把上面的偏好文件重写成不含登录键。两处同名键以 MMKV 为准、偏好文件补缺；有效长度取自 `.crc` 元数据
   （旧版取文件头），坏记录即停止解析。MMKV 里没有 `isLogin`，此时以 `_auth_uin` 与账号 uin 一致判定在线。
 
@@ -140,7 +172,7 @@ HTTP 每次响应后关闭连接；暂不提供 TLS、chunked 请求体、资源
 
 ## 可选消息发送（反射，默认关闭）
 
-`send=on` 且目标在 `send_allow` 内时，`message.create` 通过**反射调用微信自己的发送链路**
+`send=on` 时，`message.create` 通过**反射调用微信自己的发送链路**
 发出纯文本：`v51.r0`（NetSceneSendMsg）构造器负责入库，`doScene` 交给微信的 mars 传输层，
 加密/序号/重发都是微信自己的行为。实现端不 hook、不改写代码、不加载 dex、不发原始封包。
 完整逆向结论见 [微信消息发送路径](docs/wechat-send.md)。
@@ -150,7 +182,7 @@ HTTP 每次响应后关闭连接；暂不提供 TLS、chunked 请求体、资源
 - 额外限速：1.5 秒最小间隔、每分钟 10 条；解析失败或派发返回负值时返回 502 并写明原因。
 - **2026-09-27 真机验证通过**（v0.6.1 向「文件传输助手」实发成功）。
 - 诊断：`POST /v1/internal/status` 与 `/v1/internal/capabilities` 的响应里带 `send` 块
-  （`enabled`/`ready`/`resolved`/`dispatcher`/`allowed_any`/`allow`、`sent`/`failed`/`rejected`/`recalled`
+  （`enabled`/`ready`/`resolved`/`dispatcher`、`sent`/`failed`/`rejected`/`recalled`
   计数、上次尝试的目标/结果/`netId`/本地 id）；`resolved`/`dispatcher` 由登录后的预热线程
   主动探测（不发消息），`message.create` 被策略拒绝时 502 体带 `rejected: true`。
 - 这是本模块里风控最敏感的能力，请保持默认关闭；`features` 与 `internal/capabilities`
@@ -163,7 +195,7 @@ HTTP 每次响应后关闭连接；暂不提供 TLS、chunked 请求体、资源
 `env->functions->RegisterNatives` 这个可写数据表上替换这两个 native 的 `fnPtr`，
 原调用结果和异常原样保留，不替换微信方法本身、不改代码段。捕获到的 spec 写入
 `<应用数据目录>/files/satori-wx/key.log`（0600），`wx_live` 只读打开库并轮询新消息。
-观察器常驻，账号切换后新密钥会覆盖写入。这条链路以前是一个独立探针模块，v0.6.7 起并回主模块。
+观察器常驻，账号切换后新密钥会覆盖写入。这条链路以前是一个独立探针模块，v0.7.0 起并回主模块。
 
 ## 参考与下一步
 
@@ -175,8 +207,9 @@ HTTP 每次响应后关闭连接；暂不提供 TLS、chunked 请求体、资源
 - [研究记录与已知边界](docs/native-server.md)。
 - [只读账号身份说明](docs/wechat-account.md)。
 - [消息后端设计（native、低特征）](docs/wechat-store.md)。
-- [微信消息发送路径（反射，v0.6.7）](docs/wechat-send.md)。
-- [v0.6.7 协议覆盖矩阵](docs/satori-conformance.md)。
+- [微信消息发送路径（反射，v0.7.0）](docs/wechat-send.md)。
+- [常驻通知与保活（wxguard）](docs/keepalive.md)。
+- [v0.7.0 协议覆盖矩阵](docs/satori-conformance.md)。
 - [v0.4.0 安装与重启验收记录](docs/deployment-v0.4.0.md)。
 
 下一步：写操作（群改名/退群/禁言、踢人/管理员、好友删除与审批、上传）需要逐个逆向微信

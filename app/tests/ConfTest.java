@@ -13,8 +13,10 @@ import java.util.List;
  * Conf.parse / Conf.write 与服务端 satori::ReadConfig 的一致性。
  *
  * <p>服务端是 fail-closed：它拒绝的文件会让知言服务不启动。所以每个样例都同时交给两边判定，
- * 结论（接受与否、端口、send、白名单）必须完全相同；Conf.write 写出的每个文件都必须被服务端接受。
+ * 结论（接受与否、端口、send）必须完全相同；Conf.write 写出的每个文件都必须被服务端接受。
  * 服务端判定来自 test.sh 编译的 build/tests/conf-parity（链接 ../native/server.cpp）。
+ *
+ * <p>发送白名单已取消：{@code send_allow} 键仍被接受（值忽略），两边必须一致地接受一次、拒绝重复。
  */
 public final class ConfTest {
     private static final String TOKEN = "0123456789abcdef0123456789abcdef";
@@ -43,16 +45,15 @@ public final class ConfTest {
                 "token=" + TOKEN + "\nsend_allow=\n",
                 "token=" + TOKEN + "\nsend_allow=a b\n",
                 "token=" + TOKEN + "\nsend_allow=wxid_a;;wxid_b;\n",
-                "token=" + TOKEN + "\nsend_allow=" + repeat('a', 511) + "\n",
-                "token=" + TOKEN + "\nsend_allow=" + repeat('a', 512) + "\n",
+                "token=" + TOKEN + "\nsend_allow=" + repeat('a', 700) + "\n",
+                "token=" + TOKEN + "\nsend_allow=a\nsend_allow=b\n",
                 "token=" + TOKEN + "\nunknown=1\n",
                 " token=" + TOKEN + "\n",
                 "token=" + TOKEN + "\n#" + repeat('x', 900) + "\n",
                 "token=" + TOKEN + "\n#" + repeat('x', 1100) + "\n",
                 "token=" + repeat('A', 128) + "\n",
                 "token=" + repeat('A', 129) + "\n",
-                "token=" + TOKEN + "\nsend_allow=中文\n",
-                ""));
+                "token=" + TOKEN + "\nsend_allow=中文\n"));
         // 恰好 1023 与 1024 字节：服务端读满 1024 即判失败。
         String head = "token=" + TOKEN + "\n#";
         samples.add(head + repeat('x', 1023 - head.length() - 1) + "\n");
@@ -60,11 +61,9 @@ public final class ConfTest {
 
         // Conf.write 的输出也要过服务端。
         List<String> written = new ArrayList<>();
-        written.add(new Conf(5601, TOKEN, false, new ArrayList<>()).write());
-        written.add(new Conf(1024, Conf.newToken(), true, Arrays.asList("filehelper", "123@chatroom", "wxid_x-y.z")).write());
-        List<String> many = new ArrayList<>();
-        for (int i = 0; Conf.allowLength(many) + 20 <= Conf.MAX_ALLOW; i++) many.add("wxid_" + String.format("%014d", i));
-        written.add(new Conf(65535, repeat('Z', 128), true, many).write());
+        written.add(new Conf(5601, TOKEN, false).write());
+        written.add(new Conf(1024, Conf.newToken(), true).write());
+        written.add(new Conf(65535, repeat('Z', 128), true).write());
         samples.addAll(written);
 
         File dir = Files.createTempDirectory("conf-parity").toFile();
@@ -88,13 +87,11 @@ public final class ConfTest {
             String actual;
             try {
                 Conf c = Conf.parse(samples.get(i));
-                actual = "ok " + c.port + " " + (c.send ? "on" : "off") + " " + (c.allow.isEmpty() ? "-" : String.join(";", c.allow));
+                actual = "ok " + c.port + " " + (c.send ? "on" : "off");
             } catch (Conf.Invalid invalid) {
                 actual = "bad";
             }
-            // 服务端保留原始的 send_allow（含空段），Java 拆成列表后去掉了空段；按语义比较。
-            String normalized = expected.startsWith("ok ") ? normalize(expected) : expected;
-            check(normalized.equals(actual), "样例 " + i + " 判定不一致：服务端 " + expected + " / 应用 " + actual
+            check(expected.equals(actual), "样例 " + i + " 判定不一致：服务端 " + expected + " / 应用 " + actual
                     + "\n  内容：" + samples.get(i).replace("\n", "\\n").substring(0, Math.min(120, samples.get(i).length())));
         }
         for (int i = samples.size() - written.size(); i < samples.size(); i++) {
@@ -104,14 +101,10 @@ public final class ConfTest {
         dir.delete();
 
         // 写出前的防线：写不出一个坏文件。
-        expectInvalid(() -> new Conf(80, TOKEN, false, new ArrayList<>()).write());
-        expectInvalid(() -> new Conf(5601, "short", false, new ArrayList<>()).write());
-        expectInvalid(() -> new Conf(5601, TOKEN, true, Arrays.asList("a;b")).write());
-        List<String> tooMany = new ArrayList<>(many);
-        tooMany.add("wxid_overflow_overflow_overflow");
-        expectInvalid(() -> new Conf(5601, TOKEN, true, tooMany).write());
+        expectInvalid(() -> new Conf(80, TOKEN, false).write());
+        expectInvalid(() -> new Conf(5601, "short", false).write());
 
-        // 会话 ID 规则
+        // 会话 ID 规则（仍用于校验客户端传来的 channel_id）。
         check(Talker.valid("filehelper") && Talker.valid("wxid_abc") && Talker.valid("12345@chatroom"), "合法 ID 被拒");
         check(!Talker.valid("abc@chatroom") && !Talker.valid("@chatroom") && !Talker.valid("a;b")
                 && !Talker.valid("") && !Talker.valid("a b") && !Talker.valid("x@openim"), "非法 ID 被接受");
@@ -120,15 +113,7 @@ public final class ConfTest {
         check(Talker.kind("1@chatroom") == Talker.GROUP && Talker.kind("filehelper") == Talker.FILE
                 && Talker.kind("wxid_a") == Talker.PERSON, "会话类型判断错误");
         check(Conf.tokenValid(Conf.newToken()) && Conf.newToken().length() == 64, "生成的令牌不合法");
-        check(Conf.split("a;;b;").equals(Arrays.asList("a", "b")), "白名单拆分错误");
-        check(new Conf(5601, TOKEN, true, Arrays.asList("a", "b", "a")).allow.equals(Arrays.asList("a", "b")), "白名单未去重");
         System.out.println("ConfTest: " + checks + " checks, " + samples.size() + " samples against native ReadConfig");
-    }
-
-    private static String normalize(String verdict) {
-        String[] parts = verdict.split(" ", 4);
-        List<String> list = parts[3].equals("-") ? new ArrayList<>() : Conf.split(parts[3]);
-        return parts[0] + " " + parts[1] + " " + parts[2] + " " + (list.isEmpty() ? "-" : String.join(";", list));
     }
 
     private interface Body { void run() throws Exception; }

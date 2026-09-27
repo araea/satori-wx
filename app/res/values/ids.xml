@@ -38,4 +38,6 @@
     <item type="id" name="token" />
     <item type="id" name="token_generate" />
     <item type="id" name="token_reveal" />
+    <item type="id" name="hero_secondary" />
+    <item type="id" name="wechat_settings" />
 </resources>

@@ -25,6 +25,7 @@ constexpr int kClients = 8;
 constexpr int64_t kRequestMs = 10000, kHeartbeatMs = 30000;
 // Registered by the module; null in tests and standalone tools.
 StatusProvider g_status_provider = nullptr;
+WakelockProvider g_wakelock_provider = nullptr;
 struct Client {
     int fd;
     bool ws, identified, closing, fragmented;
@@ -263,8 +264,9 @@ void Http(Client &c, const Config &config, Hub *hub, const Backend *backend, Web
     const bool capabilities = !strcmp(path, "/v1/internal/capabilities");
     const bool webhook_create = !strcmp(path, "/v1/meta/webhook.create");
     const bool webhook_delete = !strcmp(path, "/v1/meta/webhook.delete");
+    const bool wakelock = !strcmp(path, "/v1/internal/wakelock");
     const Method *rpc = !strncmp(path, "/v1/", 4) ? FindMethod(path + 4) : nullptr;
-    if (!meta && !status && !capabilities && !webhook_create && !webhook_delete && !rpc) { Reply(c, 404, "Not Found", "{\"error\":\"unknown_api\"}"); return; }
+    if (!meta && !status && !capabilities && !webhook_create && !webhook_delete && !wakelock && !rpc) { Reply(c, 404, "Not Found", "{\"error\":\"unknown_api\"}"); return; }
     if (strcmp(method, "POST")) { Reply(c, 405, "Method Not Allowed", "{}"); return; }
     cJSON *body = nullptr;
     Multipart uploads{};
@@ -317,6 +319,28 @@ void Http(Client &c, const Config &config, Hub *hub, const Backend *backend, Web
         } else {
             cJSON_Delete(result); cJSON_Delete(methods); Reply(c, 500, "Internal Server Error", "{}");
         }
+    } else if (wakelock) {
+        const cJSON *on = cJSON_GetObjectItemCaseSensitive(body, "on");
+        const cJSON *toggle = cJSON_GetObjectItemCaseSensitive(body, "toggle");
+        if (!g_wakelock_provider) {
+            Reply(c, 501, "Not Implemented", "{\"error\":\"backend_not_implemented\"}");
+        } else if (cJSON_IsBool(on) || (cJSON_IsBool(toggle) && toggle->valueint)) {
+            const int action = cJSON_IsBool(on) ? (on->valueint ? 1 : 0) : 2;
+            bool held = false;
+            g_wakelock_provider(action, &held);
+            cJSON *result = cJSON_CreateObject();
+            if (result) {
+                cJSON_AddBoolToObject(result, "on", held);
+                cJSON_AddBoolToObject(result, "held", held);
+                char *text = cJSON_PrintUnformatted(result);
+                Reply(c, text ? 200 : 500, text ? "OK" : "Internal Server Error", text ? text : "{}"); free(text);
+                cJSON_Delete(result);
+            } else {
+                Reply(c, 500, "Internal Server Error", "{}");
+            }
+        } else {
+            Reply(c, 400, "Bad Request", "{\"error\":\"invalid_request\"}");
+        }
     } else if (webhook_create || webhook_delete) {
         const cJSON *url = cJSON_GetObjectItemCaseSensitive(body, "url");
         const cJSON *token = cJSON_GetObjectItemCaseSensitive(body, "token");
@@ -358,6 +382,7 @@ void Http(Client &c, const Config &config, Hub *hub, const Backend *backend, Web
 } // namespace
 
 void SetStatusProvider(StatusProvider provider) { g_status_provider = provider; }
+void SetWakelockProvider(WakelockProvider provider) { g_wakelock_provider = provider; }
 
 bool ReadConfig(int fd, Config *config) {
     char data[1025]; size_t used = 0;
@@ -395,17 +420,10 @@ bool ReadConfig(int fd, Config *config) {
             else return false;
             send_seen = true;
         } else if (!strncmp(line, "send_allow=", 11) && !allow_seen) {
-            const char *value = line + 11;
-            const size_t length = strlen(value);
-            if (length >= sizeof(parsed.send_allow)) return false;
-            // Talkers are wxids or "<digits>@chatroom"; only separators and those characters.
-            for (size_t i = 0; i < length; ++i) {
-                const char c = value[i];
-                const bool ok = (c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
-                                c == '_' || c == '@' || c == '.' || c == '-' || c == ';';
-                if (!ok) return false;
-            }
-            strcpy(parsed.send_allow, value); allow_seen = true;
+            // Retired whitelist. The key is still accepted (and its value ignored) so configs
+            // written before send_allow was removed keep starting the server; send=on now
+            // allows every talker.
+            allow_seen = true;
         } else return false;
     }
     if (!token_seen) return false;

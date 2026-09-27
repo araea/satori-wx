@@ -18,8 +18,8 @@ public final class StatusTest {
     public static void main(String[] args) throws Exception {
         // ---- 探测脚本输出的解析 ----
         String conf = "port=5601\ntoken=" + TOKEN + "\nsend=on\nsend_allow=filehelper\n";
-        Root.Device d = Root.parse("module=1\nversion=v0.6.7\nconf=" + b64(conf) + "\npid=6312\n");
-        check(d.granted && d.module && !d.disabled && d.wechatPid == 6312 && d.version.equals("v0.6.7"), "解析探测输出");
+        Root.Device d = Root.parse("module=1\nversion=v0.7.0\nconf=" + b64(conf) + "\npid=6312\n");
+        check(d.granted && d.module && !d.disabled && d.wechatPid == 6312 && d.version.equals("v0.7.0"), "解析探测输出");
         check(conf.equals(d.confText), "配置原文经 base64 往返");
         check(Root.parse("pid=\n").wechatPid == 0 && Root.parse("module=1\nconf=%%%\n").confText == null, "空 pid 与坏 base64");
 
@@ -48,6 +48,7 @@ public final class StatusTest {
         s.device = Root.parse("module=1\npid=77\nfrozen=1\n");
         check(s.device.wechatFrozen, "冻结标记");
         expect(s, Status.WECHAT_FROZEN, Status.ACTION_OPEN_WECHAT);
+        check(Status.hero(s).secondary == Status.ACTION_WECHAT_SETTINGS, "冻结时给出后台运行设置入口");
         check(Status.stepValues(s)[0].contains("冻结") && Status.steps(s)[1] == Status.STEP_WAIT, "链路要说出冻结");
         check(!Root.parse("module=1\nfrozen=1\npid=\n").wechatFrozen, "没有进程就谈不上冻结");
         s.device = Root.parse("module=1\npid=77\n");
@@ -56,8 +57,9 @@ public final class StatusTest {
         expect(s, Status.TOKEN_PENDING, Status.ACTION_RESTART_WECHAT);
 
         s.http = 200;
-        s.status = new JSONObject("{\"version\":\"0.6.7\",\"standard_methods\":37,\"event_replay\":true,\"replay_capacity\":64,"
-                + "\"send\":{\"enabled\":true,\"allow\":\"filehelper\",\"sent\":3,\"failed\":0,\"rejected\":1,\"recalled\":0}}");
+        s.status = new JSONObject("{\"version\":\"0.7.0\",\"standard_methods\":37,\"event_replay\":true,\"replay_capacity\":64,"
+                + "\"send\":{\"enabled\":true,\"sent\":3,\"failed\":0,\"rejected\":1,\"recalled\":0},"
+                + "\"keepalive\":{\"notification\":true,\"wakelock\":false}}");
         s.meta = new JSONObject("{\"logins\":[]}");
         expect(s, Status.LOGGED_OUT, Status.ACTION_OPEN_WECHAT);
         s.device = Root.parse("module=1\npid=77\nauth=1114861342\n");
@@ -68,7 +70,7 @@ public final class StatusTest {
         s.meta = new JSONObject("{\"logins\":[{\"sn\":1,\"status\":1,\"features\":[\"message.create\"],"
                 + "\"user\":{\"id\":\"wxid_secret\",\"nick\":\"小明\",\"name\":\"xm\"}}]}");
         expect(s, Status.READY, Status.ACTION_NONE);
-        check(Status.hero(s).detail.contains("小明") && Status.hero(s).detail.contains("1 个白名单会话"), "就绪要说出账号与白名单");
+        check(Status.hero(s).detail.contains("小明") && Status.hero(s).detail.contains("任意会话"), "就绪要说出账号与可发送");
         check(Arrays.equals(Status.steps(s), new int[]{Status.STEP_OK, Status.STEP_OK, Status.STEP_OK, Status.STEP_OK}), "就绪时链路全通");
 
         // 拿不到数据时不沿用在线结论
@@ -82,7 +84,7 @@ public final class StatusTest {
         s.conf = Conf.parse("token=" + TOKEN + "\nsend=off\n");
         Status.Line pending = Status.applied(s);
         check(pending.tone == Status.WARNING && pending.action == Status.ACTION_RESTART_WECHAT
-                && pending.detail.contains("发送开关") && pending.detail.contains("发送白名单"), "说清哪些没生效：" + pending.detail);
+                && pending.detail.contains("发送开关"), "说清哪些没生效：" + pending.detail);
         s.conf = Conf.parse(conf);
         s.viaPrevious = true;
         check(Status.applied(s).detail.contains("端口或令牌"), "旧入口应答 → 端口或令牌待生效");
@@ -90,14 +92,11 @@ public final class StatusTest {
 
         // ---- 被拦下的发送 ----
         s.status.getJSONObject("send").put("last_age_ms", 120000).put("last_ok", false)
-                .put("last_error", "target not in send_allow").put("last_target", "123@chatroom");
-        Status.Blocked blocked = Status.blocked(s);
-        check(blocked != null && blocked.reason == Status.BLOCKED_NOT_ALLOWED && blocked.target.equals("123@chatroom"), "白名单拦下");
-        s.conf = Conf.parse(conf.replace("filehelper", "filehelper;123@chatroom"));
-        check(Status.blocked(s) == null, "已加入文件就不再提示");
-        s.status.getJSONObject("send").put("last_error", "send is disabled by configuration");
+                .put("last_error", "send is disabled by configuration").put("last_target", "123@chatroom");
+        check(Status.blocked(s) == null, "发送开启时关闭提示不出现");
         s.conf = Conf.parse("token=" + TOKEN + "\n");
-        check(Status.blocked(s).reason == Status.BLOCKED_DISABLED, "发送关闭被拦");
+        Status.Blocked blocked = Status.blocked(s);
+        check(blocked != null && blocked.reason == Status.BLOCKED_DISABLED, "发送关闭被拦");
         s.status.getJSONObject("send").put("last_ok", true);
         check(Status.blocked(s) == null, "上次成功就不提示");
         s.conf = Conf.parse(conf);
@@ -106,7 +105,7 @@ public final class StatusTest {
         String report = Status.report(s, "1.0.0", 0);
         check(!report.contains(TOKEN) && !report.contains("wxid_secret") && !report.contains("小明")
                 && !report.contains("filehelper"), "报告泄露了令牌 / 微信号 / 昵称 / 会话：\n" + report);
-        check(report.contains("v0.6.7") && report.contains("白名单 1 个会话"), "报告缺少版本或配置摘要");
+        check(report.contains("v0.7.0") && report.contains("发送开启"), "报告缺少版本或配置摘要");
 
         check(Status.ago(30_000).equals("刚刚") && Status.ago(5 * 60_000).equals("5 分钟前") && Status.ago(3 * 3600_000L).equals("3 小时前"), "时间描述");
         check(Status.reason("rate limited").contains("限速"), "原因翻译");

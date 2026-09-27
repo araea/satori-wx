@@ -29,7 +29,8 @@ while [ "$i" -lt 90 ]; do
             SEND_EXPECTED=1
             SEND_OK=0
             TOKEN=$(sed -n 's/^token=//p' "$MOD/satori-wx.conf")
-            TARGET=$(sed -n 's/^send_allow=//p' "$MOD/satori-wx.conf" | cut -d';' -f1)
+            # 白名单已取消：验证发送固定发给文件传输助手，可用 SATORI_SEND_TARGET 覆盖。
+            TARGET=${SATORI_SEND_TARGET:-filehelper}
             META=$(curl -s -X POST http://127.0.0.1:5601/v1/meta \
                 -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' -d '{}')
             echo "--- meta ---"
@@ -41,7 +42,7 @@ while [ "$i" -lt 90 ]; do
                 RESP=$(curl -s -X POST http://127.0.0.1:5601/v1/message.create \
                     -H "Authorization: Bearer $TOKEN" -H 'Satori-Platform: wechat' -H "Satori-User-ID: $WXID" \
                     -H 'Content-Type: application/json' \
-                    -d "{\"channel_id\":\"$TARGET\",\"content\":\"[satori-wx v0.6.1 send verify]\"}")
+                    -d "{\"channel_id\":\"$TARGET\",\"content\":\"[satori-wx v0.7.0 send verify]\"}")
                 echo "attempt $n: $RESP"
                 case "$RESP" in
                     *'"id"'*) SEND_OK=1; break ;;

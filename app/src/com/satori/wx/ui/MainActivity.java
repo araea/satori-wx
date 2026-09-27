@@ -28,10 +28,6 @@ import com.satori.wx.core.Api;
 import com.satori.wx.core.Conf;
 import com.satori.wx.core.Root;
 import com.satori.wx.core.Status;
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
@@ -46,7 +42,7 @@ import java.util.concurrent.Executors;
  * 轮询只在前台进行（在线 5 秒、离线 10 秒、重启微信期间 2 秒），root 状态只在必要时重读。
  */
 public final class MainActivity extends Activity
-        implements HomePage.Actions, SettingsPage.Actions, PickerPage.Actions {
+        implements HomePage.Actions, SettingsPage.Actions {
     private static final int HOME = 0;
     private static final int SETTINGS = 1;
     private static final long POLL_ONLINE = 5000;
@@ -54,7 +50,6 @@ public final class MainActivity extends Activity
     private static final long POLL_RESTARTING = 2000;
     private static final long ROOT_STALE = 15000;
     private static final long RESTART_TIMEOUT = 60000;
-    private static final long CONTACTS_STALE = 120000;
 
     private final Handler main = new Handler(Looper.getMainLooper());
     private final ExecutorService worker = Executors.newSingleThreadExecutor();
@@ -67,12 +62,10 @@ public final class MainActivity extends Activity
     private FrameLayout stage;
     private HomePage home;
     private SettingsPage settings;
-    private PickerPage picker;
     private Snackbar snackbar;
     private SharedPreferences prefs;
     private boolean twoPane;
     private int page = HOME;
-    private boolean pickerOpen;
     private boolean resumed;
     private boolean rootBusy;
     private long deviceAt;
@@ -80,10 +73,6 @@ public final class MainActivity extends Activity
     private long restartAt;
     private Bundle pendingState;
     private Runnable afterSave;
-    private Map<String, Api.Contact> contacts;
-    private List<Api.Contact> contactList;
-    private long contactsAt;
-    private boolean contactsLoading;
     private Object backCallback;
     private boolean backRegistered;
     private int insetTop, insetBottom, insetIme, insetLeft, insetRight;
@@ -122,10 +111,6 @@ public final class MainActivity extends Activity
         if (state != null) {
             page = twoPane ? HOME : state.getInt("page", HOME);
             if (state.containsKey("draft_port") || page == SETTINGS) ensureSettings();
-            if (state.getBoolean("picker_open")) {
-                ensurePicker().restoreState(state);
-                showPicker(true, false);
-            }
             final int y = state.getInt("home_scroll");
             home.scroll.post(() -> home.scroll.scrollTo(0, y));
         }
@@ -194,10 +179,6 @@ public final class MainActivity extends Activity
             settings.root.setPadding(0, 0, 0, keyboard);
             settings.setBottomInset(bars);
         }
-        if (picker != null) {
-            picker.bar.setTopInset(insetTop);
-            picker.root.setPadding(0, 0, 0, keyboard + bars);
-        }
         if (snackbar != null) snackbar.setBottomInset(keyboard + bars);
     }
 
@@ -213,21 +194,10 @@ public final class MainActivity extends Activity
         Status.Snapshot s = model.snapshot;
         if (s.device != null && s.device.granted && s.device.module) settings.load(s.conf, fallbackConf(), true);
         if (pendingState != null && pendingState.containsKey("draft_port")) settings.restoreState(pendingState);
-        if (contacts != null) settings.contacts(contacts);
         if (Build.VERSION.SDK_INT >= 28) settings.root.setAccessibilityPaneTitle("设置");
         applyInsets();
         renderSettings();
         return settings;
-    }
-
-    private PickerPage ensurePicker() {
-        if (picker != null) return picker;
-        picker = new PickerPage(ui, this);
-        picker.root.setVisibility(View.GONE);
-        if (Build.VERSION.SDK_INT >= 28) picker.root.setAccessibilityPaneTitle("添加会话");
-        frame.addView(picker.root, new FrameLayout.LayoutParams(-1, -1));
-        applyInsets();
-        return picker;
     }
 
     private void showPage(int next, boolean animate) {
@@ -285,46 +255,11 @@ public final class MainActivity extends Activity
         view.setScaleY(1);
     }
 
-    /** 全屏对话框：自下而上滑入（空间弹簧），关闭时滑出并淡出。 */
-    private void showPicker(boolean open, boolean animate) {
-        PickerPage p = ensurePicker();
-        pickerOpen = open;
-        updateBackCallback();
-        View view = p.root;
-        view.animate().cancel();
-        if (open) {
-            hideKeyboard();
-            view.setVisibility(View.VISIBLE);
-            view.bringToFront();
-            snackbar.dismiss();
-            if (animate && Spring.enabled()) {
-                view.setTranslationY(t.dp(64));
-                view.setAlpha(0f);
-                view.animate().translationY(0).alpha(1f).setDuration(t.spatialDefault.duration)
-                        .setInterpolator(t.spatialDefault).start();
-            }
-            return;
-        }
-        hideKeyboard();
-        if (!animate || !Spring.enabled()) {
-            view.setVisibility(View.GONE);
-            reset(view);
-            return;
-        }
-        view.animate().translationY(t.dp(64)).alpha(0f).setDuration(t.effectsDefault.duration)
-                .setInterpolator(t.effectsDefault)
-                .withEndAction(() -> {
-                    view.setVisibility(View.GONE);
-                    reset(view);
-                }).start();
-    }
-
     /**
      * 返回：全屏对话框先关；设置页有未保存的修改时先问保存、放弃还是留下；设置页回首页。
      * 其余情况交给系统（Android 13+ 由系统播放返回桌面的预测性动画）。
      */
     private boolean handleBack() {
-        if (pickerOpen) return picker.requestClose();
         if (settings != null && settings.dirty() && (page == SETTINGS || twoPane)) {
             confirmLeave(() -> {
                 if (page == SETTINGS) showPage(HOME, true);
@@ -363,7 +298,7 @@ public final class MainActivity extends Activity
                 private boolean tracking;
 
                 @Override public void onBackStarted(android.window.BackEvent event) {
-                    tracking = !pickerOpen && page == SETTINGS && settings != null && !settings.dirty() && Spring.enabled();
+                    tracking = page == SETTINGS && settings != null && !settings.dirty() && Spring.enabled();
                     if (tracking) home.root.setVisibility(View.VISIBLE);
                 }
 
@@ -403,7 +338,7 @@ public final class MainActivity extends Activity
 
     private void updateBackCallback() {
         if (Build.VERSION.SDK_INT < 33 || backCallback == null) return;
-        boolean need = pickerOpen || page == SETTINGS || (settings != null && settings.dirty());
+        boolean need = page == SETTINGS || (settings != null && settings.dirty());
         if (need == backRegistered) return;
         backRegistered = need;
         android.window.OnBackInvokedDispatcher dispatcher = getOnBackInvokedDispatcher();
@@ -521,7 +456,6 @@ public final class MainActivity extends Activity
                 applySnapshot(s);
                 model.probing = false;
                 home.render(model);
-                if (s.http == 200 && Status.login(s) != null && contactsStale()) loadContacts(false);
                 if (resumed) {
                     long delay = s.restarting ? POLL_RESTARTING : (s.http == 200 ? POLL_ONLINE : POLL_OFFLINE);
                     main.postDelayed(poll, delay);
@@ -557,7 +491,7 @@ public final class MainActivity extends Activity
                 if (l.startsWith("port=")) port = parsePort(l.substring(5));
             }
         }
-        return new Conf(port, token == null ? Conf.newToken() : token, false, new ArrayList<>());
+        return new Conf(port, token == null ? Conf.newToken() : token, false);
     }
 
     private static int parsePort(String value) {
@@ -582,59 +516,6 @@ public final class MainActivity extends Activity
         }
     }
 
-    private boolean contactsStale() {
-        return !contactsLoading && (contacts == null || System.currentTimeMillis() - contactsAt > CONTACTS_STALE);
-    }
-
-    /** 读联系人（群在前、好友在后）：给白名单行起名字，也供添加会话页选择。 */
-    private void loadContacts(boolean force) {
-        if (contactsLoading) return;
-        Status.Snapshot s = model.snapshot;
-        String self = Status.selfId(s);
-        if (s.conf == null || self == null || s.http != 200) {
-            if (picker != null) picker.contacts(null, s.conf == null ? "配置无效" : "知言服务还没就绪");
-            return;
-        }
-        if (!force && !contactsStale()) {
-            if (picker != null) picker.contacts(contactList, null);
-            return;
-        }
-        contactsLoading = true;
-        final boolean via = s.viaPrevious;
-        final int port = via ? parsePort(prefs.getString("previous_port", "")) : s.conf.port;
-        final String token = via ? prefs.getString("previous_token", "") : s.conf.token;
-        worker.execute(() -> {
-            List<Api.Contact> list = null;
-            String failure = null;
-            try {
-                list = new Api(port, token).contacts(self);
-            } catch (Exception error) {
-                failure = "知言服务没有返回联系人";
-            }
-            final List<Api.Contact> fList = list;
-            final String fFailure = failure;
-            main.post(() -> {
-                if (isDestroyed()) return;
-                contactsLoading = false;
-                if (fList != null) {
-                    contactList = fList;
-                    contactsAt = System.currentTimeMillis();
-                    Map<String, Api.Contact> map = new HashMap<>();
-                    Map<String, String> names = new HashMap<>();
-                    for (Api.Contact c : fList) {
-                        map.put(c.id, c);
-                        names.put(c.id, c.name);
-                    }
-                    contacts = map;
-                    model.names = names;
-                    if (settings != null) settings.contacts(map);
-                    home.render(model);
-                }
-                if (picker != null) picker.contacts(fList != null ? fList : contactList, fList != null ? null : fFailure);
-            });
-        });
-    }
-
     // ------------------------------------------------------------------ 首页动作
 
     @Override public void openSettings() {
@@ -654,6 +535,7 @@ public final class MainActivity extends Activity
             case Status.ACTION_OPEN_WECHAT: openWeChat(); break;
             case Status.ACTION_RESTART_WECHAT: restartWeChat(); break;
             case Status.ACTION_FIX_CONFIG: openSettings(); break;
+            case Status.ACTION_WECHAT_SETTINGS: openWeChatSettings(); break;
             default: break;
         }
     }
@@ -669,6 +551,20 @@ public final class MainActivity extends Activity
             forceRoot = true;
         } catch (Exception error) {
             snackbar.show("无法打开微信，请从桌面打开", null, null);
+        }
+    }
+
+    /**
+     * 微信的系统应用详情页：用户在那里自己决定是否允许微信后台运行（ColorOS 的「耗电管理」就在其中）。
+     * 走的是系统公开的设置入口，知言不替用户改任何系统策略。
+     */
+    @Override public void openWeChatSettings() {
+        Intent intent = new Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                android.net.Uri.fromParts("package", Root.WECHAT, null));
+        try {
+            startActivity(intent);
+        } catch (Exception error) {
+            snackbar.show("无法打开系统设置，请在「设置 → 应用」里找到微信", null, null);
         }
     }
 
@@ -696,7 +592,6 @@ public final class MainActivity extends Activity
                     snackbar.show("没有 Root 授权，无法重新启动微信", null, null);
                 }
                 forceRoot = true;
-                contacts = null;
                 main.postDelayed(this::refresh, 1500);
             });
         });
@@ -728,13 +623,6 @@ public final class MainActivity extends Activity
         } catch (Exception error) {
             snackbar.show("没有可以分享的应用，请改用复制", null, null);
         }
-    }
-
-    @Override public void allowBlocked(String target) {
-        openSettings();
-        List<String> one = new ArrayList<>();
-        one.add(target);
-        ensureSettings().add(one);
     }
 
     @Override public void enableSend() {
@@ -795,13 +683,6 @@ public final class MainActivity extends Activity
         snackbar.show("已恢复为上次保存的设置", null, null);
     }
 
-    @Override public void pickTalkers(List<String> current) {
-        ensurePicker().open(current);
-        showPicker(true, true);
-        loadContacts(false);
-        if (contactList != null && !contactsStale()) picker.contacts(contactList, null);
-    }
-
     @Override public void copyToken(String token) {
         copy("令牌", token, true);
     }
@@ -819,22 +700,6 @@ public final class MainActivity extends Activity
         updateBackCallback();
     }
 
-    // ------------------------------------------------------------------ 添加会话
-
-    @Override public void closePicker() {
-        showPicker(false, true);
-    }
-
-    @Override public void picked(List<String> talkers) {
-        showPicker(false, true);
-        if (!talkers.isEmpty()) ensureSettings().add(talkers);
-    }
-
-    @Override public void reloadContacts() {
-        picker.contacts(null, null);
-        loadContacts(true);
-    }
-
     // ------------------------------------------------------------------ 实例状态
 
     @Override protected void onSaveInstanceState(Bundle out) {
@@ -842,8 +707,6 @@ public final class MainActivity extends Activity
         out.putInt("page", page);
         out.putInt("home_scroll", home.scroll.getScrollY());
         if (settings != null && settings.dirty()) settings.saveState(out);
-        out.putBoolean("picker_open", pickerOpen);
-        if (pickerOpen && picker != null) picker.saveState(out);
     }
 
     // ------------------------------------------------------------------ 工具

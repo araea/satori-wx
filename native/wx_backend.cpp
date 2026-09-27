@@ -55,7 +55,7 @@ Response Failure(const char *code, const char *detail, bool rejected) {
     if (!body) return {502, nullptr};
     cJSON_AddStringToObject(body, "error", code);
     if (detail && *detail) cJSON_AddStringToObject(body, "detail", detail);
-    // Distinguishes "refused by policy" (disabled, allow list, pacing) from a send that
+    // Distinguishes "refused by policy" (disabled, pacing) from a send that
     // actually reached WeChat and failed.
     if (rejected) cJSON_AddBoolToObject(body, "rejected", true);
     return {502, body};

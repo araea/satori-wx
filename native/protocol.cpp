@@ -11,6 +11,7 @@
 
 namespace satori {
 volatile int g_login_count = 0;
+volatile bool g_server_ready = false;
 bool Utf8(const char *data, size_t size) {
     for (size_t i = 0; i < size;) {
         uint32_t c = static_cast<unsigned char>(data[i++]);

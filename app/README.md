@@ -1,7 +1,9 @@
 # 知言应用
 
 知言模块的原生管理界面（`com.satori.wx`）：看服务通了没有、断在哪一环、下一步做什么；
-管理发送开关与白名单、端口与令牌；一键重新启动微信让配置生效。设计规范见 [docs/app-design.md](../docs/app-design.md)。
+管理发送开关、端口与令牌；一键重新启动微信让配置生效。同时是微信常驻通知上「唤醒锁」按钮的落点
+（`keepalive.WakeToggleReceiver` 把切换转给模块的 `POST /v1/internal/wakelock`）。
+设计规范见 [docs/app-design.md](../docs/app-design.md)。
 
 零依赖：只用 Android 框架 API，不引入 androidx / Material Components；视图直接构造，不解析 XML 布局。
 
@@ -35,8 +37,9 @@ python3 tools/make-icons.py    # 增删图标后重新生成 res/drawable/ms_*.x
 | --- | --- |
 | `src/com/satori/wx/core/Conf.java` | 配置解析与写出，规则逐条对齐 `native/server.cpp` 的 `ReadConfig` |
 | `src/com/satori/wx/core/Root.java` | `su`：探测模块与微信进程、原子写配置、重新启动微信 |
-| `src/com/satori/wx/core/Api.java` | 回环 HTTP：状态、元信息、群与联系人（只读） |
+| `src/com/satori/wx/core/Api.java` | 回环 HTTP：状态与元信息（只读） |
 | `src/com/satori/wx/core/Status.java` | 事实 → 结论、链路、生效与否、被拦下提示、诊断报告（纯函数） |
-| `src/com/satori/wx/ui/` | 令牌读口、M3E 组件与三个页面；`MainActivity` 负责导航、线程与系统集成 |
+| `src/com/satori/wx/keepalive/WakeToggleReceiver.java` | 微信常驻通知唤醒锁按钮的落点，转发到 `internal/wakelock` |
+| `src/com/satori/wx/ui/` | 令牌读口、M3E 组件与两个页面；`MainActivity` 负责导航、线程与系统集成 |
 | `tools/` | 颜色令牌与图标的生成脚本 |
 | `tests/` | JVM 测试、`conf_parity.cpp`（服务端判定）、`ui/` 真机设计冒烟 |

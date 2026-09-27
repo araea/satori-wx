@@ -37,6 +37,9 @@ const cJSON *Meta(Hub *hub);
 // Number of ONLINE logins currently in the hub snapshot. Updated by Apply; the message
 // store waits for this so it does not publish before the login is known (events are dropped).
 extern volatile int g_login_count;
+// True once the listener is bound. The in-process keeper reports it in the notification so
+// a port conflict is visible instead of showing a healthy-but-deaf service.
+extern volatile bool g_server_ready;
 const cJSON *FindLogin(Hub *hub, const char *platform, const char *user);
 uint64_t Latest(Hub *hub);
 bool CanResume(Hub *hub, uint64_t sn);

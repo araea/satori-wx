@@ -67,5 +67,7 @@ worker 和 socket 在 specialize 后创建，避免继承特权网络 fd 或跨 
 密钥捕获复用 `native/data_slot.h`；旧探针测试已随独立模块删除。
 
 已验证 Termux 原生编译和协议行为；这不能代替装入微信进程后的验证。
-尚未验证：设备当前 ZygiskNext 的实际加载、SELinux 下监听、微信启动稳定性、后台保活和真实微信账号/消息适配。
+尚未验证：设备当前 ZygiskNext 的实际加载、SELinux 下监听、微信启动稳定性、真实微信账号/消息适配。
+后台保活自 v0.7.0 起有实现（微信进程内常驻通知 + 唤醒锁 + `startService`，以及 root 侧 `wxguard`），
+见 [常驻通知与保活](keepalive.md)。
 本轮未安装或重启设备。

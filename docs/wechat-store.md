@@ -79,8 +79,8 @@
 - `new v51.r0(talker, content, 1, 0, 0, "")`（NetSceneSendMsg）构造器自己入库；
 - `scene.doScene(dispatcher, new com.tencent.mm.network.y2())` 交给微信 mars。
 
-不 hook、不改代码、不加载 dex、不发原始封包。实现端默认关闭 + `send_allow` 白名单 +
-限速，返回「已派发」而非投递确认。完整逆向与验证状态见 [wechat-send.md](wechat-send.md)。
+不 hook、不改代码、不加载 dex、不发原始封包。实现端默认关闭 + 限速（白名单已取消），
+返回「已派发」而非投递确认。完整逆向与验证状态见 [wechat-send.md](wechat-send.md)。
 
 ## 分步计划
 

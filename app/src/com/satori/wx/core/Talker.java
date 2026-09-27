@@ -2,7 +2,7 @@ package com.satori.wx.core;
 
 /**
  * 微信会话 ID（服务端叫 talker）：私聊是对方的 wxid 或微信号，群是 {@code <数字>@chatroom}，
- * 另有 {@code filehelper}（文件传输助手）等内置会话。白名单里存的就是它。
+ * 另有 {@code filehelper}（文件传输助手）等内置会话。用于校验客户端传来的 channel_id。
  */
 public final class Talker {
     private Talker() {}
@@ -13,7 +13,7 @@ public final class Talker {
     public static final int GROUP = 1;
     public static final int FILE = 2;
 
-    /** 服务端 send_allow 的字符集，且不能为空、不能含分号；群 ID 须是数字加 @chatroom。 */
+    /** 会话 ID 的字符集，且不能为空；群 ID 须是数字加 @chatroom。 */
     public static boolean valid(String id) {
         if (id == null || id.isEmpty() || id.length() > 95) return false;
         for (int i = 0; i < id.length(); i++) if (!Conf.talkerChar(id.charAt(i))) return false;

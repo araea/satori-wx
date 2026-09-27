@@ -75,56 +75,40 @@ void TestConfig() {
     snprintf(body, sizeof(body), "port=5601\ntoken=%s\n", token);
     Check(Parse(body, &config), "baseline config parses");
     Check(!config.send, "send defaults to off");
-    Check(config.send_allow[0] == 0, "send_allow defaults to empty");
 
+    // The retired whitelist key is still accepted (and ignored) so older configs keep working.
     snprintf(body, sizeof(body), "# comment\nport=5601\ntoken=%s\nsend=on\nsend_allow=wxid_abc;123@chatroom\n", token);
-    Check(Parse(body, &config), "send on with allow list parses");
+    Check(Parse(body, &config), "legacy send_allow key still parses");
     Check(config.send, "send=on parsed");
-    Check(!strcmp(config.send_allow, "wxid_abc;123@chatroom"), "allow list preserved");
 
     snprintf(body, sizeof(body), "token=%s\nsend=off\n", token);
     Check(Parse(body, &config), "send=off parses");
     Check(!config.send, "send=off means disabled");
 
     snprintf(body, sizeof(body), "token=%s\nsend=on\n", token);
-    Check(Parse(body, &config), "send without an allow list still parses");
-    Check(config.send, "send without allow list is enabled at parse time (runtime refuses targets)");
+    Check(Parse(body, &config), "send without a whitelist parses");
+    Check(config.send, "send=on is enabled at parse time");
 
     snprintf(body, sizeof(body), "token=%s\nsend=maybe\n", token);
     Check(!Parse(body, &config), "invalid send value rejected");
-    snprintf(body, sizeof(body), "token=%s\nsend=on\nsend_allow=has space\n", token);
-    Check(!Parse(body, &config), "illegal allow char rejected");
     snprintf(body, sizeof(body), "token=%s\nfoo=bar\n", token);
     Check(!Parse(body, &config), "unknown key rejected");
+    snprintf(body, sizeof(body), "token=%s\nsend_allow=a\nsend_allow=b\n", token);
+    Check(!Parse(body, &config), "repeated legacy key rejected");
     Check(!Parse("token=invalid token!\n", &config), "invalid token rejected");
     Check(!Parse("port=5601\n", &config), "missing token rejected");
-
-    char big[700];
-    memset(big, 'a', sizeof(big));
-    big[sizeof(big) - 1] = 0;
-    snprintf(body, sizeof(body), "token=%s\nsend_allow=%s\n", token, big);
-    Check(!Parse(body, &config), "over-long allow list rejected");
 }
 
 void TestSendGating() {
     satori::SetSendEnabled(false);
-    satori::SendConfigure("wxid_abc");
     satori::SendResult off = satori::SendText("wxid_abc", "hello");
     Check(!off.ok, "send refused while disabled");
     Check(strstr(off.detail, "disabled") != nullptr, "disabled reason reported");
 
+    // Any talker is eligible now; without a JavaVM the attempt reaches the environment step.
     satori::SetSendEnabled(true);
-    satori::SendConfigure("");
-    satori::SendResult denied = satori::SendText("wxid_abc", "hello");
-    Check(!denied.ok, "empty allow list refuses every target");
-
-    satori::SendConfigure("wxid_other;123@chatroom");
-    satori::SendResult not_allowed = satori::SendText("wxid_abc", "hello");
-    Check(!not_allowed.ok, "target outside the allow list refused");
-    Check(strstr(not_allowed.detail, "send_allow") != nullptr, "allow-list reason reported");
-
-    // Allowed target, but no JavaVM: proves the allow list is checked before Java is touched.
-    satori::SendResult no_vm = satori::SendText("123@chatroom", "hello");
+    satori::SendPacingReset();
+    satori::SendResult no_vm = satori::SendText("wxid_abc", "hello");
     Check(!no_vm.ok, "send without a JavaVM fails");
     Check(strstr(no_vm.detail, "JavaVM") != nullptr, "missing JavaVM reported");
 
@@ -132,21 +116,20 @@ void TestSendGating() {
     Check(!empty.ok, "empty content refused");
 
     // The pacing window still admits the first attempt; the second lands inside it.
+    satori::SendPacingReset();
     satori::SendResult again = satori::SendText("123@chatroom", "hello");
-    Check(!again.ok, "second immediate attempt is paced");
+    Check(!again.ok, "first paced attempt still reaches the environment step");
+    satori::SendResult paced = satori::SendText("123@chatroom", "hello");
+    Check(paced.rejected && strstr(paced.detail, "rate limited") != nullptr, "second immediate attempt is paced");
 
-    satori::SendConfigure("");
     satori::SetSendEnabled(false);
 }
 
 void TestSendStatus() {
-    satori::SendConfigure("");
     satori::SetSendEnabled(false);
     satori::SendStatus status{};
     satori::SendStatusGet(&status);
     Check(!status.enabled, "status: disabled by default");
-    Check(!status.allowed_any, "status: no allow entries");
-    Check(status.allow[0] == 0, "status: allow list empty");
     Check(!status.ready, "status: no JavaVM is wired without SendInit");
     Check(!status.resolved, "status: classes unresolved");
     Check(!status.dispatcher, "status: dispatcher unknown");
@@ -164,14 +147,11 @@ void TestSendStatus() {
     Check(status.last_age_ms >= 0, "status: attempt age recorded");
 
     satori::SetSendEnabled(true);
-    satori::SendConfigure("wxid_x;42@chatroom");
     satori::SendStatusGet(&status);
     Check(status.enabled, "status: enabled follows configuration");
-    Check(status.allowed_any, "status: allow list non-empty");
-    Check(!strcmp(status.allow, "wxid_x;42@chatroom"), "status: allow list exposed");
 
-    // Allowed target and a fresh pacing window, but no JavaVM: an environment failure, not
-    // a policy rejection.
+    // A fresh pacing window, but no JavaVM: an environment failure, not a policy rejection.
+    satori::SendPacingReset();
     const satori::SendResult no_vm = satori::SendText("wxid_x", "hi");
     Check(!no_vm.ok && !no_vm.rejected, "environment failure is not a policy rejection");
     satori::SendStatusGet(&status);
@@ -180,7 +160,6 @@ void TestSendStatus() {
     Check(!status.resolved && !status.dispatcher, "status: still unresolved and undispatched");
 
     satori::SetSendEnabled(false);
-    satori::SendConfigure("");
 }
 } // namespace
 
