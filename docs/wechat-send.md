@@ -73,7 +73,9 @@ com.tencent.mm.network.y2.<init>()   微信自己在 a3.b 里用的空回调（�
 ```json
 "send": {
   "enabled": true,          // 配置 send=on 且配置有效
-  "ready": true,            // 微信类已在宿主 ClassLoader 上解析成功
+  "ready": true,            // JavaVM 已交给发送器（可以尝试发送）
+  "resolved": true,         // 微信发送类已在宿主 ClassLoader 上解析成功
+  "dispatcher": true,       // 上次探测时微信网络派发器可达
   "allowed_any": true,      // 白名单非空（为空＝一切目标都拒）
   "allow": "filehelper",    // 白名单原文
   "sent": 1, "failed": 0, "rejected": 0,
@@ -83,6 +85,10 @@ com.tencent.mm.network.y2.<init>()   微信自己在 a3.b 里用的空回调（�
   "last_error": "..."       // 仅上次失败时有
 }
 ```
+
+`resolved` / `dispatcher` 由**预热线程**维护：登录后它主动解析一次类并探一次派发器
+（不发送任何消息），所以这两个字段不需要先发一条消息才有值；若解析失败会每 10 秒重试。
+`ready` 只表示 JavaVM 已接上；能不能发看 `resolved` + `dispatcher`。
 
 计数含义：`sent` = 已交微信派发；`failed` = 到了发送管线但失败（含解析不到类、派发返回负值）；
 `rejected` = 在派发前被策略拒绝（未开启 / 不在白名单 / 限速）。计数按进程计，重启归零。

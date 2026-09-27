@@ -30,6 +30,8 @@ void AddSendStatus(cJSON *object) {
     cJSON_AddItemToObject(object, "send", send);
     cJSON_AddBoolToObject(send, "enabled", status.enabled);
     cJSON_AddBoolToObject(send, "ready", status.ready);
+    cJSON_AddBoolToObject(send, "resolved", status.resolved);
+    cJSON_AddBoolToObject(send, "dispatcher", status.dispatcher);
     cJSON_AddBoolToObject(send, "allowed_any", status.allowed_any);
     if (status.allow[0]) cJSON_AddStringToObject(send, "allow", status.allow);
     cJSON_AddNumberToObject(send, "sent", static_cast<double>(status.sent));
@@ -54,6 +56,25 @@ void *Serve(void *) {
     }
     __android_log_print(ANDROID_LOG_INFO, "SatoriWx", "native Satori listening at 127.0.0.1:%u", g_config.port);
     satori::Run(listener, g_config, g_bus, satori::WeChatBackend());
+    return nullptr;
+}
+
+// Resolves the sender once the account is online so /v1/internal/status reports real
+// capability without waiting for the first message.create. Runs on its own thread, well
+// after the app has finished starting, and only ever reads.
+void *WarmSend(void *) {
+    pthread_setname_np(pthread_self(), "satori-wx-sendwarm");
+    if (!satori::SendEnabled()) return nullptr;
+    for (int i = 0; i < 300 && satori::g_login_count <= 0; ++i) {
+        const timespec second{1, 0};
+        nanosleep(&second, nullptr);
+    }
+    if (satori::g_login_count <= 0) return nullptr;
+    for (int i = 0; i < 30; ++i) {
+        if (satori::SendWarmUp()) break;
+        const timespec delay{10, 0};
+        nanosleep(&delay, nullptr);
+    }
     return nullptr;
 }
 
@@ -140,6 +161,15 @@ public:
         // message-created events. Disabled automatically if the key is unavailable.
         if (g_data_dir[0] && !satori::StartLiveStore(g_data_dir, g_bus, 1))
             __android_log_print(ANDROID_LOG_WARN, "SatoriWx", "live message store not started");
+        // Resolve the sender once the account is online so status reflects real capability.
+        if (satori::SendEnabled()) {
+            pthread_t warm;
+            if (pthread_create(&warm, nullptr, WarmSend, nullptr)) {
+                __android_log_print(ANDROID_LOG_WARN, "SatoriWx", "send warm-up thread creation failed: %s", strerror(errno));
+            } else {
+                pthread_detach(warm);
+            }
+        }
     }
     void preServerSpecialize(zygisk::ServerSpecializeArgs *) override {
         api_->setOption(zygisk::DLCLOSE_MODULE_LIBRARY);

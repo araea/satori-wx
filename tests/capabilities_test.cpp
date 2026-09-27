@@ -129,7 +129,9 @@ void TestSendStatus() {
     Check(!status.enabled, "status: disabled by default");
     Check(!status.allowed_any, "status: no allow entries");
     Check(status.allow[0] == 0, "status: allow list empty");
-    Check(!status.ready, "status: unresolved without a JavaVM");
+    Check(!status.ready, "status: no JavaVM is wired without SendInit");
+    Check(!status.resolved, "status: classes unresolved");
+    Check(!status.dispatcher, "status: dispatcher unknown");
     Check(status.last_age_ms == -1, "status: no attempt recorded yet");
     const long long rejected_before = status.rejected;
     const long long failed_before = status.failed;
@@ -157,7 +159,7 @@ void TestSendStatus() {
     satori::SendStatusGet(&status);
     Check(status.failed == failed_before + 1, "status: environment failure counted as failed");
     Check(status.rejected == rejected_before + 1, "status: rejection counter unchanged by it");
-    Check(!status.ready, "status: still unresolved");
+    Check(!status.resolved && !status.dispatcher, "status: still unresolved and undispatched");
 
     satori::SetSendEnabled(false);
     satori::SendConfigure("");

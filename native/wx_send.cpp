@@ -41,6 +41,7 @@ char g_last_error[160] = {};
 
 // Resolved once on the host class loader and then only read.
 bool g_resolved = false;
+bool g_dispatcher_ok = false;
 jobject g_loader = nullptr;      // java.lang.ClassLoader (app)
 jclass g_r0 = nullptr;           // v51.r0
 jmethodID g_r0_ctor = nullptr;   // (String,String,int,int,long,String)V
@@ -263,7 +264,9 @@ void SendStatusGet(SendStatus *status) {
     if (!status) return;
     pthread_mutex_lock(&g_mu);
     status->enabled = SendEnabled();
-    status->ready = g_resolved;
+    status->ready = g_vm != nullptr;
+    status->resolved = g_resolved;
+    status->dispatcher = g_dispatcher_ok;
     status->allowed_any = g_allow[0] != 0;
     status->sent = g_sent;
     status->failed = g_failed;
@@ -276,6 +279,28 @@ void SendStatusGet(SendStatus *status) {
     snprintf(status->last_error, sizeof(status->last_error), "%s", g_last_error);
     snprintf(status->allow, sizeof(status->allow), "%s", g_allow);
     pthread_mutex_unlock(&g_mu);
+}
+
+// Resolves the send classes and probes the dispatcher without sending anything. Called from
+// the module's warm-up thread after login so the status block reports real capability.
+bool SendWarmUp() {
+    if (!SendEnabled()) return false;
+    JNIEnv *env = Env();
+    if (!env) return false;
+    char detail[160] = {};
+    pthread_mutex_lock(&g_mu);
+    const bool resolved = g_resolved || Resolve(env, detail, sizeof(detail));
+    pthread_mutex_unlock(&g_mu);
+    if (!resolved) return false;
+    int probe = 0;
+    jobject dispatcher = Dispatcher(env, &probe);
+    pthread_mutex_lock(&g_mu);
+    g_dispatcher_ok = dispatcher != nullptr;
+    pthread_mutex_unlock(&g_mu);
+    __android_log_print(ANDROID_LOG_INFO, "SatoriWx", "send warm-up: resolved=%d dispatcher=%d probe=0x%x",
+                        resolved ? 1 : 0, dispatcher ? 1 : 0, probe);
+    if (dispatcher) env->DeleteLocalRef(dispatcher);
+    return true;
 }
 
 static SendResult SendTextInner(const char *talker, const char *content) {
@@ -315,6 +340,9 @@ static SendResult SendTextInner(const char *talker, const char *content) {
     // inserts a SENDING row, so a send that cannot be dispatched must not get that far.
     int probe = 0;
     jobject dispatcher = Dispatcher(env, &probe);
+    pthread_mutex_lock(&g_mu);
+    g_dispatcher_ok = dispatcher != nullptr;
+    pthread_mutex_unlock(&g_mu);
     if (!dispatcher) {
         Detail(result.detail, sizeof(result.detail), "network dispatcher unavailable (probe=0x%x)", probe);
         return result;

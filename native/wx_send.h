@@ -25,12 +25,18 @@ struct SendResult {
 };
 // Sends plain text to a talker (wxid or <id>@chatroom). Thread-safe, rate limited.
 SendResult SendText(const char *talker, const char *content);
+// Resolves the WeChat send classes and probes the dispatcher ahead of the first send so the
+// status block reports real capability instead of "not tried yet". Safe to call repeatedly;
+// does nothing until the JavaVM is available. Returns true once the classes are resolved.
+bool SendWarmUp();
 
 // Snapshot for /v1/internal/status and /v1/internal/capabilities. Counters are per process
-// and reset on restart; "ready" only becomes true once the WeChat classes have resolved.
+// and reset on restart.
 struct SendStatus {
     bool enabled;          // send=on with a valid configuration
-    bool ready;            // WeChat send classes resolved on the host class loader
+    bool ready;            // JavaVM is wired into the sender (it will attempt to resolve)
+    bool resolved;         // WeChat send classes are cached on the host class loader
+    bool dispatcher;       // the network dispatcher was reachable at the last probe
     bool allowed_any;      // allow list is non-empty (otherwise every target is refused)
     long long sent;        // dispatched successfully
     long long failed;      // reached the send pipeline but failed
