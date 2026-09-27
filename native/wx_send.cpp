@@ -7,12 +7,18 @@
 //   v51.r0.doScene(com.tencent.mm.network.s, com.tencent.mm.modelbase.u0) -> int
 //   com.tencent.mm.network.y2.<init>()       -> the no-op IOnSceneEnd the app itself uses
 // a3.b(j1, m1) is the same call the app makes, but it hides doScene's return value.
+//
+// Recall (撤回) uses the app's own revoke scene:
+//   ex0.k0.F0 (ex0.j0)  .k(talker, localId) -> com.tencent.mm.storage.e9 (MsgInfo)
+//   com.tencent.mm.modelsimple.d1.<init>(e9, hint, "") -> cgi /cgi-bin/micromsg-bin/revokemsg
+//   d1.doScene(dispatcher, com.tencent.mm.network.y2)   -> int netId (>= 0 accepted).
 #include "wx_send.h"
 #include "wx_capabilities.h"
 #include <jni.h>
 #include <pthread.h>
 #include <stdarg.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <time.h>
 #include <android/log.h>
@@ -54,6 +60,17 @@ jmethodID g_a3_dispatcher = nullptr; // ()Lcom/tencent/mm/network/j1;
 jclass g_r1 = nullptr;           // com.tencent.mm.modelbase.r1 (MMKernel network holder)
 jfieldID g_r1_singleton = nullptr;   // y:Lcom/tencent/mm/modelbase/r1;
 jmethodID g_r1_dispatcher = nullptr; // k()Lcom/tencent/mm/network/s;
+// Recall: the message store and the revoke scene. Resolved leniently; when absent the
+// recall call reports it instead of failing the whole sender. (e9 = com.tencent.mm.storage.e9)
+jclass g_d1 = nullptr;             // com.tencent.mm.modelsimple.d1 (NetSceneRevokeMsg)
+jmethodID g_d1_ctor = nullptr;     // (e9,String,String)V
+jmethodID g_d1_do_scene = nullptr; // (com.tencent.mm.network.s, com.tencent.mm.modelbase.u0)I
+jclass g_k0 = nullptr;             // ex0.k0 (message store holder)
+jfieldID g_k0_store = nullptr;     // F0:Lex0/j0;
+jclass g_j0 = nullptr;             // ex0.j0 (per-account message store)
+jmethodID g_j0_get = nullptr;      // k(String,J)Le9;
+jmethodID g_e9_is_send = nullptr;  // z0()I, 1 when the message was sent by this account
+long long g_recalled = 0;
 
 long long NowMs() {
     timespec ts{};
@@ -163,12 +180,36 @@ bool Resolve(JNIEnv *env, char *detail, size_t size) {
         g_r1_dispatcher = env->GetMethodID(r1, "k", "()Lcom/tencent/mm/network/s;");
         if (!g_r1_singleton || !g_r1_dispatcher) env->ExceptionClear();
     }
+    // Recall is a separate capability: resolve it without failing text sends when a class
+    // or member is missing (another WeChat build, or the scene renamed).
+    jclass d1 = LoadClass(env, loader, load, "com.tencent.mm.modelsimple.d1");
+    jclass k0 = LoadClass(env, loader, load, "ex0.k0");
+    jclass j0 = LoadClass(env, loader, load, "ex0.j0");
+    jclass e9 = LoadClass(env, loader, load, "com.tencent.mm.storage.e9");
+    if (ok && d1 && k0 && j0 && e9) {
+        g_d1_ctor = env->GetMethodID(d1, "<init>", "(Lcom/tencent/mm/storage/e9;Ljava/lang/String;Ljava/lang/String;)V");
+        g_d1_do_scene = env->GetMethodID(d1, "doScene", "(Lcom/tencent/mm/network/s;Lcom/tencent/mm/modelbase/u0;)I");
+        g_k0_store = env->GetStaticFieldID(k0, "F0", "Lex0/j0;");
+        g_j0_get = env->GetMethodID(j0, "k", "(Ljava/lang/String;J)Lcom/tencent/mm/storage/e9;");
+        g_e9_is_send = env->GetMethodID(e9, "z0", "()I");
+        if (!g_d1_ctor || !g_d1_do_scene || !g_k0_store || !g_j0_get || !g_e9_is_send) {
+            env->ExceptionClear();
+            g_d1_ctor = nullptr;
+            g_d1_do_scene = nullptr;
+            g_k0_store = nullptr;
+            g_j0_get = nullptr;
+            g_e9_is_send = nullptr;
+        }
+    }
     if (ok) {
         g_loader = env->NewGlobalRef(loader);
         g_r0 = static_cast<jclass>(env->NewGlobalRef(r0));
         g_y2 = static_cast<jclass>(env->NewGlobalRef(y2));
         g_a3 = static_cast<jclass>(env->NewGlobalRef(a3));
         g_r1 = r1 ? static_cast<jclass>(env->NewGlobalRef(r1)) : nullptr;
+        g_d1 = d1 ? static_cast<jclass>(env->NewGlobalRef(d1)) : nullptr;
+        g_k0 = k0 ? static_cast<jclass>(env->NewGlobalRef(k0)) : nullptr;
+        g_j0 = j0 ? static_cast<jclass>(env->NewGlobalRef(j0)) : nullptr;
         if (!g_loader || !g_r0 || !g_y2 || !g_a3) {
             ok = false;
             Detail(detail, size, "global reference allocation failed");
@@ -180,6 +221,10 @@ bool Resolve(JNIEnv *env, char *detail, size_t size) {
     if (y2) env->DeleteLocalRef(y2);
     if (a3) env->DeleteLocalRef(a3);
     if (r1) env->DeleteLocalRef(r1);
+    if (d1) env->DeleteLocalRef(d1);
+    if (k0) env->DeleteLocalRef(k0);
+    if (j0) env->DeleteLocalRef(j0);
+    if (e9) env->DeleteLocalRef(e9);
     env->DeleteLocalRef(loader);
     env->DeleteLocalRef(loader_class);
     env->DeleteLocalRef(application);
@@ -278,6 +323,7 @@ void SendStatusGet(SendStatus *status) {
     status->sent = g_sent;
     status->failed = g_failed;
     status->rejected = g_rejected;
+    status->recalled = g_recalled;
     status->last_age_ms = g_attempt_ms ? NowMs() - g_attempt_ms : -1;
     status->last_ok = g_last_ok;
     status->last_net_id = g_last_net;
@@ -426,6 +472,133 @@ SendResult SendText(const char *talker, const char *content) {
                                        talker, result.local_id, result.net_id);
     else __android_log_print(ANDROID_LOG_WARN, "SatoriWx", "send to %s failed%s: %s",
                              talker, result.rejected ? " (rejected)" : "", result.detail);
+    return result;
+}
+
+SendResult SendRecall(const char *talker, const char *message_id) {
+    SendResult result{};
+    result.local_id = -1;
+    result.net_id = -1;
+    if (!talker || !*talker || !message_id || !*message_id) {
+        Detail(result.detail, sizeof(result.detail), "empty target or message id");
+        return result;
+    }
+    if (!SendEnabled()) {
+        result.rejected = true;
+        Detail(result.detail, sizeof(result.detail), "send is disabled by configuration");
+        return result;
+    }
+    if (!Allowed(talker)) {
+        result.rejected = true;
+        Detail(result.detail, sizeof(result.detail), "target not in send_allow");
+        return result;
+    }
+    char *tail = nullptr;
+    const long long local_id = strtoll(message_id, &tail, 10);
+    if (tail == message_id || (tail && *tail) || local_id <= 0) {
+        result.rejected = true;
+        Detail(result.detail, sizeof(result.detail), "message_id must be a positive decimal local id");
+        return result;
+    }
+    result.local_id = local_id;
+    if (!Pacing()) {
+        result.rejected = true;
+        Detail(result.detail, sizeof(result.detail), "rate limited");
+        return result;
+    }
+    JNIEnv *env = Env();
+    if (!env) {
+        Detail(result.detail, sizeof(result.detail), "JavaVM unavailable");
+        return result;
+    }
+    pthread_mutex_lock(&g_mu);
+    const bool resolved = g_resolved || Resolve(env, result.detail, sizeof(result.detail));
+    pthread_mutex_unlock(&g_mu);
+    if (!resolved) return result;
+    if (!g_d1 || !g_d1_ctor || !g_d1_do_scene || !g_k0_store || !g_j0_get || !g_e9_is_send) {
+        Detail(result.detail, sizeof(result.detail), "recall classes unavailable (version mismatch?)");
+        return result;
+    }
+    int probe = 0;
+    jobject dispatcher = Dispatcher(env, &probe);
+    if (!dispatcher) {
+        Detail(result.detail, sizeof(result.detail), "network dispatcher unavailable (probe=0x%x)", probe);
+        return result;
+    }
+    // The account's message store gives us WeChat's own MsgInfo, which the revoke scene needs
+    // to build /cgi-bin/micromsg-bin/revokemsg. Reading it is the only way the client-side
+    // checks (does it exist, did we send it) are the same ones the app itself applies.
+    jobject store = env->GetStaticObjectField(g_k0, g_k0_store);
+    if (env->ExceptionCheck()) { env->ExceptionClear(); store = nullptr; }
+    if (!store) {
+        env->DeleteLocalRef(dispatcher);
+        Detail(result.detail, sizeof(result.detail), "message store unavailable");
+        return result;
+    }
+    jstring jtalker = env->NewStringUTF(talker);
+    jobject info = jtalker ? env->CallObjectMethod(store, g_j0_get, jtalker, static_cast<jlong>(local_id)) : nullptr;
+    if (env->ExceptionCheck()) { env->ExceptionClear(); info = nullptr; }
+    env->DeleteLocalRef(store);
+    if (jtalker) env->DeleteLocalRef(jtalker);
+    if (!info) {
+        env->DeleteLocalRef(dispatcher);
+        Detail(result.detail, sizeof(result.detail), "message %lld not found in %s", local_id, talker);
+        return result;
+    }
+    const jint is_send = env->CallIntMethod(info, g_e9_is_send);
+    if (env->ExceptionCheck() || is_send != 1) {
+        env->ExceptionClear();
+        env->DeleteLocalRef(info);
+        env->DeleteLocalRef(dispatcher);
+        result.rejected = true;
+        Detail(result.detail, sizeof(result.detail), "only messages sent by this account can be recalled");
+        return result;
+    }
+    // The hint becomes the local "you recalled a message" system line; WeChat's own string for
+    // it is R.string.b5s. Hardcoded so recall does not depend on resource ids.
+    jstring jhint = env->NewStringUTF("你撤回了一条消息");
+    jstring jempty = env->NewStringUTF("");
+    jobject scene = (jhint && jempty) ? env->NewObject(g_d1, g_d1_ctor, info, jhint, jempty) : nullptr;
+    if (env->ExceptionCheck()) { env->ExceptionClear(); scene = nullptr; }
+    if (jhint) env->DeleteLocalRef(jhint);
+    if (jempty) env->DeleteLocalRef(jempty);
+    env->DeleteLocalRef(info);
+    if (!scene) {
+        env->DeleteLocalRef(dispatcher);
+        Detail(result.detail, sizeof(result.detail), "revoke scene construction failed");
+        return result;
+    }
+    jobject callback = env->NewObject(g_y2, g_y2_ctor);
+    if (env->ExceptionCheck()) { env->ExceptionClear(); callback = nullptr; }
+    if (!callback) {
+        env->DeleteLocalRef(scene);
+        env->DeleteLocalRef(dispatcher);
+        Detail(result.detail, sizeof(result.detail), "callback allocation failed");
+        return result;
+    }
+    jint net = -1;
+    net = env->CallIntMethod(scene, g_d1_do_scene, dispatcher, callback);
+    if (env->ExceptionCheck()) {
+        env->ExceptionClear();
+        Detail(result.detail, sizeof(result.detail), "recall dispatch threw");
+    } else if (net < 0) {
+        Detail(result.detail, sizeof(result.detail), "recall rejected (netId=%d)", static_cast<int>(net));
+    } else {
+        result.ok = true;
+    }
+    result.net_id = static_cast<int>(net);
+    env->DeleteLocalRef(callback);
+    env->DeleteLocalRef(dispatcher);
+    env->DeleteLocalRef(scene);
+    pthread_mutex_lock(&g_mu);
+    if (result.ok) ++g_recalled;
+    else if (result.rejected) ++g_rejected;
+    else ++g_failed;
+    pthread_mutex_unlock(&g_mu);
+    if (result.ok) __android_log_print(ANDROID_LOG_INFO, "SatoriWx", "recalled %s in %s (netId %d)",
+                                       message_id, talker, result.net_id);
+    else __android_log_print(ANDROID_LOG_WARN, "SatoriWx", "recall %s in %s failed%s: %s",
+                             message_id, talker, result.rejected ? " (rejected)" : "", result.detail);
     return result;
 }
 } // namespace satori

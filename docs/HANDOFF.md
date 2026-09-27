@@ -12,16 +12,16 @@
 **纯 native C++**：无 DEX、无 Java 助手、无 ArtMethod 改写、无 hook 引擎。连发送都是纯反射调用
 微信自己的代码，不加载任何额外东西。
 
-- **装机版本 v0.6.4**；**repo 版本 v0.6.5**（预热重试 §6.4 + 发送前把 Satori `content` 拍平成纯文本 §6.5，随下次重启一起上）。
+- **装机版本 v0.6.4**；**repo 版本 v0.6.6**（预热重试 §6.4 + 发送前把 Satori `content` 拍平成纯文本 §6.5 + `message.delete` 反射撤回 §6.6，随下次重启一起上）。
 - 家账号：`wxid_8zxjsghrk8vz41`。模块配置：`send=on` + `send_allow=filehelper`。
 
 ## 2. 协议覆盖（37 个标准方法）
 
 | | 数量 | 方法 |
 | --- | --- | --- |
-| ✅ 已实现、真机验证 | **15** | 读侧 13：`message.get/list`、`user.get`、`friend.list`、`guild.get/list`、`guild.member.get/list`、`guild.role.list`、`guild.member.role.list`、`channel.get/list`、`user.channel.create`；`message.create`（可选发送）；`login.get` |
+| ✅ 已实现、真机验证 | **16** | 读侧 13：`message.get/list`、`user.get`、`friend.list`、`guild.get/list`、`guild.member.get/list`、`guild.role.list`、`guild.member.role.list`、`channel.get/list`、`user.channel.create`；`message.create`（可选发送）；`message.delete`（撤回自己的消息，可选发送）；`login.get` |
 | ❌ 微信无此概念 | **8** | `message.update`（不能编辑已发消息）、`reaction.create/delete/clear/list`（没有表态）、`guild.role.create/update/delete`（没有自定义角色）——列在 `internal/capabilities.unsupported` |
-| ⬜ 待逆向的写操作 | **14** | `message.delete`(撤回)、`channel.create/update/delete/mute`、`guild.member.kick/mute/role.set/role.unset`、`friend.delete`、`friend.approve`、`guild.approve`、`guild.member.approve`、`upload.create` |
+| ⬜ 待逆向的写操作 | **13** | `channel.create/update/delete/mute`、`guild.member.kick/mute/role.set/role.unset`、`friend.delete`、`friend.approve`、`guild.approve`、`guild.member.approve`、`upload.create` |
 
 读侧 + 发送可以认为做完了。`features` 的唯一来源是 `native/wx_capabilities.cpp`（`WeChatFeatures()`）；
 `wx_backend.cpp` 与 `wx_account.cpp` 都读它，**不要各写一份**。
@@ -38,7 +38,7 @@ cd /data/data/com.termux/files/home/dev/araea/satori-wx
 ./build.sh probe    # 可选探针 ZIP
 ./tests/run.sh      # 22 socket + 10 协议 + account + wcdb + store + capabilities + webhook + 探针
 
-su -c 'ksud module install build/satori-wx-server-v0.6.5.zip'   # 装机（暂存，重启才生效）
+su -c 'ksud module install build/satori-wx-server-v0.6.6.zip'   # 装机（暂存，重启才生效）
 su -c 'setsid sh -c "sleep 60; /system/bin/reboot" </dev/null >/dev/null 2>&1 &'
 ```
 
@@ -165,6 +165,22 @@ mars 在 `com.tencent.mm:push`；主进程（服务端所在）拿不到 `a3.c()
 > 背景：acumen 的主线改为按协议发完整 `content`，不再为微信单独拍平（见 acumen `refactor(ids)`）。
 > 因此这一步落在实现端。新增 `tests/content_test.cpp` 覆盖引号内 `>`、未闭合标签、容量边界等。
 
+### 6.6 撤回（`message.delete`）
+
+用微信自己的撤回场景，反射调用，不 hook：
+
+```
+MsgInfo = ex0.k0.F0.k(talker, localId)          // ex0.j0，按 talker+本地 msgId 取
+场景    = new com.tencent.mm.modelsimple.d1(MsgInfo, "你撤回了一条消息", "")
+结果    = 场景.doScene(派发器, com.tencent.mm.network.y2)   // cgi /cgi-bin/micromsg-bin/revokemsg
+```
+
+- `message.delete` 收 `channel_id` + `message_id`；id 是 `message.create` 回执里的**本地 id**（十进制）。
+- 只撤回本账号发出的消息（`MsgInfo.z0()==1`）；别人的消息返回 502 + `rejected:true`。
+  群主撤回他人消息要走另一套 ticket，未做。
+- 与发送同一套开关/白名单/限速；`internal/status.send` 多一个 `recalled` 计数。
+- `d1` 构造器对文本类消息会先改本地库（标记已撤回），派发失败也不会回滚——跟微信自己一致。
+
 ## 7. 协议层要点
 
 - 端点：`/v1/meta`、`/v1/meta/webhook.create|delete`、`/v1/internal/status|capabilities`、`/v1/{resource}.{method}`
@@ -241,22 +257,25 @@ JADX 也可用：`~/tools/jadx/bin/jadx --single-class <点分名> -d <输出目
 3. 微信 `:push` 子进程有 mars；服务端只在主进程（发送靠反射，不依赖子进程）
 4. 只支持 arm64
 5. 发送是风控最敏感动作：默认关闭 + 限速 + 白名单，不伪造成功
-6. 写操作（§2 的 14 个）**一个都没做**；每个都必须默认关闭 + 白名单，且要先证明是谁做的再动
+6. 写操作只做了 `message.delete`（仅本账号消息）；其余 13 个（§2）**一个都没做**，每个都必须默认关闭 + 白名单，且要先证明是谁做的再动
+7. 发送只支持纯文本。图片/语音/视频/文件需要先用微信的 CDN 上传再发场景；
+   已确认接口在 `qs5.v5`（SendMsgMgr，`b`=图片、`nj/oj/pj`=文件/视频等）和 `v51.r1/v51.s1/v51.n1`
+   （按本地路径构建并执行发送），但都依赖 Context/Kotlin 回调，尚未接（见 `docs/wechat-send-types.md`）
 
 ## 11. 下一位接手时的第一步
 
 1. `./tests/run.sh` 确认全绿；`git log --oneline -10`
 2. 读 `internal/status` 的 `send` 块确认线上状态；`send_allow` 只有 `filehelper`，
    要接真实用例（自己的测试群）就加进去并重启。
-3. 想继续写功能：从 §2 的 14 个写操作里挑一个，按发送的老路子做——
+3. 想继续写功能：从 §2 的 13 个写操作里挑一个，按发送/撤回的老路子做——
    **先只读地找到微信自己的接口**（离线 DEX 反查 + 必要时探针栈），再反射调用，
-   再默认关闭 + 白名单 + 限速，最后真机验一条。建议顺序：先 `message.delete`（撤回，场景熟），
-   再群管理（改名 → 禁言 → 踢人），好友审批与上传最后做。
+   再默认关闭 + 白名单 + 限速，最后真机验一条。建议顺序：群管理（改名 → 禁言 → 踢人），
+   好友审批与上传最后做。想接媒体发送先读 `docs/wechat-send-types.md`。
 4. 纪律：**每个方法真实实现后才进 `features`**；`unsupported` 只放微信真的没有的能力；
    破坏性/风控敏感动作默认关闭。
 
 ## 12. 版本与提交
 
-- `module.prop` / `native/version.h`：当前 **v0.6.5**（装机 **v0.6.4**，含 §6.4 预热重试与 §6.5 纯文本拍平）
+- `module.prop` / `native/version.h`：当前 **v0.6.6**（装机 **v0.6.4**，含 §6.4 预热重试、§6.5 纯文本拍平与 §6.6 撤回）
 - 近期：`56cbac5` 预热等派发器 → `f797dcb` 读侧补齐 + unsupported → `1b34615` v0.6.4 读侧 →
   `62228ec` 状态语义+预热 → `0895aac` 状态计数 → `d92ee8f` r1.y.k() 修复 → `8e71852` 发送打通

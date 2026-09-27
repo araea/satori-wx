@@ -47,8 +47,9 @@ void TestFeatures() {
 
     satori::SetSendEnabled(true);
     list = satori::WeChatFeatures(&count);
-    Check(count == 14, "feature count is 14 when the sender is on");
+    Check(count == 15, "feature count is 15 when the sender is on");
     Check(HasFeature(list, count, "message.create"), "message.create present when the sender is on");
+    Check(HasFeature(list, count, "message.delete"), "message.delete present when the sender is on");
     satori::SetSendEnabled(false);
 
     // Unsupported methods are WeChat-side impossibilities, not unimplemented features.
@@ -59,6 +60,7 @@ void TestFeatures() {
     Check(HasFeature(no, unsupported, "reaction.create"), "reaction.create declared unsupported");
     Check(HasFeature(no, unsupported, "guild.role.create"), "guild.role.create declared unsupported");
     Check(!HasFeature(no, unsupported, "message.create"), "message.create is not unsupported");
+    Check(!HasFeature(no, unsupported, "message.delete"), "message.delete is not unsupported");
     // A method must never be both implemented and unsupported.
     list = satori::WeChatFeatures(&count);
     for (size_t i = 0; i < unsupported; ++i) Check(!HasFeature(list, count, no[i]), "feature and unsupported sets are disjoint");

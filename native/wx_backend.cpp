@@ -87,6 +87,16 @@ Response Call(void *, const Request &request) {
         return message ? Response{200, message} : Response{500, nullptr};
     }
 
+    if (!strcmp(name, "message.delete")) {
+        if (!SendEnabled()) return {404, nullptr};
+        const char *channel_id = Text(request, "channel_id");
+        const char *message_id = Text(request, "message_id");
+        if (!*channel_id || !*message_id) return {400, nullptr};
+        SendResult recalled = SendRecall(channel_id, message_id);
+        if (!recalled.ok) return Failure("delete_failed", recalled.detail, recalled.rejected);
+        return {200, cJSON_CreateObject()};
+    }
+
     if (!store) return {503, nullptr};
     if (!strcmp(name, "message.get"))
         return Read(StoreMessageGet(store, Text(request, "channel_id"), Text(request, "message_id")));

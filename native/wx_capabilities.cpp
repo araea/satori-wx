@@ -22,10 +22,11 @@ const char *const kWithSend[] = {
     "channel.get", "channel.list",
     "user.channel.create",
     "message.create",
+    "message.delete",
 };
 // Standard methods WeChat has no concept for. Reported so clients can mark them unusable
 // instead of retrying: WeChat messages cannot be edited and carry no reactions, and groups
-// have no user-defined roles.
+// have no user-defined roles. message.delete is implemented, so it is not listed here.
 const char *const kUnsupported[] = {
     "message.update",
     "reaction.create", "reaction.delete", "reaction.clear", "reaction.list",

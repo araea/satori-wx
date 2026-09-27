@@ -1,4 +1,4 @@
-# Satori v1 协议层验收（v0.6.5）
+# Satori v1 协议层验收（v0.6.6）
 
 本版本提供 native 协议服务端、native 后端接口、只读账号身份与消息库适配层，
 以及一个**默认关闭**的反射消息发送器。**读侧 13 个方法已实现**（消息、历史、联系人/群/频道、
@@ -15,7 +15,7 @@
 | 方法可用性 | 登录快照 features 控制；不支持返回 404，声明支持但无 handler 返回 501，离线返回 503 |
 | login.get / meta / READY | 同一份登录快照；登录身份由只读偏好解析得到，无账号时为空 |
 | message.create / update 的 content | 保留 Satori 标记字符串；提供 native 文本转义 helper，不把标记当 HTML 执行 |
-| message.create（可选发送） | v0.6.5：`send=on` 时反射调微信自己的 NetSceneSendMsg 发纯文本；默认关闭、`send_allow` 白名单、限速；成功＝已派发，非投递确认；2026-09-27 真机向 filehelper 实发成功 |
+| message.create（可选发送） | v0.6.6：`send=on` 时反射调微信自己的 NetSceneSendMsg 发纯文本；默认关闭、`send_allow` 白名单、限速；成功＝已派发，非投递确认；2026-09-27 真机向 filehelper 实发成功 |
 | guild.member.get / list | 读 `chatroom` 的 memberlist + displayname（`、` 分隔）+ roomowner；`next` 是成员偏移；displayname 与 memberlist 数量不一致时忽略群昵称、回落到 rcontact |
 | guild.role.list / guild.member.role.list | 合成角色：`owner`（群主）/ `member`（成员）；非成员返回空列表；未知群返回 404 |
 | user.channel.create | 返回该 wxid 的私聊频道（`type=1`） |
