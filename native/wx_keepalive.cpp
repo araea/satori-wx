@@ -525,15 +525,16 @@ void *Manager(void *) {
             pthread_mutex_lock(&g_mu);
             if (!g_j.ok && !g_j.started) { if (env->PushLocalFrame(256) == 0) { ResolveJava(env); env->PopLocalFrame(nullptr); } }
             const bool ready = g_j.ok;
+            const bool started = g_j.started; // resolution was attempted; do not retry and leak
             pthread_mutex_unlock(&g_mu);
-            if (ready) break;
+            if (ready || started) break;
         }
         const timespec delay{0, 500000000};
         nanosleep(&delay, nullptr);
     }
     if (!g_j.ok) {
-        snprintf(g_notify_detail, sizeof(g_notify_detail), "no-context");
-        __android_log_print(ANDROID_LOG_WARN, "SatoriWx", "keepalive: no application context; notification disabled");
+        snprintf(g_notify_detail, sizeof(g_notify_detail), "unavailable");
+        __android_log_print(ANDROID_LOG_WARN, "SatoriWx", "keepalive: application context never became usable; notification disabled");
         return nullptr;
     }
     __android_log_print(ANDROID_LOG_INFO, "SatoriWx", "keepalive: resident notification armed");
