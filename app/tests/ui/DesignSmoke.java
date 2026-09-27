@@ -79,6 +79,8 @@ public final class DesignSmoke extends Instrumentation {
             home("light-home-checking", false, 1f, 360, new Status.Snapshot());
             home("large-home-ready", false, 2f, 360, ready(true));
             home("narrow-home-config-bad", false, 1.3f, 320, configBad());
+            home("light-home-frozen", false, 1f, 360, frozen());
+            home("dark-home-account-unseen", true, 1f, 360, accountUnseen());
             // ---- 设置：有草稿、白名单有名字 ----
             settings("light-settings", false, 1f, 360, true);
             settings("dark-settings", true, 1f, 360, true);
@@ -121,6 +123,19 @@ public final class DesignSmoke extends Instrumentation {
         s.device = Root.parse("module=1\nversion=v0.6.7\npid=6312\n");
         s.conf = new Conf(5601, TOKEN, false, new ArrayList<>());
         s.wechatVersion = "8.0.78";
+        return s;
+    }
+
+    private static Status.Snapshot frozen() {
+        Status.Snapshot s = serviceDown();
+        s.device = Root.parse("module=1\nversion=v0.6.7\npid=6312\nfrozen=1\nauth=1114861342\n");
+        return s;
+    }
+
+    private static Status.Snapshot accountUnseen() throws Exception {
+        Status.Snapshot s = ready(false);
+        s.device = Root.parse("module=1\nversion=v0.6.7\npid=6312\nauth=1114861342\n");
+        s.meta = new JSONObject("{\"logins\":[]}");
         return s;
     }
 

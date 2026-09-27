@@ -31,10 +31,12 @@ public final class Status {
     public static final int CONFIG_BAD = 6;
     public static final int NO_WECHAT = 7;
     public static final int WECHAT_STOPPED = 8;
-    public static final int SERVICE_DOWN = 9;
-    public static final int TOKEN_PENDING = 10;
-    public static final int LOGGED_OUT = 11;
-    public static final int READY = 12;
+    public static final int WECHAT_FROZEN = 9;
+    public static final int SERVICE_DOWN = 10;
+    public static final int TOKEN_PENDING = 11;
+    public static final int LOGGED_OUT = 12;
+    public static final int ACCOUNT_UNSEEN = 13;
+    public static final int READY = 14;
 
     // ---- 状态卡片上的下一步 ----
     public static final int ACTION_NONE = 0;
@@ -99,10 +101,14 @@ public final class Status {
         if (!d.module) return d.updatePending ? MODULE_PENDING : NO_MODULE;
         if (d.disabled || d.removing) return MODULE_OFF;
         if (s.conf == null) return CONFIG_BAD;
-        if (s.http == 200 && s.status != null) return login(s) == null ? LOGGED_OUT : READY;
+        if (s.http == 200 && s.status != null) {
+            if (login(s) != null) return READY;
+            return d.wechatAuthed ? ACCOUNT_UNSEEN : LOGGED_OUT;
+        }
         if (s.http == 401 || s.http == 403) return TOKEN_PENDING;
         if (!s.wechatInstalled) return NO_WECHAT;
         if (d.wechatPid <= 0) return WECHAT_STOPPED;
+        if (d.wechatFrozen) return WECHAT_FROZEN;
         return SERVICE_DOWN;
     }
 
@@ -137,6 +143,11 @@ public final class Status {
                 return new Line(WARNING, "微信没有在运行",
                         "知言服务随微信启动。系统在后台回收了微信时，服务也会一起停下。",
                         ACTION_OPEN_WECHAT, "打开微信");
+            case WECHAT_FROZEN:
+                return new Line(WARNING, "微信被系统冻结了",
+                        "微信退到后台后被系统冻结，服务随之暂停，客户端收不到消息。打开微信即可恢复；"
+                                + "要长期在线，在系统设置的微信「耗电管理」里允许后台运行。",
+                        ACTION_OPEN_WECHAT, "打开微信");
             case SERVICE_DOWN:
                 return new Line(ERROR, "服务没有响应",
                         d.updatePending
@@ -147,6 +158,10 @@ public final class Status {
                 return new Line(WARNING, "新令牌尚未生效",
                         "服务仍在使用旧令牌。重新启动微信后生效；客户端也要换成新令牌。",
                         ACTION_RESTART_WECHAT, "重新启动微信");
+            case ACCOUNT_UNSEEN:
+                return new Line(ERROR, "服务没认出已登录的账号",
+                        "微信里已经登录，但知言模块读不到账号身份——微信改了登录信息的存放位置。"
+                                + "在模块修好之前，客户端收不到消息、也发不出去。复制诊断报告可以帮助排查。");
             case LOGGED_OUT:
                 return new Line(WARNING, "等待登录微信", "服务已就绪。在微信里登录账号后，客户端就能收到消息。",
                         ACTION_OPEN_WECHAT, "打开微信");
@@ -197,13 +212,15 @@ public final class Status {
         }
         Root.Device d = s.device;
         boolean serving = s.http == 200 && s.status != null;
-        int wechat = !s.wechatInstalled ? STEP_FAIL : (serving || d.wechatPid > 0 ? STEP_OK : STEP_WAIT);
+        int wechat = !s.wechatInstalled ? STEP_FAIL
+                : serving ? STEP_OK : d.wechatFrozen ? STEP_WAIT : d.wechatPid > 0 ? STEP_OK : STEP_WAIT;
         int service;
         if (serving) service = STEP_OK;
         else if (state == TOKEN_PENDING) service = STEP_WAIT;
         else if (state == WECHAT_STOPPED || state == NO_WECHAT) service = STEP_UNKNOWN;
+        else if (state == WECHAT_FROZEN) service = STEP_WAIT;
         else service = STEP_FAIL;
-        int account = !serving ? STEP_UNKNOWN : (login(s) != null ? STEP_OK : STEP_WAIT);
+        int account = !serving ? STEP_UNKNOWN : login(s) != null ? STEP_OK : d.wechatAuthed ? STEP_FAIL : STEP_WAIT;
         int send;
         JSONObject block = serving ? s.status.optJSONObject("send") : null;
         if (block == null) send = STEP_UNKNOWN;
@@ -219,7 +236,8 @@ public final class Status {
         Root.Device d = s.device;
         boolean serving = s.http == 200 && s.status != null;
         String version = s.wechatVersion == null || s.wechatVersion.isEmpty() ? "" : " · " + s.wechatVersion;
-        String wechat = !s.wechatInstalled ? "未安装" : (serving || d.wechatPid > 0 ? "运行中" + version : "没有在运行");
+        String wechat = !s.wechatInstalled ? "未安装" : serving ? "运行中" + version
+                : d.wechatFrozen ? "在后台被系统冻结" : d.wechatPid > 0 ? "运行中" + version : "没有在运行";
         String service;
         if (serving) service = "127.0.0.1:" + s.port + " · v" + s.status.optString("version", "?");
         else if (state == TOKEN_PENDING) service = "在运行，令牌待生效";
@@ -227,11 +245,12 @@ public final class Status {
         else if (state == MODULE_OFF) service = "模块已停用";
         else if (state == CONFIG_BAD) service = "配置无效，不会启动";
         else if (state == WECHAT_STOPPED || state == NO_WECHAT) service = "随微信启动";
+        else if (state == WECHAT_FROZEN) service = "随微信冻结而暂停";
         else service = "端口 " + s.port + " 没有回应";
         String account;
         JSONObject login = serving ? login(s) : null;
         if (!serving) account = "—";
-        else if (login == null) account = "未登录";
+        else if (login == null) account = d.wechatAuthed ? "微信已登录，但服务没认出" : "未登录";
         else {
             String name = displayName(login);
             String id = login.optJSONObject("user").optString("id", "");

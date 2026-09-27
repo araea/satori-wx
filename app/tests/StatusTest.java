@@ -45,6 +45,11 @@ public final class StatusTest {
         s.wechatInstalled = false;
         expect(s, Status.NO_WECHAT, Status.ACTION_NONE);
         s.wechatInstalled = true;
+        s.device = Root.parse("module=1\npid=77\nfrozen=1\n");
+        check(s.device.wechatFrozen, "冻结标记");
+        expect(s, Status.WECHAT_FROZEN, Status.ACTION_OPEN_WECHAT);
+        check(Status.stepValues(s)[0].contains("冻结") && Status.steps(s)[1] == Status.STEP_WAIT, "链路要说出冻结");
+        check(!Root.parse("module=1\nfrozen=1\npid=\n").wechatFrozen, "没有进程就谈不上冻结");
         s.device = Root.parse("module=1\npid=77\n");
         expect(s, Status.SERVICE_DOWN, Status.ACTION_RESTART_WECHAT);
         s.http = 401;
@@ -55,6 +60,11 @@ public final class StatusTest {
                 + "\"send\":{\"enabled\":true,\"allow\":\"filehelper\",\"sent\":3,\"failed\":0,\"rejected\":1,\"recalled\":0}}");
         s.meta = new JSONObject("{\"logins\":[]}");
         expect(s, Status.LOGGED_OUT, Status.ACTION_OPEN_WECHAT);
+        s.device = Root.parse("module=1\npid=77\nauth=1114861342\n");
+        expect(s, Status.ACCOUNT_UNSEEN, Status.ACTION_NONE);
+        check(Status.stepValues(s)[2].contains("没认出") && Status.steps(s)[2] == Status.STEP_FAIL, "账号一环要说清");
+        check(!Root.parse("auth=0\n").wechatAuthed && !Root.parse("auth=\n").wechatAuthed, "uin 为 0 或空不算已登录");
+        s.device = Root.parse("module=1\npid=77\n");
         s.meta = new JSONObject("{\"logins\":[{\"sn\":1,\"status\":1,\"features\":[\"message.create\"],"
                 + "\"user\":{\"id\":\"wxid_secret\",\"nick\":\"小明\",\"name\":\"xm\"}}]}");
         expect(s, Status.READY, Status.ACTION_NONE);

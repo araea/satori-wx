@@ -100,9 +100,14 @@ public final class Root {
         public final String confText;
         /** 微信主进程 pid；0 = 没在运行。 */
         public final int wechatPid;
+        /** 微信主进程被系统冻结（cgroup freezer）：进程在，但服务线程不会应答。 */
+        public final boolean wechatFrozen;
+        /** 微信自己记着一个已登录的账号（auth_info_key_prefs 的 _auth_uin 非零）。 */
+        public final boolean wechatAuthed;
 
         Device(boolean granted, boolean module, boolean disabled, boolean removing, boolean updatePending,
-               String version, String updateVersion, String confText, int wechatPid) {
+               String version, String updateVersion, String confText, int wechatPid, boolean wechatFrozen,
+               boolean wechatAuthed) {
             this.granted = granted;
             this.module = module;
             this.disabled = disabled;
@@ -112,9 +117,11 @@ public final class Root {
             this.updateVersion = updateVersion;
             this.confText = confText;
             this.wechatPid = wechatPid;
+            this.wechatFrozen = wechatFrozen;
+            this.wechatAuthed = wechatAuthed;
         }
 
-        public static final Device DENIED = new Device(false, false, false, false, false, "", "", null, 0);
+        public static final Device DENIED = new Device(false, false, false, false, false, "", "", null, 0, false, false);
     }
 
     /** 探测脚本；目录可换，只为让 tests/RootScriptTest 在临时目录上真跑一遍。 */
@@ -129,7 +136,17 @@ public final class Root {
                 "[ -f \"$M/module.prop\" ] && sed -n 's/^version=/version=/p' \"$M/module.prop\" | head -n 1",
                 "[ -f \"$U/module.prop\" ] && sed -n 's/^version=/update_version=/p' \"$U/module.prop\" | head -n 1",
                 "[ -f \"$M/satori-wx.conf\" ] && echo \"conf=$(base64 -w 0 < \"$M/satori-wx.conf\")\"",
-                "echo \"pid=$(pidof " + WECHAT + " | cut -d ' ' -f 1)\"",
+                "pid=$(pidof " + WECHAT + " | cut -d ' ' -f 1)",
+                "echo \"pid=$pid\"",
+                // ColorOS 的 Hans 等机制会用 cgroup freezer 冻住后台微信：进程还在，服务线程却停着。
+                "if [ -n \"$pid\" ]; then",
+                "  cg=$(sed -n 's/^0:://p' /proc/$pid/cgroup 2>/dev/null)",
+                "  if [ \"$(sed -n 's/^frozen //p' /sys/fs/cgroup$cg/cgroup.events 2>/dev/null)\" = 1 ]"
+                        + " || grep -q freezer /proc/$pid/wchan 2>/dev/null; then echo frozen=1; fi",
+                "fi",
+                // 微信自己的鉴权记录：非零 uin 表示微信里有已登录的账号（用来区分「没登录」与「服务没认出」）。
+                "sed -n 's/.*name=\"_auth_uin\" value=\"\\(-\\{0,1\\}[0-9]*\\)\".*/auth=\\1/p' /data/data/" + WECHAT
+                        + "/shared_prefs/auth_info_key_prefs.xml 2>/dev/null | head -n 1",
                 "true");
     }
 
@@ -141,7 +158,7 @@ public final class Root {
 
     /** 解析探测脚本的输出；公开只为在 JVM 上测（tests/StatusTest）。 */
     public static Device parse(String out) {
-        boolean module = false, disabled = false, removing = false, update = false;
+        boolean module = false, disabled = false, removing = false, update = false, frozen = false, authed = false;
         String version = "", updateVersion = "", conf = null;
         int pid = 0;
         for (String line : out.split("\n")) {
@@ -154,6 +171,8 @@ public final class Root {
                 case "disabled": disabled = true; break;
                 case "removing": removing = true; break;
                 case "update": update = true; break;
+                case "frozen": frozen = true; break;
+                case "auth": authed = !value.isEmpty() && !value.equals("0"); break;
                 case "version": version = value; break;
                 case "update_version": updateVersion = value; break;
                 case "conf":
@@ -173,7 +192,7 @@ public final class Root {
                 default: break;
             }
         }
-        return new Device(true, module, disabled, removing, update, version, updateVersion, conf, pid);
+        return new Device(true, module, disabled, removing, update, version, updateVersion, conf, pid, frozen && pid > 0, authed);
     }
 
     // ------------------------------------------------------------------ 写
