@@ -12,6 +12,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <pthread.h>
+#include <stdio.h>
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
@@ -135,6 +136,11 @@ public:
             if (!configured_) __android_log_print(ANDROID_LOG_ERROR, "SatoriWx", "missing or invalid satori-wx.conf; server disabled");
             // The sender is opt-in; once on, any talker is accepted and pacing still applies.
             satori::SetSendEnabled(configured_ && g_config.send);
+            if (g_data_dir[0]) {
+                char temp_dir[300];
+                snprintf(temp_dir, sizeof(temp_dir), "%s/files/satori-wx-tmp", g_data_dir);
+                satori::SetTempDir(temp_dir);
+            }
             satori::SetStatusProvider(AddBackendStatus);
             satori::SetWakelockProvider(satori::KeepaliveWakelock);
             if (configured_ && g_config.send)

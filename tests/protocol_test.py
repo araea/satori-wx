@@ -7,6 +7,7 @@ import pathlib
 import struct
 import subprocess
 import sys
+import tempfile
 import time
 import unittest
 
@@ -48,7 +49,8 @@ PARAMS = {
 class ProtocolTests(unittest.TestCase):
     def setUp(self):
         read, self.write = os.pipe()
-        env = dict(os.environ, SATORI_TEST_EVENT_FD=str(read))
+        env = dict(os.environ, SATORI_TEST_EVENT_FD=str(read),
+                   SATORI_TMPDIR=tempfile.mkdtemp(prefix='satori-upload-'))
         self.proc = subprocess.Popen([wire.BINARY, '--fixture'], stdin=subprocess.PIPE, stdout=subprocess.PIPE, pass_fds=(read,), env=env)
         os.close(read)
         self.proc.stdin.write(('token=' + TOKEN + '\n').encode()); self.proc.stdin.close()
@@ -95,12 +97,27 @@ class ProtocolTests(unittest.TestCase):
         _, second = self.http('message.list', {'channel_id': 'c', 'next': first['next']})
         self.assertNotIn('next', second)
     def test_upload_binary(self):
+        payload = b'\0\xff\x01'
         body = (b'--boundary\r\nContent-Disposition: form-data; name="file"; filename="a.bin"\r\n'
-                b'Content-Type: application/octet-stream\r\n\r\n\0\xff\x01\r\n--boundary--\r\n')
+                b'Content-Type: application/octet-stream\r\n\r\n' + payload + b'\r\n--boundary--\r\n')
         h = {'Content-Type': 'multipart/form-data; boundary="boundary"', 'Satori-Platform': 'wechat', 'Satori-User-ID': 'fixture'}
         status, result = wire.ServerTests.http(self, '/v1/upload.create', body, headers=h)
-        self.assertEqual((status, result), (200, {'file': 'https://example.invalid/3'}))
+        self.assertEqual(status, 200)
+        url = result['file']
+        self.assertTrue(url.startswith('internal:wechat/fixture/_tmp/'), url)
+        # The proxy route serves the stored bytes without the Satori login headers.
+        pstatus, headers, pbody = wire.ServerTests.raw_http('/v1/proxy/' + url)
+        self.assertEqual((pstatus, pbody), (200, payload))
+        self.assertEqual(headers['content-type'], 'application/octet-stream')
+        # Truncated multipart is rejected before anything is stored.
         self.assertEqual(wire.ServerTests.http(self, '/v1/upload.create', body[:-8], headers=h)[0], 400)
+    def test_proxy_route(self):
+        self.assertEqual(wire.ServerTests.raw_http('/v1/proxy/not-a-url')[0], 400)
+        self.assertEqual(wire.ServerTests.raw_http('/v1/proxy/internal:broken')[0], 400)
+        self.assertEqual(wire.ServerTests.raw_http('/v1/proxy/internal:wechat/nobody/_tmp/x')[0], 404)
+        self.assertEqual(wire.ServerTests.raw_http('/v1/proxy/internal:wechat/fixture/_tmp/missing')[0], 404)
+        self.assertEqual(wire.ServerTests.raw_http('/v1/proxy/https://example.com/a.png')[0], 403)
+        self.assertEqual(wire.ServerTests.raw_http('/v1/proxy/internal:wechat/fixture/_tmp/x', method='POST')[0], 405)
     def test_ready_login_and_meta(self):
         with Wire() as w:
             w.upgrade(); _, ready = w.identify()

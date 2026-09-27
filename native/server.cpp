@@ -1,6 +1,7 @@
 #include "server.h"
 #include "protocol.h"
 #include "multipart.h"
+#include "tempstore.h"
 #include "version.h"
 #include "webhook.h"
 #include "ws_crypto.h"
@@ -84,6 +85,94 @@ void Frame(Client &c, unsigned opcode, const void *payload, size_t size) {
 void Close(Client &c, unsigned code) {
     const unsigned char payload[] = {static_cast<unsigned char>(code >> 8), static_cast<unsigned char>(code)};
     Frame(c, 8, payload, sizeof(payload)); c.closing = true; c.deadline = Now() + 1000;
+}
+void Raw(Client &c, int code, const char *reason, const char *content_type, const void *data, size_t size, bool cors) {
+    char header[384];
+    const int n = snprintf(header, sizeof(header), "HTTP/1.1 %d %s\r\nContent-Type: %s\r\nContent-Length: %zu\r\n"
+                           "Connection: close\r\nCache-Control: no-store\r\n%s\r\n",
+                           code, reason, content_type, size, cors ? "Access-Control-Allow-Origin: *\r\n" : "");
+    if (Queue(c, header, n)) Queue(c, data, size);
+    c.closing = true;
+}
+void RawJson(Client &c, int code, const char *reason, const char *body) {
+    Raw(c, code, reason, "application/json", body, strlen(body), true);
+}
+// `/v1/proxy/{url}` per Satori's resource route: external links must match an advertised
+// proxy_urls prefix (none here, so they are 403), while `internal:{platform}/{user}/{path}`
+// links are served by the owning login. The only internal route we own is `_tmp`, the target
+// of the built-in upload.create. This route deliberately needs no Authorization header so a
+// plain <img src> can use it.
+void Proxy(Client &c, Hub *hub, const char *url) {
+    if (!strncmp(url, "internal:", 9)) {
+        const char *platform = url + 9, *slash = strchr(platform, '/');
+        if (!slash || slash == platform) { RawJson(c, 400, "Bad Request", "{\"error\":\"invalid_internal_url\"}"); return; }
+        const char *user = slash + 1, *slash2 = strchr(user, '/');
+        if (!slash2 || slash2 == user || !slash2[1]) { RawJson(c, 400, "Bad Request", "{\"error\":\"invalid_internal_url\"}"); return; }
+        char platform_buf[64], user_buf[160];
+        const size_t platform_size = slash - platform, user_size = slash2 - user;
+        if (platform_size >= sizeof(platform_buf) || user_size >= sizeof(user_buf)) { RawJson(c, 400, "Bad Request", "{\"error\":\"invalid_internal_url\"}"); return; }
+        memcpy(platform_buf, platform, platform_size); platform_buf[platform_size] = 0;
+        memcpy(user_buf, user, user_size); user_buf[user_size] = 0;
+        if (!FindLogin(hub, platform_buf, user_buf)) { RawJson(c, 404, "Not Found", "{\"error\":\"login_not_found\"}"); return; }
+        const char *path = slash2 + 1;
+        if (!strncmp(path, "_tmp/", 5)) {
+            const TempFile *file = TempStoreGet(path + 5);
+            if (!file) { RawJson(c, 404, "Not Found", "{\"error\":\"not_found\"}"); return; }
+            char buffer[kMessage + 1];
+            const int fd = open(file->path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+            if (fd < 0) { RawJson(c, 404, "Not Found", "{\"error\":\"not_found\"}"); return; }
+            ssize_t got = read(fd, buffer, kMessage);
+            close(fd);
+            if (got < 0) { RawJson(c, 500, "Internal Server Error", "{}"); return; }
+            Raw(c, 200, "OK", file->content_type, buffer, static_cast<size_t>(got), true);
+            return;
+        }
+        RawJson(c, 404, "Not Found", "{\"error\":\"unknown_internal_route\"}");
+        return;
+    }
+    const bool http = !strncmp(url, "http://", 7) || !strncmp(url, "https://", 8);
+    const char *host = url + (http ? (url[4] == 's' ? 8 : 7) : 0);
+    if (!http || !*host || *host == '/' || *host == '?' || *host == '#') {
+        RawJson(c, 400, "Bad Request", "{\"error\":\"invalid_url\"}"); return;
+    }
+    const cJSON *urls = cJSON_GetObjectItemCaseSensitive(Meta(hub), "proxy_urls");
+    for (const cJSON *p = urls ? urls->child : nullptr; p; p = p->next)
+        if (cJSON_IsString(p) && *p->valuestring && !strncmp(url, p->valuestring, strlen(p->valuestring))) {
+            // Advertised prefixes are never registered: this build has no outbound HTTP client.
+            RawJson(c, 501, "Not Implemented", "{\"error\":\"proxy_not_implemented\"}"); return;
+        }
+    RawJson(c, 403, "Forbidden", "{\"error\":\"forbidden\"}");
+}
+void Upload(Client &c, const char *platform, const char *user, const Multipart *uploads) {
+    auto valid_id = [](const char *id) {
+        const size_t size = strlen(id);
+        if (!size || size >= 128) return false;
+        for (size_t i = 0; i < size; ++i) {
+            const char ch = id[i];
+            if (!((ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') || ch == '_' || ch == '-' || ch == '.')) return false;
+        }
+        return true;
+    };
+    if (!uploads || !uploads->count || !valid_id(platform) || !valid_id(user)) {
+        Reply(c, 400, "Bad Request", "{\"error\":\"invalid_upload\"}"); return;
+    }
+    if (!TempStoreAvailable()) { Reply(c, 501, "Not Implemented", "{\"error\":\"upload_unavailable\"}"); return; }
+    cJSON *result = cJSON_CreateObject();
+    if (!result) { Reply(c, 500, "Internal Server Error", "{}"); return; }
+    for (size_t i = 0; i < uploads->count; ++i) {
+        const Part &part = uploads->parts[i];
+        char name[160];
+        if (!TempStorePut(part.filename, part.content_type, part.data, part.size, name, sizeof(name))) {
+            cJSON_Delete(result); Reply(c, 500, "Internal Server Error", "{\"error\":\"upload_failed\"}"); return;
+        }
+        char url[512];
+        snprintf(url, sizeof(url), "internal:%s/%s/_tmp/%s", platform, user, name);
+        if (!cJSON_AddStringToObject(result, part.name, url)) {
+            cJSON_Delete(result); Reply(c, 500, "Internal Server Error", "{}"); return;
+        }
+    }
+    char *text = cJSON_PrintUnformatted(result); cJSON_Delete(result);
+    Reply(c, text ? 200 : 500, text ? "OK" : "Internal Server Error", text ? text : "{}"); free(text);
 }
 void Signal(Client &c, const char *data, size_t size, const Config &config, Hub *hub) {
     if (!Utf8(data, size)) { Close(c, 1007); return; }
@@ -254,6 +343,12 @@ void Http(Client &c, const Config &config, Hub *hub, const Backend *backend, Web
         memmove(c.input, c.input + length, c.used - length); c.used -= length;
         return;
     }
+    if (!strncmp(path, "/v1/proxy/", 10)) {
+        if (strcmp(method, "GET")) { Reply(c, 405, "Method Not Allowed", "{}", "GET"); return; }
+        if (body_size) { Reply(c, 400, "Bad Request", "{\"error\":\"invalid_request\"}"); return; }
+        Proxy(c, hub, path + 10);
+        return;
+    }
     const char *auth = header("Authorization");
     if (!*auth) { Reply(c, 401, "Unauthorized", "{\"error\":\"missing_token\"}"); return; }
     if (strncasecmp(auth, "Bearer ", 7) || !EqualToken(config.token, auth + 7)) {
@@ -311,7 +406,8 @@ void Http(Client &c, const Config &config, Hub *hub, const Backend *backend, Web
             cJSON_AddBoolToObject(result, "wechat_backend", backend != nullptr);
             cJSON_AddBoolToObject(result, "webhook", true);
             cJSON_AddNumberToObject(result, "webhooks", static_cast<double>(WebHookCount(hooks)));
-            cJSON_AddBoolToObject(result, "proxy", false);
+            cJSON_AddBoolToObject(result, "proxy", true);
+            cJSON_AddBoolToObject(result, "upload", TempStoreAvailable());
             if (g_status_provider) g_status_provider(result, true);
             char *text = cJSON_PrintUnformatted(result);
             Reply(c, text ? 200 : 500, text ? "OK" : "Internal Server Error", text ? text : "{}"); free(text);
@@ -366,6 +462,7 @@ void Http(Client &c, const Config &config, Hub *hub, const Backend *backend, Web
             for (const cJSON *f = features ? features->child : nullptr; f; f = f->next)
                 if (cJSON_IsString(f) && !strcmp(f->valuestring, rpc->name)) supported = true;
             if (!supported) Reply(c, 404, "Not Found", "{\"error\":\"unsupported_api\"}");
+            else if (rpc->upload) Upload(c, header("Satori-Platform"), header("Satori-User-ID"), &uploads);
             else if (!backend || !backend->call) Reply(c, 501, "Not Implemented", "{\"error\":\"backend_not_implemented\"}");
             else {
                 const Request request{rpc, header("Satori-Platform"), header("Satori-User-ID"), body, type, c.input + length, body_size, rpc->upload ? &uploads : nullptr};
@@ -383,6 +480,7 @@ void Http(Client &c, const Config &config, Hub *hub, const Backend *backend, Web
 
 void SetStatusProvider(StatusProvider provider) { g_status_provider = provider; }
 void SetWakelockProvider(WakelockProvider provider) { g_wakelock_provider = provider; }
+void SetTempDir(const char *dir) { TempStoreSetDir(dir); }
 
 bool ReadConfig(int fd, Config *config) {
     char data[1025]; size_t used = 0;

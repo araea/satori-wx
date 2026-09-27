@@ -78,6 +78,14 @@ class ServerTests(unittest.TestCase):
             response = c.getresponse()
             return response.status, json.loads(response.read())
         finally: c.close()
+    @staticmethod
+    def raw_http(path, method='GET', body=None, headers=None):
+        c = http.client.HTTPConnection('127.0.0.1', PORT, timeout=3)
+        try:
+            c.request(method, path, body, headers or {})
+            response = c.getresponse()
+            return response.status, {k.lower(): v for k, v in response.getheaders()}, response.read()
+        finally: c.close()
     def raw_status(self, data):
         with Wire() as w:
             w.sock.sendall(data)

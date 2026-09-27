@@ -79,7 +79,8 @@ class AccountEndToEndTests(unittest.TestCase):
         self.assertEqual(login['features'], ['message.get', 'message.list', 'user.get', 'friend.list',
                                              'guild.get', 'guild.list', 'guild.member.get', 'guild.member.list',
                                              'guild.role.list', 'guild.member.role.list',
-                                             'channel.get', 'channel.list', 'user.channel.create'])
+                                             'channel.get', 'channel.list', 'user.channel.create',
+                                             'upload.create'])
         self.assertEqual(self.login_get(), (200, login))
         with Wire() as w:
             w.upgrade()

@@ -36,12 +36,6 @@ satori::Response Call(void *, const satori::Request &r) {
         cJSON_AddStringToObject(m, "id", "fixture-message");
         cJSON_AddStringToObject(m, "content", cJSON_GetObjectItemCaseSensitive(r.params, "content")->valuestring);
         cJSON_AddItemToArray(result, m);
-    } else if (!strcmp(name, "upload.create")) {
-        result = cJSON_CreateObject();
-        for (size_t i = 0; i < r.uploads->count; ++i) {
-            char url[128]; snprintf(url, sizeof(url), "https://example.invalid/%zu", r.uploads->parts[i].size);
-            cJSON_AddStringToObject(result, r.uploads->parts[i].name, url);
-        }
     } else if (strstr(name, ".list")) {
         result = cJSON_CreateObject(); cJSON_AddArrayToObject(result, "data");
         if (!strcmp(name, "message.list") && !cJSON_GetObjectItemCaseSensitive(r.params, "next")) cJSON_AddStringToObject(result, "next", "page-2");

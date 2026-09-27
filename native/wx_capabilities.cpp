@@ -12,6 +12,7 @@ const char *const kReadOnly[] = {
     "guild.role.list", "guild.member.role.list",
     "channel.get", "channel.list",
     "user.channel.create",
+    "upload.create",
 };
 const char *const kWithSend[] = {
     "message.get", "message.list",
@@ -21,6 +22,7 @@ const char *const kWithSend[] = {
     "guild.role.list", "guild.member.role.list",
     "channel.get", "channel.list",
     "user.channel.create",
+    "upload.create",
     "message.create",
     "message.delete",
 };

@@ -37,19 +37,21 @@ void TestFeatures() {
     satori::SetSendEnabled(false);
     size_t count = 0;
     const char *const *list = satori::WeChatFeatures(&count);
-    Check(count == 13, "read-only feature count is 13");
+    Check(count == 14, "read-only feature count is 14");
     Check(!HasFeature(list, count, "message.create"), "message.create absent while sender is off");
     Check(HasFeature(list, count, "message.list"), "message.list present");
     Check(HasFeature(list, count, "guild.member.list"), "guild.member.list present");
     Check(HasFeature(list, count, "guild.role.list"), "guild.role.list present");
     Check(HasFeature(list, count, "guild.member.role.list"), "guild.member.role.list present");
     Check(HasFeature(list, count, "user.channel.create"), "user.channel.create present");
+    Check(HasFeature(list, count, "upload.create"), "upload.create present without the sender");
 
     satori::SetSendEnabled(true);
     list = satori::WeChatFeatures(&count);
-    Check(count == 15, "feature count is 15 when the sender is on");
+    Check(count == 16, "feature count is 16 when the sender is on");
     Check(HasFeature(list, count, "message.create"), "message.create present when the sender is on");
     Check(HasFeature(list, count, "message.delete"), "message.delete present when the sender is on");
+    Check(HasFeature(list, count, "upload.create"), "upload.create present when the sender is on");
     satori::SetSendEnabled(false);
 
     // Unsupported methods are WeChat-side impossibilities, not unimplemented features.

@@ -18,6 +18,9 @@ struct Config {
 // registers one; tests and standalone tools leave it null so their responses stay minimal.
 using StatusProvider = void (*)(cJSON *object, bool capabilities);
 void SetStatusProvider(StatusProvider provider);
+// Optional storage directory for the built-in `/v1/upload.create` implementation and the
+// `internal:.../_tmp/...` targets of `/v1/proxy`. Called by the module with its app data dir.
+void SetTempDir(const char *dir);
 // Optional hook for POST /v1/internal/wakelock: the in-process keeper applies the wake lock
 // and redraws its notification. `action` is 0=off, 1=on, 2=toggle; `held` receives the
 // resulting user intent. When null the endpoint reports 501.

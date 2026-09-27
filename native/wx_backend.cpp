@@ -44,6 +44,7 @@ cJSON *SentMessage(Store *store, const char *channel_id, const char *content, lo
     cJSON_AddStringToObject(message, "id", id);
     cJSON_AddStringToObject(message, "content", escaped);
     cJSON_AddNumberToObject(message, "timestamp", static_cast<double>(time(nullptr)));
+    cJSON_AddNumberToObject(message, "created_at", static_cast<double>(time(nullptr)));
     cJSON_AddStringToObject(channel, "id", channel_id);
     cJSON_AddNumberToObject(channel, "type", strstr(channel_id, "@chatroom") ? 0 : 1);
     cJSON_AddStringToObject(user, "id", StoreSelfId(store));
@@ -84,7 +85,12 @@ Response Call(void *, const Request &request) {
         if (!sent.ok) return Failure("send_failed", sent.detail, sent.rejected);
         if (!store) return {503, nullptr};
         cJSON *message = SentMessage(store, channel_id, plain, sent.local_id);
-        return message ? Response{200, message} : Response{500, nullptr};
+        if (!message) return {500, nullptr};
+        // Satori's `message.create` returns a Message[]; official clients call `.map()` on it.
+        cJSON *list = cJSON_CreateArray();
+        if (!list) { cJSON_Delete(message); return {500, nullptr}; }
+        cJSON_AddItemToArray(list, message);
+        return {200, list};
     }
 
     if (!strcmp(name, "message.delete")) {
