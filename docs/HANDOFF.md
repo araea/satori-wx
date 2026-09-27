@@ -12,7 +12,7 @@
 **纯 native C++**：无 DEX、无 Java 助手、无 ArtMethod 改写、无 hook 引擎。连发送都是纯反射调用
 微信自己的代码，不加载任何额外东西。
 
-- **当前版本 v0.8.1**（v0.8.1：常驻通知与唤醒锁对齐知弦——状态色 / 在线时长 / 在连客户端数、出站期自动持有唤醒锁（带超时）、有客户端在连时保 Wi-Fi；v0.8.0：按官方资源最佳实践内置 `upload.create` + `/v1/proxy`，`message.create` 改为返回 `Message[]`；新增反射群管理 `channel.delete`(退群)/`guild.member.kick`/`guild.member.role.set/unset`；v0.7.1：修 keepalive JNI 截断崩溃；v0.7.0：取消发送白名单 + 常驻通知/唤醒锁 + wxguard）。
+- **当前版本 v0.8.2**（v0.8.2：修常驻通知渠道被删后不再重建，导致每 3 秒一次 `No Channel found` 与永不发布；v0.8.1：常驻通知与唤醒锁对齐知弦——状态色 / 在线时长 / 在连客户端数、出站期自动持有唤醒锁（带超时）、有客户端在连时保 Wi-Fi；v0.8.0：按官方资源最佳实践内置 `upload.create` + `/v1/proxy`，`message.create` 改为返回 `Message[]`；新增反射群管理 `channel.delete`(退群)/`guild.member.kick`/`guild.member.role.set/unset`；v0.7.1：修 keepalive JNI 截断崩溃；v0.7.0：取消发送白名单 + 常驻通知/唤醒锁 + wxguard）。
 - 家账号：`wxid_8zxjsghrk8vz41`。模块配置：`send=on`（白名单已取消，任意会话可发）。
 
 ## 2. 协议覆盖（37 个标准方法）
@@ -37,7 +37,7 @@ cd /data/data/com.termux/files/home/dev/araea/satori-wx
 ./build.sh          # 服务端 ZIP + satori-wx-check + satori-wx-account + satori-wx-wcdb
 ./tests/run.sh      # 22 socket + 11 协议 + account + wcdb + store + capabilities + keepalive + webhook
 
-su -c 'ksud module install build/satori-wx-server-v0.8.1.zip'   # 装机（暂存，重启才生效）
+su -c 'ksud module install build/satori-wx-server-v0.8.2.zip'   # 装机（暂存，重启才生效）
 su -c 'setsid sh -c "sleep 60; /system/bin/reboot" </dev/null >/dev/null 2>&1 &'
 ```
 
@@ -308,7 +308,7 @@ JADX 也可用：`~/tools/jadx/bin/jadx --single-class <点分名> -d <输出目
 
 ## 12. 版本与提交
 
-- `module.prop` / `native/version.h`：当前 **v0.8.1**（v0.8.1 常驻通知/唤醒锁对齐知弦；v0.8.0 资源路由 upload/proxy + message.create 返回数组 + 反射群管理；v0.7.1 修 keepalive JNI 截断崩溃；v0.7.0 取消白名单 + 常驻通知/唤醒锁 + wxguard）
+- `module.prop` / `native/version.h`：当前 **v0.8.2**（v0.8.2 修通知渠道重建；v0.8.1 常驻通知/唤醒锁对齐知弦；v0.8.0 资源路由 upload/proxy + message.create 返回数组 + 反射群管理；v0.7.1 修 keepalive JNI 截断崩溃；v0.7.0 取消白名单 + 常驻通知/唤醒锁 + wxguard）
 - 近期：`56cbac5` 预热等派发器 → `f797dcb` 读侧补齐 + unsupported → `1b34615` v0.6.4 读侧 →
   `62228ec` 状态语义+预热 → `0895aac` 状态计数 → `d92ee8f` r1.y.k() 修复 → `8e71852` 发送打通
   → `af751de` 协议资源路由 → `e5c9a1c` 群写操作

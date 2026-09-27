@@ -37,6 +37,7 @@ int main() {
     Check(keep && cJSON_IsObject(keep), "keepalive block exists");
     CheckBool(keep, "notification", false);
     CheckBool(keep, "notifications_enabled", false);
+    CheckBool(keep, "channel", false);
     CheckBool(keep, "wakelock", false);
     CheckBool(keep, "wakelock_held", false);
     CheckBool(keep, "cpu_held", false);

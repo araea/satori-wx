@@ -65,6 +65,7 @@ bool g_untimed = false; // g_mu: the CPU lock we currently hold was taken withou
 long long g_serving_since_ms = 0; // when online && listening most recently became true
 bool g_was_serving = false;
 volatile bool g_notify_ok = false;
+volatile bool g_channel_ok = false;
 volatile bool g_notify_enabled = false;
 volatile long long g_reposts = 0;
 char g_notify_detail[48] = "init";
@@ -187,6 +188,25 @@ jfieldID StaticField(JNIEnv *env, jclass cls, const char *name, const char *sign
     jfieldID id = env->GetStaticFieldID(cls, name, signature);
     if (env->ExceptionCheck()) env->ExceptionClear();
     return id;
+}
+
+// Creates (or re-creates) the low-importance, silent status channel. Idempotent, and called
+// before every post: WeChat or ColorOS can delete the channel out from under us, and a
+// notification posted to a missing channel is rejected by the system (“No Channel found”)
+// without throwing — the keeper would then re-post every tick and the entry would never show.
+void EnsureChannel(JNIEnv *env) {
+    if (!g_j.cls_channel || !g_j.channel_ctor || !g_j.nm || !g_j.nm_create) { g_channel_ok = false; return; }
+    jobject channel = env->NewObject(g_j.cls_channel, g_j.channel_ctor, String(env, kChannel),
+                                     String(env, kChannelName), kImportanceLow);
+    if (!channel) { Clear(env); g_channel_ok = false; return; }
+    // The description and badge are cosmetic; a missing setter must not block channel creation.
+    if (g_j.ch_desc) env->CallVoidMethod(channel, g_j.ch_desc, String(env, "知言 Satori 服务的运行状态"));
+    if (g_j.ch_badge) env->CallVoidMethod(channel, g_j.ch_badge, JNI_FALSE);
+    Clear(env);
+    env->CallVoidMethod(g_j.nm, g_j.nm_create, channel);
+    g_channel_ok = !env->ExceptionCheck();
+    Clear(env);
+    env->DeleteLocalRef(channel);
 }
 
 // Builds the class cache. Requires a PushLocalFrame; the kept objects are global refs.
@@ -358,18 +378,8 @@ bool ResolveJava(JNIEnv *env) {
         }
     }
 
-    // One low-importance, silent channel. Re-created on every start: it is idempotent.
-    jobject channel = env->NewObject(g_j.cls_channel, g_j.channel_ctor, String(env, kChannel),
-                                     String(env, kChannelName), kImportanceLow);
-    Clear(env);
-    if (channel && g_j.ch_desc && g_j.ch_badge && g_j.nm_create) {
-        env->CallVoidMethod(channel, g_j.ch_desc, String(env, "知言 Satori 服务的运行状态"));
-        env->CallVoidMethod(channel, g_j.ch_badge, JNI_FALSE);
-        Clear(env);
-        env->CallVoidMethod(g_j.nm, g_j.nm_create, channel);
-        Clear(env);
-    }
-    if (channel) env->DeleteLocalRef(channel);
+    // One low-importance, silent channel. Re-created on every start and again before each post.
+    EnsureChannel(env);
 
     // Only mark ready when every method called unconditionally below is present; a null
     // method ID would be a hard crash, not a Java exception.
@@ -539,6 +549,8 @@ void Notify(JNIEnv *env) {
     if (!changed && (!enabled || (now - g_last_post_ms < kRepostGapMs) || alive)) return;
     if (changed && !enabled) { snprintf(g_notify_detail, sizeof(g_notify_detail), "disabled"); return; }
 
+    // The channel can disappear (WeChat or ColorOS deleting it): recreate it right before posting.
+    EnsureChannel(env);
     jobject builder = env->NewObject(g_j.cls_builder, g_j.builder_ctor, g_j.context, String(env, kChannel));
     if (!builder) {
         Clear(env);
@@ -744,6 +756,7 @@ void KeepaliveStatus(cJSON *object) {
     if (!keep) return;
     cJSON_AddBoolToObject(keep, "notification", g_notify_ok);
     cJSON_AddBoolToObject(keep, "notifications_enabled", g_notify_enabled);
+    cJSON_AddBoolToObject(keep, "channel", g_channel_ok);
     cJSON_AddBoolToObject(keep, "wakelock", g_want_lock);
     cJSON_AddBoolToObject(keep, "wakelock_held", g_lock_held);
     cJSON_AddBoolToObject(keep, "user", g_want_lock);

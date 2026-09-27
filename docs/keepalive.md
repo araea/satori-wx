@@ -16,7 +16,9 @@
   等待登录 / 已登录但端口没监听；正文带**在连客户端数**（WebSocket，与 satori-qq 的 connection
   count 同义）与**在线时长**，大文本再附唤醒锁与发送状态。点击用微信的 launcher intent 打开微信。
   每 3 秒刷新一次，内容没变就只检查条目还在不在
-  （`NotificationManager.getActiveNotifications()`），被微信在前台清掉后自动补发。
+  （`NotificationManager.getActiveNotifications()`），被微信在前台清掉后自动补发。通知渠道在**每次发布前**
+  重建一次：微信或 ColorOS 会把 `satori-wx-status` 这个渠道删掉（`mDeleted=true`），而向不存在的渠道
+  发布通知会被系统默默拒收（logcat 里的 `No Channel found`，不抛异常），投递会变成每 3 秒重发一次。
 - **唤醒锁**：一个 `PARTIAL_WAKE_LOCK`（tag `satori-wx:wakelock`）加一个尽力而为的
   `WIFI_MODE_FULL_HIGH_PERF`，都 `setReferenceCounted(false)`。默认关；通知上的按钮切换它。
   对齐 satori-qq 的 `WakeLockCtl`，还有两路自动持有：
@@ -41,6 +43,7 @@
 "keepalive": {
   "notification": true,          // 最近一次发布成功
   "notifications_enabled": true, // 系统里微信的通知权限是否打开
+  "channel": true,               // 通知渠道（satori-wx-status）是否可用
   "wakelock": false,             // 用户意图（与 "user" 同值，兼容旧版应用）
   "wakelock_held": false,        // OS 实际持有 CPU 或 Wi-Fi（兼容旧版应用）
   "user": false,                 // 用户意图（通知按钮）
