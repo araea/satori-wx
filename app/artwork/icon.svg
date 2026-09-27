@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="18 18 72 72" role="img" aria-labelledby="title desc">
+  <title id="title">知言</title>
+  <desc id="desc">青色纯色底上一枚白色对话气泡，气泡里一条青色丝弦回转成 S（与知弦同一笔）；图形落在自适应图标的 66 单位安全圆内。</desc>
+  <defs>
+    <clipPath id="mask"><rect x="18" y="18" width="72" height="72" rx="22"/></clipPath>
+  </defs>
+  <g clip-path="url(#mask)">
+    <g id="background">
+      <path fill="#00838F" d="M0 0H108V108H0Z"/>
+    </g>
+    <g id="foreground">
+      <path fill="#FFFFFF" d="M32.81 62.77A24 24 0 1 1 46.58 74.33Q40.58 77.33 29.5 80Q34.81 72.77 32.81 62.77Z"/>
+      <path fill="none" stroke="#00838F" stroke-width="6.94" stroke-linecap="round" stroke-linejoin="round" d="M64.96 42.52 C62.97 40.42 59.43 39.44 56.06 40.05 C52.68 40.66 50.16 42.72 49.70 45.26 C49.25 47.79 50.95 50.27 54.00 51.50 C57.05 52.73 58.75 55.21 58.30 57.74 C57.84 60.28 55.32 62.34 51.94 62.95 C48.57 63.56 45.03 62.58 43.04 60.48"/>
+    </g>
+  </g>
+</svg>

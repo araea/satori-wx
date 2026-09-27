@@ -1,0 +1,5 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android" package="com.satori.wx.test">
+    <uses-sdk android:minSdkVersion="26" android:targetSdkVersion="35" />
+    <application android:label="知言界面测试" android:hasCode="true" />
+    <instrumentation android:name="com.satori.wx.ui.DesignSmoke" android:targetPackage="com.satori.wx" />
+</manifest>

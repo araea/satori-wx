@@ -2,3 +2,5 @@ build/
 *.keystore
 __pycache__/
 *.pyc
+app/libs/*.jar
+app/keystore/
