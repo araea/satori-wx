@@ -22,6 +22,7 @@ namespace satori {
 // A non-null handle: the stubs below ignore it, and the backend refuses to send without a store.
 Store *LiveStore() { return reinterpret_cast<Store *>(1); }
 bool StoreFindSentImage(Store *, const char *, long long, long long *) { return false; }
+bool StoreFindStalledImage(Store *, const char *, long long, long long *) { return false; }
 int LiveLoginSn() { return 1; }
 bool StartLiveStore(const char *, EventBus *, int) { return false; }
 const char *StoreSelfId(Store *) { return "self_wxid"; }

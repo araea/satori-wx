@@ -81,7 +81,9 @@ svc.rj(gVar);                                         // 丢弃返回的进度�
 
 `native/wx_send.cpp` 的 `SendImage`。`com.tencent.mm.pluginsdk.ui.tools.p0.a()`（App 在同一处先调的准备）也调一次，失败不算错。所有类与成员每次调用时现查：缺任何一个只让这一次请求失败，不影响文本发送。
 
-**异步意味着「返回了」不等于「发出了」。** `rj` 返回时消息行还没有。`message.create` 的做法：发之前记下库的水位，`rj` 之后最多 6 秒、每 40 毫秒查一次 `type=3 AND isSend=1 AND talker=<会话> AND msgId>水位` 的行（`StoreFindSentImage`）；查到才回 200 并带上真实的消息 id，查不到回 502 `image_unconfirmed`（图片可能仍会发出，说明白而不是假报成功）。等的时候占着服务线程，所以 6 秒是上限；实际管线在几百毫秒内入库。
+**异步意味着「返回了」不等于「发出了」。** `rj` 返回时消息行还没有。`message.create` 的做法：发之前记下库的水位，`rj` 之后最多 6 秒、每 40 毫秒查一次 `type=3 AND isSend=1 AND talker=<会话> AND msgId>水位 AND length(content)>20` 的行（`StoreFindSentImage`，content 要已带 CDN XML 才算数）；查到才回 200 并带上真实的消息 id，查不到回 502 `image_unconfirmed`。查不到时再看有没有 content 空壳的行（`StoreFindStalledImage`）：有 = 微信收下了但管线卡死、图发不出去；没有 = 图片可能仍会发出。说明白而不是假报成功。等的时候占着服务线程，所以 6 秒是上限；实际管线在几百毫秒内入库。
+
+**退化尺寸的图发不出去。** 微信自己的图片管线对 1x1 这类图会把行插成 `type=3 isSend=1` 但 `content` 恒为 `<msg></msg>`、`status` 恒为 5，之后不再推进——观察上是「收下了但永远在转圈」。8x8 及以上正常（真机实测 8 / 16 / 32 / 64 px 与正常图片全部 `status=2` 带 CDN XML）。这不是反射调用特有的坑，微信自己面对退化图也发不出。
 
 `message.create` 的内容按 `<img>` 切成有序的文本 / 图片消息序列：
 
@@ -93,7 +95,7 @@ svc.rj(gVar);                                         // 丢弃返回的进度�
 - 返回的每条 `Message` 里，图片的 `content` 是指向微信落盘那份缩略图的签名链接。
 - GIF 按图片发，不会变成动图表情（表情走另一条路，没做）。
 
-**这条路在真机上还没有验证过。** 写它时能核对的只有反编译出来的调用序列与签名；重启加载新 `.so` 之后，先跑 [HANDOFF](HANDOFF.md) 里的验收清单第 4 项。失败的话看 `internal/status` 的 `send.last_error`（哪个类或成员没找到）与 `send.media` 计数。
+**这条路已在真机验证（v0.10.0 落地，v0.11.1 验收）。** 上传与 data URI 两条路、混合文本 + 图片的顺序、落库行的 `type=3 / status=2 / CDN XML` 都核过。失败的话看 `internal/status` 的 `send.last_error`（哪个类或成员没找到）与 `send.media` 计数。
 
 ### 回复（`<quote>`）
 

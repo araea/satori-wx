@@ -1407,8 +1407,30 @@ bool StoreAuthorOf(Store *store, long long msg_id, char *out, size_t capacity) {
 
 bool StoreFindSentImage(Store *store, const char *talker, long long since, long long *local_id) {
     if (!store || !store->db || !SafeSql(talker) || !local_id) return false;
+    // A real sent picture carries the CDN XML in content; a degenerate one (WeChat's own
+    // pipeline rejects e.g. 1x1 images) is inserted with "<msg></msg>" and never advances
+    // (status stays 5). Only a filled row counts as sent.
     char sql[300];
-    snprintf(sql, sizeof(sql), "SELECT msgId FROM message WHERE talker = '%s' AND isSend = 1 AND type = 3 AND msgId > %lld ORDER BY msgId LIMIT 1", talker, since);
+    snprintf(sql, sizeof(sql),
+             "SELECT msgId FROM message WHERE talker = '%s' AND isSend = 1 AND type = 3 AND msgId > %lld"
+             " AND length(content) > 20 ORDER BY msgId LIMIT 1",
+             talker, since);
+    long long found = 0;
+    pthread_mutex_lock(&store->mutex);
+    WcdbQuery(store->db, sql, LocalIdRow, &found);
+    pthread_mutex_unlock(&store->mutex);
+    if (found <= 0) return false;
+    *local_id = found;
+    return true;
+}
+
+bool StoreFindStalledImage(Store *store, const char *talker, long long since, long long *local_id) {
+    if (!store || !store->db || !SafeSql(talker) || !local_id) return false;
+    char sql[300];
+    snprintf(sql, sizeof(sql),
+             "SELECT msgId FROM message WHERE talker = '%s' AND isSend = 1 AND type = 3 AND msgId > %lld"
+             " AND length(content) <= 20 ORDER BY msgId LIMIT 1",
+             talker, since);
     long long found = 0;
     pthread_mutex_lock(&store->mutex);
     WcdbQuery(store->db, sql, LocalIdRow, &found);

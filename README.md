@@ -63,7 +63,7 @@ HTTP 使用 `Authorization: Bearer <token>`：缺失 token 返回 401，错误 t
 
 ## 限制 / 风险
 
-- 发送：文本、群内 `@`（`<at id name/>` / `<at type="all"/>`）、图片（`<img src>`，只认 `upload.create` 的链接与 `data:image` URI，图片发送**尚未真机验证**）。回复 `<quote>`、语音、视频、文件没做；`content` 里的这些元素被丢弃，只带它们时 `<audio>` `<video>` `<file>` 回 400 `media_unsupported`（见[发送各类消息](docs/wechat-send-types.md)）。
+- 发送：文本、群内 `@`（`<at id name/>` / `<at type="all"/>`）、图片（`<img src>`，只认 `upload.create` 的链接与 `data:image` URI，图片发送已真机验证）。回复 `<quote>`、语音、视频、文件没做；`content` 里的这些元素被丢弃，只带它们时 `<audio>` `<video>` `<file>` 回 400 `media_unsupported`（见[发送各类消息](docs/wechat-send-types.md)）。
 - 收到的图片多半只有缩略图，原图是微信私有的 `wxgf` 容器；语音是 SILK，不转码（见[消息内容](docs/wechat-content.md)）。
 - 好友 / 入群申请事件与对应的 approve 方法没做。事件的延迟与限制见[事件](docs/wechat-events.md)。
 - 微信无此概念的方法列入 `internal/capabilities.unsupported`：`message.update`、`channel.create`、`channel.mute`、`guild.member.mute`、`reaction.*`、`guild.role.create/update/delete`。

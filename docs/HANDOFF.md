@@ -13,7 +13,7 @@
 - 收到的消息按 Satori 元素解码（图片 / 语音 / 视频 / 表情 / 链接 / 文件 / 回复 / @），媒体是签名链接，由 `/v1/proxy` 流式回包，见 [消息内容](wechat-content.md)。
 - 事件：`message-created`（带 `guild` `member` 与头像）、`message-deleted`、`guild-member-added|removed`、`guild-added|removed`、`friend-added|removed`，见 [事件](wechat-events.md)。
 - `message.list` 是 Satori 的双向分页；事件不再有 4 KiB 上限（128 KiB）；轮询水位不再吞消息。
-- `message.create`：群里的 `<at>` 是真提及；`<img>` 走聊天界面自己的 `rj()` 图片管线（**真机未验证**，见 [发送各类消息](wechat-send-types.md)）；回复 `<quote>` 仍被当元素丢掉。
+- `message.create`：群里的 `<at>` 是真提及；`<img>` 走聊天界面自己的 `rj()` 图片管线（真机已验证，见 [发送各类消息](wechat-send-types.md)）；回复 `<quote>` 仍被当元素丢掉。
 - `upload.create` 收得下 16 MiB，`/v1/proxy` 流式回包、支持 `Range`。
 - 发送没有开关：所有会话都可发送，没有限速也没有白名单，模块自己也不给发送加任何延迟。
 
@@ -25,7 +25,7 @@
 | 微信无此概念 | **11** | `message.update`、`channel.create`、`channel.mute` / `guild.member.mute`、`reaction.create/delete/clear/list`、`guild.role.create/update/delete`，列在 `internal/capabilities.unsupported` |
 | 待逆向的写操作 | **5** | `channel.update`（群改名）、`friend.delete`、`friend.approve`、`guild.approve`、`guild.member.approve`，卡点见 [群管理写操作](wechat-room.md) |
 
-读侧 + 资源 + 发送（文本 / @ / 图片）/ 撤回 / 群管理视为完成；图片发送等真机验收。`features` 的唯一来源是 `native/wx_capabilities.cpp`（`WeChatFeatures()`）；`wx_backend.cpp` 与 `wx_account.cpp` 都读它，不要各写一份。
+读侧 + 资源 + 发送（文本 / @ / 图片）/ 撤回 / 群管理视为完成。`features` 的唯一来源是 `native/wx_capabilities.cpp`（`WeChatFeatures()`）；`wx_backend.cpp` 与 `wx_account.cpp` 都读它，不要各写一份。
 
 ## 环境 / 构建 / 部署
 
@@ -130,7 +130,7 @@ token=<32-128 位字母数字-_>
 `message.create` 的 `content` 按 `<img>` 切成有序的文本 / 图片消息：
 
 - 文本段先拍平：保留转义文本、`<br/>` 变换行、`<a href>` 在文字后带上目标，丢掉 `<quote>`、`<emoji>` 等元素；群里的 `<at id name/>` 变成 `@昵称` + U+2005 并把 id 交给 `atuserlist`（`<at type="all"/>` 是 `notify@all`），缺 `name` 时用群内昵称补。
-- 图片走 `ha0.w.rj()`（聊天界面自己的图片管线）：异步，库里出现 `type=3` 的新行才回 200 并带真实消息 id，6 秒内没有回 502 `image_unconfirmed`。`src` 只认 `upload.create` 的 `internal:` 链接与 `data:image/…;base64`，远程 URL 拒绝；所有图片先解析、核对魔数，坏一张整条 400，不发半条。**真机未验证**。
+- 图片走 `ha0.w.rj()`（聊天界面自己的图片管线）：异步，库里出现 `type=3` 的新行才回 200 并带真实消息 id，6 秒内没有回 502 `image_unconfirmed`（行插入但 content 空壳 = 管线卡死，退化图如 1x1 会这样）。真机已验证。`src` 只认 `upload.create` 的 `internal:` 链接与 `data:image/…;base64`，远程 URL 拒绝；所有图片先解析、核对魔数，坏一张整条 400，不发半条。
 - 拍平后没有文本也没有图片：只剩音视频文件元素回 400 `media_unsupported`，其余 400。
 
 `tests/content_test.cpp`、`tests/backend_test.cpp` 覆盖拍平、@、链接、`ImageSpans`、base64，以及每一种被拒的请求；真正的 JNI 调用没法在主机上跑，见下面的验收清单。逆向依据与被撤回的转发路径在 [发送各类消息](wechat-send-types.md)。
@@ -184,7 +184,7 @@ python3 tools/dexmethodstrings.py $APK 'Lcom/tencent/mm/app/q3;' b
 4. 只支持 arm64。
 5. 发送没有开关，也不做实现端限速 / 白名单 / 延迟，不伪造成功；风控责任在调用方。
 6. 写操作已做 `message.delete`（仅本账号消息）、`channel.delete`（退群）、`guild.member.kick`、`guild.member.role.set/unset`；剩下 5 个（见上）没做，卡点见 [群管理写操作](wechat-room.md)。破坏性动作不伪造成功。
-7. 发送：文本、群内 @、图片（未真机验证）。回复 `<quote>`、语音、视频、文件没做；GIF 按静态图发。
+7. 发送：文本、群内 @、图片（真机已验证）。回复 `<quote>`、语音、视频、文件没做；GIF 按静态图发。
 8. 收到的图片多半只有缩略图：原图是微信私有的 `wxgf` 容器（客户端打不开），要等用户在微信里点开才下载，模块不触发下载。语音是 SILK（`audio/silk`），不转码。
 9. 事件延迟：撤回 ≤ 3 秒，群成员 ≥ 3 秒（要两轮确认），好友 12–24 秒；模块启动前发生的变化不会补发。撤回事件里群消息的作者只有模块启动之后见过的消息才知道。
 10. `friend-request` / `guild-request` 等申请事件与对应的 approve 方法没做：这台机器上申请表是空的，没有样本。
@@ -229,10 +229,13 @@ curl -s -D- -o /dev/null -H 'Range: bytes=0-99' "http://127.0.0.1:5601/v1/proxy/
 curl -s -X POST http://127.0.0.1:5601/v1/upload.create -H "Authorization: Bearer $T" -H "Satori-Platform: wechat" \
   -H "Satori-User-ID: $ME" -F 'file=@/path/to/pic.png'
 api message.create '{"channel_id":"filehelper","content":"<img src=\"internal:wechat/'$ME'/_tmp/xxx.png\"/>"}'
-#   成功 = 200 + Message[]，id 是库里 type=3 的那一行；502 image_unconfirmed = 管线没在 6 秒内入库；
-#   502 send_failed 带 detail = 哪个类 / 成员没找到，同时看 internal/status 的 send.last_error 与 send.media 计数
-api message.create '{"channel_id":"filehelper","content":"先文字<img src=\"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/q842iQAAAABJRU5ErkJggg==\"/>再文字"}'
+#   成功 = 200 + Message[]，id 是库里 type=3 且 content 已带 CDN XML 的那一行；502 image_unconfirmed
+#   带「pipeline stalled」= 微信收下但管线卡死（退化图，如 1x1，微信自己发不出去）；带「did not record」
+#   = 6 秒内没有入库；502 send_failed 带 detail = 哪个类 / 成员没找到，同时看 internal/status 的
+#   send.last_error 与 send.media 计数
+api message.create '{"channel_id":"filehelper","content":"先文字<img src=\"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAIAAABLbSncAAAAiElEQVR4nA3JIQ7EIBRFUUxDUkENCJIfzDOEBPExmJqa2f8C7mKGY08IgXiRbsqDZVQZDRchXMSb9FAyVlFjCO8nbuJDypSKNSRGx+eJh5hJldIwoc6Y+DqRiZXUKMI6moyF7xOV2EiidGyixdj4e6IRReqUiS20GS/+nRCxkyZlYRu9jA//8QdJnkXhUZzNAgAAAABJRU5ErkJggg==\"/>再文字"}'
 #   期望：三条消息（文字、图、文字），顺序对；坏链接（远程 URL）整条 400、什么都没发出去
+#   样图是 8x8 PNG；不要换成 1x1——微信图片管线对退化尺寸会把行卡在 status=5、content 空壳
 
 # 5) 事件（另开一个终端跑着，再做 6、7）
 python3 tools/events-tail.py --token "$T"

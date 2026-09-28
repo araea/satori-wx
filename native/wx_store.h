@@ -83,9 +83,13 @@ int StoreRevoked(Store *store, long long since_ms, RevokedRow *out, int max);
 // Who wrote a message the poller announced earlier in this process (recent ones only).
 bool StoreAuthorOf(Store *store, long long msg_id, char *out, size_t capacity);
 // The first picture message this account sent to `talker` after row `since` (a watermark taken
-// before the send). True with its local id once WeChat's own pipeline has inserted the row: the
-// only reliable sign that an asynchronous image send really started.
+// before the send). True with its local id once WeChat's own pipeline has inserted the row with
+// its CDN XML: the only reliable sign that an asynchronous image send really finished. A row
+// with empty content (WeChat rejects degenerate pictures, e.g. 1x1) does not count.
 bool StoreFindSentImage(Store *store, const char *talker, long long since, long long *local_id);
+// The opposite case: an inserted picture row whose content never filled in — WeChat's pipeline
+// accepted the request but stalled. Used to tell the caller exactly what happened.
+bool StoreFindStalledImage(Store *store, const char *talker, long long since, long long *local_id);
 // Satori User / Guild objects for event payloads; a bare {"id"} when the contact is unknown.
 cJSON *StoreUserObject(Store *store, const char *id);
 cJSON *StoreGuildObject(Store *store, const char *id);

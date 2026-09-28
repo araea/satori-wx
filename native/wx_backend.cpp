@@ -336,6 +336,11 @@ Response CreateMessages(const Request &request, Store *store) {
             }
             if (!confirmed) {
                 cJSON_Delete(list); free(texts);
+                // A row with empty content means WeChat's pipeline took the request and stalled
+                // (it rejects degenerate pictures, e.g. 1x1); say so instead of guessing.
+                long long stalled_id = 0;
+                if (StoreFindStalledImage(store, channel_id, before, &stalled_id))
+                    return FailureAfter("image_unconfirmed", "WeChat recorded the picture but its pipeline stalled (content empty); the image was not sent", false, sent_count);
                 return FailureAfter("image_unconfirmed", "WeChat did not record the picture within 6 seconds; it may still be sent", false, sent_count);
             }
             message = SentImageMessage(store, channel_id, local_id);
