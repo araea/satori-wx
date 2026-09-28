@@ -181,52 +181,6 @@ bool EscapeText(const char *text, char *out, size_t capacity) {
     out[used] = 0; return true;
 }
 
-size_t PlainText(const char *content, char *out, size_t capacity) {
-    if (!out || capacity == 0) return 0;
-    size_t used = 0;
-    // Every element in a Satori content string is self-closing or wraps text. Quote,
-    // at, emoji and media only carry ids, so writing them out would leak numbers into
-    // the chat; <br/> is the one tag that means something to a text-only client.
-    auto keep = [&](char c) { if (used + 1 < capacity) out[used++] = c; };
-    for (const char *p = content; p && *p;) {
-        if (*p == '<') {
-            const char *q = p + 1;
-            char quote = 0;
-            for (; *q; ++q) {
-                if (quote) { if (*q == quote) quote = 0; continue; }
-                if (*q == '"' || *q == '\'') { quote = *q; continue; }
-                if (*q == '>') break;
-            }
-            if (!*q) break;  // Unterminated tag: nothing trustworthy follows.
-            const char *name = p + 1;
-            const bool closing = *name == '/';
-            if (closing) ++name;
-            const char *end = name;
-            while (end < q && ((*end >= 'a' && *end <= 'z') || (*end >= 'A' && *end <= 'Z') ||
-                               (*end >= '0' && *end <= '9') || *end == '-' || *end == '_' || *end == ':')) ++end;
-            if (!closing && end - name == 2 &&
-                (name[0] == 'b' || name[0] == 'B') && (name[1] == 'r' || name[1] == 'R')) keep('\n');
-            p = q + 1;
-            continue;
-        }
-        if (*p == '&') {
-            static const struct { const char *name; char value; } entities[] = {
-                {"&lt;", '<'}, {"&gt;", '>'}, {"&quot;", '"'},
-                {"&#39;", '\''}, {"&apos;", '\''}, {"&amp;", '&'},
-            };
-            bool matched = false;
-            for (const auto &entity : entities) {
-                const size_t n = strlen(entity.name);
-                if (!strncmp(p, entity.name, n)) { keep(entity.value); p += n; matched = true; break; }
-            }
-            if (matched) continue;
-        }
-        keep(*p++);
-    }
-    out[used] = 0;
-    return used;
-}
-
 namespace {
 bool TagChar(char c) {
     return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
@@ -270,6 +224,115 @@ bool Attribute(const char *begin, const char *end, const char *name, char *out, 
     return false;
 }
 } // namespace
+
+namespace {
+// Replaces the five predefined entities inside an attribute value, in place.
+void DecodeEntities(char *text) {
+    static const struct { const char *name; char value; } entities[] = {
+        {"&lt;", '<'}, {"&gt;", '>'}, {"&quot;", '"'}, {"&#39;", '\''}, {"&apos;", '\''}, {"&amp;", '&'},
+    };
+    char *out = text;
+    for (const char *p = text; *p;) {
+        bool matched = false;
+        if (*p == '&') {
+            for (const auto &entity : entities) {
+                const size_t n = strlen(entity.name);
+                if (!strncmp(p, entity.name, n)) { *out++ = entity.value; p += n; matched = true; break; }
+            }
+        }
+        if (!matched) *out++ = *p++;
+    }
+    *out = 0;
+}
+} // namespace
+
+size_t PlainText(const char *content, char *out, size_t capacity) {
+    return OutgoingText(content, out, capacity, nullptr, 0, nullptr, nullptr, nullptr);
+}
+
+size_t OutgoingText(const char *content, char *out, size_t capacity, OutgoingMention *mentions, size_t max_mentions,
+                    size_t *mention_count, MentionNamer namer, void *context) {
+    if (mention_count) *mention_count = 0;
+    if (!out || capacity == 0) return 0;
+    size_t used = 0;
+    // Quote, emoji and media only carry ids, so writing them out would leak numbers into the
+    // chat. <br/> is the one tag that means something to a text-only client; a mention becomes
+    // WeChat's own "@name" + U+2005 (and its id goes in the mention list); a link keeps its
+    // target after the words.
+    auto keep = [&](char c) { if (used + 1 < capacity) out[used++] = c; };
+    auto keep_text = [&](const char *text) { for (; *text; ++text) keep(*text); };
+    char href[512] = {};
+    size_t link_start = 0;
+    for (const char *p = content; p && *p;) {
+        if (*p == '<') {
+            const char *q = p + 1;
+            char quote = 0;
+            for (; *q; ++q) {
+                if (quote) { if (*q == quote) quote = 0; continue; }
+                if (*q == '"' || *q == '\'') { quote = *q; continue; }
+                if (*q == '>') break;
+            }
+            if (!*q) break;  // Unterminated tag: nothing trustworthy follows.
+            const char *name = p + 1;
+            const bool closing = *name == '/';
+            if (closing) ++name;
+            const char *end = name;
+            while (end < q && ((*end >= 'a' && *end <= 'z') || (*end >= 'A' && *end <= 'Z') ||
+                               (*end >= '0' && *end <= '9') || *end == '-' || *end == '_' || *end == ':')) ++end;
+            const size_t name_size = static_cast<size_t>(end - name);
+            if (!closing && name_size == 2 && (name[0] == 'b' || name[0] == 'B') && (name[1] == 'r' || name[1] == 'R')) keep('\n');
+            if (!closing && name_size == 2 && !strncasecmp(name, "at", 2) && mentions && mention_count && *mention_count < max_mentions) {
+                char id[96] = {}, mention_name[96] = {}, type[16] = {};
+                Attribute(end, q, "id", id, sizeof(id));
+                Attribute(end, q, "name", mention_name, sizeof(mention_name));
+                Attribute(end, q, "type", type, sizeof(type));
+                DecodeEntities(id); DecodeEntities(mention_name);
+                if (!strcasecmp(type, "all")) {
+                    snprintf(id, sizeof(id), "notify@all");
+                    snprintf(mention_name, sizeof(mention_name), "所有人");
+                } else if (*type) {
+                    id[0] = 0;  // "here" and other audiences have no WeChat equivalent
+                }
+                if (*id) {
+                    if (!*mention_name && namer) namer(context, id, mention_name, sizeof(mention_name));
+                    if (!*mention_name) snprintf(mention_name, sizeof(mention_name), "%s", id);
+                    keep('@'); keep_text(mention_name); keep_text("\xE2\x80\x85");
+                    OutgoingMention &mention = mentions[(*mention_count)++];
+                    snprintf(mention.id, sizeof(mention.id), "%s", id);
+                    snprintf(mention.name, sizeof(mention.name), "%s", mention_name);
+                }
+            }
+            if (!closing && name_size == 1 && (name[0] == 'a' || name[0] == 'A')) {
+                href[0] = 0;
+                Attribute(end, q, "href", href, sizeof(href));
+                DecodeEntities(href);
+                link_start = used;
+            } else if (closing && name_size == 1 && (name[0] == 'a' || name[0] == 'A') && *href) {
+                // "words (https://target)" unless the words already are the target.
+                const bool same = used >= link_start && used - link_start == strlen(href) && !strncmp(out + link_start, href, used - link_start);
+                if (!same) { keep_text(" ("); keep_text(href); keep(')'); }
+                href[0] = 0;
+            }
+            p = q + 1;
+            continue;
+        }
+        if (*p == '&') {
+            static const struct { const char *name; char value; } entities[] = {
+                {"&lt;", '<'}, {"&gt;", '>'}, {"&quot;", '"'},
+                {"&#39;", '\''}, {"&apos;", '\''}, {"&amp;", '&'},
+            };
+            bool matched = false;
+            for (const auto &entity : entities) {
+                const size_t n = strlen(entity.name);
+                if (!strncmp(p, entity.name, n)) { keep(entity.value); p += n; matched = true; break; }
+            }
+            if (matched) continue;
+        }
+        keep(*p++);
+    }
+    out[used] = 0;
+    return used;
+}
 
 size_t ImageSources(const char *content, char (*out)[kImageSrcMax], size_t max) {
     if (!out || !max) return 0;

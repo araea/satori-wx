@@ -44,6 +44,10 @@ jobject g_loader = nullptr;      // java.lang.ClassLoader (app)
 jmethodID g_loader_load = nullptr; // ClassLoader.loadClass(String), cached by Resolve
 jclass g_r0 = nullptr;           // v51.r0
 jmethodID g_r0_ctor = nullptr;   // (String,String,int,int,long,String)V
+jmethodID g_r0_ctor_map = nullptr; // (String,String,int,int,Object,String)V: the overload that takes a msgsource map
+jclass g_hashmap = nullptr;       // java.util.HashMap, for that map
+jmethodID g_hashmap_ctor = nullptr;
+jmethodID g_hashmap_put = nullptr;
 jfieldID g_r0_local = nullptr;   // f:J
 jmethodID g_r0_do_scene = nullptr; // (com.tencent.mm.network.s, com.tencent.mm.modelbase.u0)I
 jclass g_y2 = nullptr;           // com.tencent.mm.network.y2
@@ -187,6 +191,18 @@ bool Resolve(JNIEnv *env, char *detail, size_t size) {
     }
     if (ok) {
         g_r0_ctor = Method(env, r0, "<init>", "(Ljava/lang/String;Ljava/lang/String;IIJLjava/lang/String;)V");
+        // Optional: the overload the chat UI uses to attach an <atuserlist>; a build without it
+        // still sends text, just without real mentions.
+        g_r0_ctor_map = Method(env, r0, "<init>", "(Ljava/lang/String;Ljava/lang/String;IILjava/lang/Object;Ljava/lang/String;)V");
+        if (!g_r0_ctor_map) env->ExceptionClear();
+        jclass hashmap = env->FindClass("java/util/HashMap");
+        if (hashmap) {
+            g_hashmap_ctor = Method(env, hashmap, "<init>", "()V");
+            g_hashmap_put = Method(env, hashmap, "put", "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;");
+            if (g_hashmap_ctor && g_hashmap_put) g_hashmap = static_cast<jclass>(env->NewGlobalRef(hashmap));
+            env->DeleteLocalRef(hashmap);
+        }
+        if (env->ExceptionCheck()) env->ExceptionClear();
         g_r0_local = Field(env, r0, "f", "J");
         g_r0_do_scene = Method(env, r0, "doScene", "(Lcom/tencent/mm/network/s;Lcom/tencent/mm/modelbase/u0;)I");
         g_y2_ctor = Method(env, y2, "<init>", "()V");
@@ -408,7 +424,7 @@ static jobject AcquireDispatcher(JNIEnv *env, SendResult &result) {
     return dispatcher;
 }
 
-static SendResult SendTextInner(const char *talker, const char *content) {
+static SendResult SendTextInner(const char *talker, const char *content, const char *mention_ids) {
     SendResult result{};
     result.local_id = -1;
     result.net_id = -1;
@@ -443,8 +459,33 @@ static SendResult SendTextInner(const char *talker, const char *content) {
     }
     // The constructor inserts the row into WeChat's own message table (status SENDING);
     // doScene() then picks pending rows up and hands them to mars.
-    jobject scene = env->NewObject(g_r0, g_r0_ctor, jtalker, jcontent, static_cast<jint>(1), static_cast<jint>(0),
-                                   static_cast<jlong>(0), jempty);
+    jobject scene = nullptr;
+    jobject map = nullptr;
+    if (mention_ids && *mention_ids && g_r0_ctor_map && g_hashmap) {
+        // Same as the chat UI (AtSomeOneHelper): flag 1 tells the constructor to merge this map's
+        // entries into <msgsource>, and "atuserlist" holds the CDATA-wrapped id list.
+        map = env->NewObject(g_hashmap, g_hashmap_ctor);
+        char value[2200];
+        snprintf(value, sizeof(value), "<![CDATA[%s]]>", mention_ids);
+        jstring jkey = env->NewStringUTF("atuserlist");
+        jstring jvalue = env->NewStringUTF(value);
+        if (map && jkey && jvalue) {
+            jobject previous = env->CallObjectMethod(map, g_hashmap_put, jkey, jvalue);
+            if (previous) env->DeleteLocalRef(previous);
+        } else {
+            if (map) { env->DeleteLocalRef(map); map = nullptr; }
+        }
+        if (jkey) env->DeleteLocalRef(jkey);
+        if (jvalue) env->DeleteLocalRef(jvalue);
+        if (env->ExceptionCheck()) { env->ExceptionClear(); if (map) { env->DeleteLocalRef(map); map = nullptr; } }
+    }
+    if (map) {
+        scene = env->NewObject(g_r0, g_r0_ctor_map, jtalker, jcontent, static_cast<jint>(1), static_cast<jint>(1), map, jempty);
+        env->DeleteLocalRef(map);
+    } else {
+        scene = env->NewObject(g_r0, g_r0_ctor, jtalker, jcontent, static_cast<jint>(1), static_cast<jint>(0),
+                               static_cast<jlong>(0), jempty);
+    }
     env->DeleteLocalRef(jtalker);
     env->DeleteLocalRef(jcontent);
     env->DeleteLocalRef(jempty);
@@ -485,8 +526,8 @@ static SendResult SendTextInner(const char *talker, const char *content) {
     return result;
 }
 
-SendResult SendText(const char *talker, const char *content) {
-    SendResult result = SendTextInner(talker, content);
+SendResult SendText(const char *talker, const char *content, const char *mention_ids) {
+    SendResult result = SendTextInner(talker, content, mention_ids);
     pthread_mutex_lock(&g_mu);
     g_attempt_ms = NowMs();
     g_last_ok = result.ok;

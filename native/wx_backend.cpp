@@ -92,6 +92,23 @@ Response BadRequest(const char *code, const char *detail) {
     return {400, body};
 }
 
+// The name to show for a mentioned member: what the group calls them, else their own name.
+bool MentionName(void *context, const char *id, char *name, size_t capacity) {
+    Store *store = LiveStore();
+    if (!store || !context) return false;
+    cJSON *member = StoreGuildMemberGet(store, static_cast<const char *>(context), id);
+    if (!member) return false;
+    const cJSON *nick = cJSON_GetObjectItemCaseSensitive(member, "nick");
+    const cJSON *user = cJSON_GetObjectItemCaseSensitive(member, "user");
+    const cJSON *fallback = cJSON_GetObjectItemCaseSensitive(user, "nick");
+    if (!cJSON_IsString(fallback) || !*fallback->valuestring) fallback = cJSON_GetObjectItemCaseSensitive(user, "name");
+    const char *chosen = cJSON_IsString(nick) && *nick->valuestring ? nick->valuestring
+                       : cJSON_IsString(fallback) ? fallback->valuestring : "";
+    snprintf(name, capacity, "%s", chosen);
+    cJSON_Delete(member);
+    return *name != 0;
+}
+
 Response Call(void *, const Request &request) {
     const char *name = request.method->name;
     const OutboundHold hold(name && IsOutbound(name));
@@ -108,7 +125,19 @@ Response Call(void *, const Request &request) {
         // Anything that only carries an id (a photo, a file, a voice note) is not sendable
         // here, so report that instead of sending tags or pretending it went out.
         char plain[kOutgoingMax + 1];
-        PlainText(content, plain, sizeof(plain));
+        // In a group, <at> elements become real mentions (the visible "@name" plus WeChat's own
+        // mention list); anywhere else a mention has no meaning and is dropped like any element.
+        const bool group = strstr(channel_id, "@chatroom") != nullptr;
+        OutgoingMention mentions[16];
+        size_t mention_count = 0;
+        OutgoingText(content, plain, sizeof(plain), group ? mentions : nullptr, 16, &mention_count, group ? MentionName : nullptr,
+                     const_cast<char *>(channel_id));
+        char mention_ids[2100] = {};
+        for (size_t i = 0; i < mention_count; ++i) {
+            const size_t used = strlen(mention_ids);
+            if (used + strlen(mentions[i].id) + 2 >= sizeof(mention_ids)) break;
+            snprintf(mention_ids + used, sizeof(mention_ids) - used, "%s%s", used ? "," : "", mentions[i].id);
+        }
         char *tail = plain + strlen(plain);
         while (tail > plain && (tail[-1] == '\n' || tail[-1] == '\r' || tail[-1] == ' ' || tail[-1] == '\t')) --tail;
         *tail = 0;
@@ -118,7 +147,7 @@ Response Call(void *, const Request &request) {
                 return BadRequest("media_unsupported", "this adapter cannot send media elements");
             return {400, nullptr};
         }
-        SendResult sent = SendText(channel_id, plain);
+        SendResult sent = SendText(channel_id, plain, mention_ids);
         if (!sent.ok) return Failure("send_failed", sent.detail, sent.rejected);
         if (!store) return {503, nullptr};
         cJSON *message = SentMessage(store, channel_id, plain, sent.local_id);

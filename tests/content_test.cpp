@@ -87,6 +87,37 @@ int main() {
               !strcmp(sources[0], "a"), "max bounds the result");
     }
 
+    // ---- OutgoingText: mentions and links ---------------------------------------------------------------
+    {
+        char out[512];
+        satori::OutgoingMention mentions[4];
+        size_t count = 0;
+        satori::OutgoingText("<at id=\"wxid_a\" name=\"甲\"/> 你好 <at id=\"wxid_b\" name=\"乙&amp;丙\"/>收到吗", out, sizeof(out), mentions, 4, &count, nullptr, nullptr);
+        Check(!strcmp(out, "@甲\xE2\x80\x85 你好 @乙&丙\xE2\x80\x85收到吗"), "mentions become @name + U+2005");
+        Check(count == 2 && !strcmp(mentions[0].id, "wxid_a") && !strcmp(mentions[1].id, "wxid_b") && !strcmp(mentions[1].name, "乙&丙"), "mention list, entity-decoded, in order");
+        // No name: the namer supplies one, and without a namer the id stands in.
+        struct Namer { static bool Name(void *, const char *id, char *name, size_t capacity) { snprintf(name, capacity, "昵称-%s", id); return true; } };
+        satori::OutgoingText("<at id=\"wxid_c\"/>hi", out, sizeof(out), mentions, 4, &count, Namer::Name, nullptr);
+        Check(!strcmp(out, "@昵称-wxid_c\xE2\x80\x85hi") && count == 1, "a namer resolves a missing name");
+        satori::OutgoingText("<at id=\"wxid_c\"/>hi", out, sizeof(out), mentions, 4, &count, nullptr, nullptr);
+        Check(!strcmp(out, "@wxid_c\xE2\x80\x85hi"), "without a namer the id is shown");
+        satori::OutgoingText("<at type=\"all\"/>开会", out, sizeof(out), mentions, 4, &count, nullptr, nullptr);
+        Check(!strcmp(out, "@所有人\xE2\x80\x85开会") && count == 1 && !strcmp(mentions[0].id, "notify@all"), "@all");
+        satori::OutgoingText("<at type=\"here\"/>x<at/>y", out, sizeof(out), mentions, 4, &count, nullptr, nullptr);
+        Check(!strcmp(out, "xy") && count == 0, "audiences WeChat lacks, and an <at> without an id, are dropped");
+        satori::OutgoingText("<at id=\"1\" name=\"a\"/><at id=\"2\" name=\"b\"/><at id=\"3\" name=\"c\"/>", out, sizeof(out), mentions, 2, &count, nullptr, nullptr);
+        Check(count == 2, "the mention list is bounded");
+        // Links keep their target.
+        satori::OutgoingText("看<a href=\"https://x.y/z?a=1&amp;b=2\">这里</a>吧", out, sizeof(out), nullptr, 0, nullptr, nullptr, nullptr);
+        Check(!strcmp(out, "看这里 (https://x.y/z?a=1&b=2)吧"), "a link keeps its target after the words");
+        satori::OutgoingText("<a href=\"https://x.y\">https://x.y</a>", out, sizeof(out), nullptr, 0, nullptr, nullptr, nullptr);
+        Check(!strcmp(out, "https://x.y"), "a link whose text is the target is not repeated");
+        satori::OutgoingText("<a>没有目标</a>", out, sizeof(out), nullptr, 0, nullptr, nullptr, nullptr);
+        Check(!strcmp(out, "没有目标"), "an anchor without href is just text");
+        satori::OutgoingText("<at id=\"wxid_a\" name=\"甲\"/>x", out, sizeof(out), nullptr, 0, nullptr, nullptr, nullptr);
+        Check(!strcmp(out, "x"), "PlainText still drops mentions");
+    }
+
     if (failures) { fprintf(stderr, "%d content test(s) failed\n", failures); return 1; }
     printf("content tests: PASS\n");
     return 0;

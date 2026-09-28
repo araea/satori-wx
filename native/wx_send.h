@@ -24,7 +24,10 @@ struct SendResult {
     char detail[160];   // human-readable reason when ok is false
 };
 // Sends plain text to a talker (wxid or <id>@chatroom). Thread-safe; no rate limit.
-SendResult SendText(const char *talker, const char *content);
+// `mention_ids` (optional, comma-separated wxids, "notify@all" for @everyone) makes the "@name"
+// occurrences in `content` real mentions: it is WeChat's own <atuserlist> in the message source,
+// passed the same way the chat UI passes it. Ignored when the send classes lack that overload.
+SendResult SendText(const char *talker, const char *content, const char *mention_ids = nullptr);
 // Recalls one of our own messages by its local id (the id message.create returned, decimal
 // string). Uses WeChat's own NetSceneRevokeMsg scene. Refused for
 // messages the account did not send.

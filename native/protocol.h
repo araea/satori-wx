@@ -22,6 +22,17 @@ bool EscapeText(const char *text, char *out, size_t capacity);
 // turns <br/> into a newline, and drops elements it cannot carry (quote, at, emoji,
 // img, audio, video, file, forward...). Always NUL-terminates; returns bytes written.
 size_t PlainText(const char *content, char *out, size_t capacity);
+// A mention found in outgoing content: WeChat wants the visible "@name" in the text and the
+// account ids in a separate list.
+struct OutgoingMention { char id[96]; char name[96]; };
+// Supplies a display name for an <at id="..."/> that carries none; may leave `name` empty.
+using MentionNamer = bool (*)(void *context, const char *id, char *name, size_t capacity);
+// PlainText for a sender that can mention: each <at id="x" name="y"/> becomes "@y" followed by
+// U+2005 in `out` (what WeChat's own picker inserts) and is appended to `mentions`; <at
+// type="all"/> is "@所有人" with the id "notify@all". `<a href>` keeps its target after the text.
+// With `mentions` null it is exactly PlainText.
+size_t OutgoingText(const char *content, char *out, size_t capacity, OutgoingMention *mentions, size_t max_mentions,
+                    size_t *mention_count, MentionNamer namer, void *context);
 // Image element sources in a Satori `content` string, in order. Only <img> is collected:
 // its `src` is the one element WeChat can actually deliver from a local file. Copies are
 // NUL-terminated; returns how many were written (never more than `max`).

@@ -53,9 +53,9 @@ struct Outcome {
 };
 
 // Drives one message.create through the real backend.
-Outcome Create(const char *content) {
+Outcome CreateIn(const char *channel, const char *content) {
     cJSON *params = cJSON_CreateObject();
-    cJSON_AddStringToObject(params, "channel_id", "filehelper");
+    cJSON_AddStringToObject(params, "channel_id", channel);
     cJSON_AddStringToObject(params, "content", content);
     const satori::Method *method = satori::FindMethod("message.create");
     Check(method != nullptr, "message.create is a known method");
@@ -66,6 +66,8 @@ Outcome Create(const char *content) {
     cJSON_Delete(params);
     return {response.status, response.body};
 }
+
+Outcome Create(const char *content) { return CreateIn("filehelper", content); }
 
 // The error code the backend put in the body, or "" when there is no body.
 const char *Code(const Outcome &outcome) {
@@ -110,6 +112,18 @@ int main() {
         Check(outcome.status == 502 && !strcmp(Code(outcome), "send_failed"),
               "text next to an image still reaches the sender");
         cJSON_Delete(outcome.body);
+    }
+
+    // In a group a mention is content: "@name" goes out as text with WeChat's own mention list,
+    // so a message that is only a mention is not empty. In a private chat a mention means nothing
+    // and drops like any other element.
+    {
+        const Outcome group = CreateIn("123@chatroom", "<at id=\"wxid_a\" name=\"甲\"/>");
+        Check(group.status == 502 && !strcmp(Code(group), "send_failed"), "a mention-only message in a group reaches the sender");
+        cJSON_Delete(group.body);
+        const Outcome direct = CreateIn("wxid_a", "<at id=\"wxid_a\" name=\"甲\"/>");
+        Check(direct.status == 400, "a mention-only message in a private chat is empty");
+        cJSON_Delete(direct.body);
     }
 
     // Whitespace-only text is empty, not a message.
