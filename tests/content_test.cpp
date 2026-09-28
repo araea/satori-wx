@@ -69,8 +69,8 @@ int main() {
     char one[1] = {'x'};
     Check(satori::PlainText("abc", one, sizeof(one)) == 0 && one[0] == 0, "capacity 1 yields empty");
 
-    // Image sources are collected in order for the media sender; only <img> counts, and an
-    // attribute's '>' must not be mistaken for the end of the tag.
+    // Image sources are collected so message.create can tell "this is only a picture" from
+    // "this is empty"; only <img> counts, and an attribute's '>' must not end the tag early.
     Img("", "", "no images");
     Img("纯文本", "", "text only");
     Img("<img src=\"internal:wechat/u/_tmp/a.png\"/>", "internal:wechat/u/_tmp/a.png", "single image");

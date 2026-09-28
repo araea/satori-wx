@@ -12,7 +12,7 @@
 **纯 native C++**：无 DEX、无 Java 助手、无 ArtMethod 改写、无 hook 引擎。连发送都是纯反射调用
 微信自己的代码，不加载任何额外东西。
 
-- **当前版本 v0.9.1**（v0.9.1：修 `internal:` 链接解析——`tempstore.cpp` 里把字符串字面量写成了
+- **当前版本 v0.9.2**（v0.9.2：撤回图片发送。真机证明 `v51.r0` 的媒体重载（type 42）只把行写进库，状态停在 5 永不推进；App 发新图的入口是 Kotlin 协程（`qs5.v5.b` → `da0.g` → `kt.d1` flow → `e36.t0.g(new a6(this, flow, dVar))`），收尾必须由调用方给一个 Kotlin 回调 `s0.d`，native 造不出来。`message.create` 对只带媒体的 content 现在明确回 400 `media_unsupported`，不假报成功；证据与全部死路记在 [发送各类消息](wechat-send-types.md)。v0.9.1：修 `internal:` 链接解析——`tempstore.cpp` 里把字符串字面量写成了
   `constexpr const char *`，`sizeof` 拿到的是指针大小，`message.create` 的每张图片都回
   `media_unavailable`；改成数组并补 `tests/tempstore_test.cpp`。v0.9.0：`message.create` 支持 `<img>`——反射 `v51.r0` 的媒体重载发本地图片（type 42 / 动图 66），资源只认自己 `upload.create` 的 `internal:..._tmp/` 链接；读侧 `guild.member.role.list` 认 `chatroom.roomdata` 里的管理员位；`channel.create`/`channel.mute`/`guild.member.mute` 移入 `unsupported`；`wxguard` 全新安装默认 ARMED。v0.8.2：修通知渠道重建；v0.8.1：常驻通知/唤醒锁对齐知弦；v0.8.0：资源路由 + `message.create` 返回数组 + 反射群管理；v0.7.1：修 keepalive JNI 截断崩溃；v0.7.0：取消白名单 + 常驻通知/唤醒锁 + wxguard）。
 - 家账号：`wxid_8zxjsghrk8vz41`。模块配置：`send=on`（白名单已取消，任意会话可发）。
@@ -21,7 +21,7 @@
 
 | | 数量 | 方法 |
 | --- | --- | --- |
-| ✅ 已实现、真机验证 | **21** | 读侧 13：`message.get/list`、`user.get`、`friend.list`、`guild.get/list`、`guild.member.get/list`、`guild.role.list`、`guild.member.role.list`、`channel.get/list`、`user.channel.create`；资源 1：`upload.create`；写侧 6（`send=on`）：`message.create`（文本 + 图片）、`message.delete`、`channel.delete`(退群)、`guild.member.kick`、`guild.member.role.set/unset`；`login.get` |
+| ✅ 已实现、真机验证 | **21** | 读侧 13：`message.get/list`、`user.get`、`friend.list`、`guild.get/list`、`guild.member.get/list`、`guild.role.list`、`guild.member.role.list`、`channel.get/list`、`user.channel.create`；资源 1：`upload.create`；写侧 6（`send=on`）：`message.create`、`message.delete`、`channel.delete`(退群)、`guild.member.kick`、`guild.member.role.set/unset`；`login.get` |
 | ❌ 微信无此概念 | **11** | `message.update`（不能编辑已发消息）、`channel.create`（群内没有子频道）、`channel.mute` / `guild.member.mute`（没有服务端禁言）、`reaction.create/delete/clear/list`（没有表态）、`guild.role.create/update/delete`（没有自定义角色）——列在 `internal/capabilities.unsupported` |
 | ⬜ 待逆向的写操作 | **5** | `channel.update`(群改名)、`friend.delete`、`friend.approve`、`guild.approve`、`guild.member.approve`——卡点见 [群管理写操作](wechat-room.md) |
 
@@ -74,9 +74,9 @@ send=off            # 默认关闭；on 才进 features 并允许向任意会话
 | `native/wcdb.cpp/.h` | `dlopen("libWCDB.so")` + SQLCipher 只读客户端 |
 | `native/wx_store.cpp/.h` | 只读 store：message / rcontact / chatroom → Satori JSON；含 `roomdata` 的小 protobuf 遍历器（管理员位） |
 | `native/wx_live.cpp/.h` | 读主模块捕获的 key.log，只读打开库，轮询新消息 → `message-created` |
-| `native/wx_backend.cpp/.h` | Backend：13 个读方法 + `message.create`（`send=on` 时，文本 + 图片） |
+| `native/wx_backend.cpp/.h` | Backend：13 个读方法 + `message.create`（`send=on` 时，纯文本；媒体元素回 400 `media_unsupported`） |
 | `native/wx_capabilities.cpp/.h` | 唯一 features 列表 + `unsupported` 列表 |
-| `native/wx_send.cpp/.h` | 反射发送器（`SendText` 文本 / `SendMedia` 图片）+ 状态/计数快照（无白名单、无限速）；并对外暴露 ReflectEnv/ReflectResolve/ReflectLoad/ReflectDispatchScene 供群管理复用 |
+| `native/wx_send.cpp/.h` | 反射发送器（`SendText` 文本）+ 状态/计数快照（无白名单、无限速）；并对外暴露 ReflectEnv/ReflectResolve/ReflectLoad/ReflectDispatchScene 供群管理复用 |
 | `native/wx_room.cpp/.h` | 反射群管理写操作：`qn.p`（踢人/退群，`m1` 派发）与 `qn.b`/`qn.e`（设/撤管理员，`z2.d` Cgi 派发） |
 | `native/tempstore.cpp/.h` | 内置 `upload.create` 的落盘与 TTL；`/v1/proxy` 的 `internal:.../_tmp/...` 目标 |
 | `native/wx_keepalive.cpp/.h` | 微信进程内常驻状态通知（状态色 / 在线时长 / 在连客户端数）、唤醒锁（用户开关 + 出站期自动持有 + 客户端在连时保 Wi-Fi）、每 10 分钟重启微信自己的 CoreService；`keepalive` 状态块 |
@@ -108,8 +108,7 @@ send=off            # 默认关闭；on 才进 features 并允许向任意会话
 - 群 ID = `<数字>@chatroom`（用户不可见）；`channel.type`：群 0、私聊 1
 - 群消息 `content` = `wxid_xxx:\n正文`（发送者前缀需解析）
 - `message.type`：`1` 文本、`10000` 系统，其余（3 图片、34 语音…）**跳过不伪造**
-- 图片发出的行是 `type=42`（动图 66），`content` 里是本地文件路径——这是微信自己的中间态，
-  所以读侧仍按 `type != 1` 跳过，不要在事件里把路径当正文播出去
+- 图片在这个实现端发不出去（见 §6.5b）：不要去写 `type=42` 这类行，真机验证过它停在 `status=5`
 - `rcontact.type`：`3`=好友，`1`=系统号，`33`/`gh_%`=公众号；**群用 `username LIKE '%@chatroom'` 判定**
 - `chatroom` 表（v0.6.4 起用于群成员/角色）：
   - `memberlist` = `wxid1;wxid2;…`（分号分隔）
@@ -168,38 +167,34 @@ mars 在 `com.tencent.mm:push`；主进程（服务端所在）拿不到 `a3.c()
     `dispatcher` 会是 false，直到真发一条
 - `message.create` 被策略拒绝时 502 体带 `rejected: true`
 
-### 6.5 文本部分先拍平 `content`，图片单独成条
+### 6.5 只收纯文本，进入发送前先拍平 `content`
 
-微信发不了 Satori 的富文本元素，所以 `message.create` 收到 `content` 后先用
-`PlainText()`（`native/protocol.cpp`）拍平文本部分：保留转义文本、`<br/>` 变换行，丢掉
-`<quote>`、`<at>`、`<emoji>`、`<img>` 这些只带 id 的元素；`&lt;`/`&gt;`/`&amp;` 等实体还原。
+微信发不了 Satori 的元素，所以 `message.create` 收到 `content` 后先过 `PlainText()`
+（`native/protocol.cpp`）：保留转义文本、`<br/>` 变换行，丢掉 `<quote>`、`<at>`、`<emoji>`、
+`<img>` 这些只带 id 的元素；`&lt;`/`&gt;`/`&amp;` 等实体还原。拍平后为空就返回 400。
 
-v0.9.0 起 `<img>` 不再被丢掉：`ImageSources()`（同文件）把每个 `<img>` 的 `src` 抽出来，
-逐个解析成微信 uid 读得到的本地路径（只认自己 `upload.create` 产出的
-`internal:wechat/<user>/_tmp/<name>`），文本和图片分别作为独立消息发出，整体放在 `Message[]` 里。
-**先全部解析成功再发**，所以一个坏链接不会留下半条消息。文本拍平后为空且没有图片才返回 400。
+拍平后为空时再用 `ImageSources()`（同文件）分一下类：content 里只有 `<img>` 之类的媒体元素时
+回 400 `{"error":"media_unsupported"}`，让客户端能区分「空内容」和「我发不了这张图」，
+而不是拿到一个笼统的 400。
 
 > 背景：acumen 的主线改为按协议发完整 `content`，不再为微信单独拍平（见 acumen `refactor(ids)`）。
 > 因此这一步落在实现端。`tests/content_test.cpp` 覆盖引号内 `>`、未闭合标签、容量边界，
 > 以及 `<img src>` 的抽取（属性顺序、两种引号、空 src、只认 `img`、数量上限）。
 
-### 6.5b 图片（`SendMedia`，v0.9.0）
+### 6.5b 图片为什么没做（v0.9.0 试过，v0.9.2 撤回）
 
-微信发本地图片的 App 内部路径（`qs5.v5.fj`/`gj`，见 [发送各类消息](wechat-send-types.md)）是
-`v51.r0` 的**媒体重载**：
+一句话：**发新图要跑 App 的 Kotlin 协程，收尾的回调是 Kotlin 接口，native 造不出来。**
+完整的死路记录（含真机证据）在 [发送各类消息](wechat-send-types.md)，接手时先读它，别再重走：
 
-```
-new v51.r0(talker, localImagePath, gif ? 66 : 42, 0, (Object) null, "")
-scene.doScene(dispatcher, new com.tencent.mm.network.y2())   // 同文本
-scene.f  -> 本地消息 id
-```
-
-图片路径放在「正文」参数位，`type` 42=图片、66=动图（`y3.o4(路径)` 就是判动图）。
-文件落在 `<微信数据目录>/files/satori-wx-tmp/`，微信同 uid 可读。
-`internal/status.send.media` 记已派发的图片条数。
-
-⚠️ 反向工程最容易踩的坑：`v51.r1`（发送参数构建器）的 `h()` 是 **talker**、`e()` 是
-**正文/路径**，与直觉相反；判定依据写在 `docs/wechat-send-types.md`。别照直觉改。
+- `v51.r0` 的媒体重载 `type=42`（App 的转发路径 `qs5.v5.fj`/`gj` 用的就是这个）在真机上只把行
+  写进库：`type=42, isSend=1, status=5`，`imgPath` 为空，之后**永不推进**；库里 14 条真发出去的
+  图片全是 `type=3, status=2`，`content` 是带 CDN 密钥的 `<msg><img aeskey=...>` 全文。
+- App 发新图的入口是 `qs5.v5.b(...)`：它造一个 `da0.g` 交给 `kt.d1` 的协程 flow，
+  `e36.t0.g(new a6(this, flow, dVar))` 里的 `dVar`（`s0.d`）是**收集者**；传 null 协程根本不跑。
+- `v51.q0`/`p0` **不是**上传步，是「需要校验支付密码时重试发送」的流程
+  （`modelsimple.l1` = NetSceneVerifyPswd，日志串 `verifypsw ... needVerifyPswList`），别被名字骗了。
+- 模块的硬约束是纯 native、不定义 Java 类（`README` 里就是卖点），所以没有合法手段交出这个回调。
+  要做图片，先决定是否接受引入一个极小的 Java 助手/DEX——那是另一个量级的改动。
 
 ### 6.6 撤回（`message.delete`）
 
@@ -258,7 +253,7 @@ cd /data/data/com.termux/files/home/dev/araea/satori-wx
 T=$(su -c 'cat /data/adb/modules/satori_wx/satori-wx.conf' | sed -n 's/^token=//p')
 H=(-H "Authorization: Bearer $T" -H 'Content-Type: application/json')
 
-# 1) 版本与 send/keepalive 块（要看到 version 0.9.1、send.media 字段、oom_score_adj）
+# 1) 版本与 send/keepalive 块（要看到 version 0.9.2、oom_score_adj）
 su -c "curl -s -X POST http://127.0.0.1:5601/v1/internal/status ${H[*]} -d '{}'"
 
 # 2) unsupported 要 11 条，含 channel.create / channel.mute / guild.member.mute
@@ -269,15 +264,17 @@ su -c "curl -s -X POST http://127.0.0.1:5601/v1/guild.member.role.list -H 'Autho
   -H 'Satori-Platform: wechat' -H 'Satori-User-ID: wxid_8zxjsghrk8vz41' -H 'Content-Type: application/json' \
   -d '{\"guild_id\":\"21378418394@chatroom\",\"user_id\":\"wxid_1i1atvx8t8a021\"}'"
 
-# 4) 图片：先上传再发（发到 filehelper，只影响自己）
-su -c "curl -s -X POST http://127.0.0.1:5601/v1/upload.create -H 'Authorization: Bearer $T' \
-  -H 'Satori-Platform: wechat' -H 'Satori-User-ID: wxid_8zxjsghrk8vz41' \
-  -F 'file=@/path/to/pic.png'"
-# 记下返回的 internal:wechat/.../_tmp/xxx.png，填进下面
+# 4) 只带图片的 content 必须明确被拒（不是笼统 400，也不许假报成功）
 su -c "curl -s -X POST http://127.0.0.1:5601/v1/message.create -H 'Authorization: Bearer $T' \
   -H 'Satori-Platform: wechat' -H 'Satori-User-ID: wxid_8zxjsghrk8vz41' -H 'Content-Type: application/json' \
-  -d '{\"channel_id\":\"filehelper\",\"content\":\"<img src=\\\"internal:wechat/wxid_8zxjsghrk8vz41/_tmp/xxx.png\\\"/>\"}'"
-# 成功=200 + Message[]；失败=502 带 detail。再看 logcat 的 SatoriWx 行与微信库里是否新增行。
+  -d '{\"channel_id\":\"filehelper\",\"content\":\"<img src=\\\"internal:wechat/wxid_8zxjsghrk8vz41/_tmp/x.png\\\"/>\"}'"
+# 期望 400 {"error":"media_unsupported"}，且库里不新增任何行。
+
+# 4b) 文本照旧要能发（发到 filehelper，只影响自己）
+su -c "curl -s -X POST http://127.0.0.1:5601/v1/message.create -H 'Authorization: Bearer $T' \
+  -H 'Satori-Platform: wechat' -H 'Satori-User-ID: wxid_8zxjsghrk8vz41' -H 'Content-Type: application/json' \
+  -d '{\"channel_id\":\"filehelper\",\"content\":\"satori-wx v0.9.2 send verify\"}'"
+# 期望 200 + Message[]；logcat 有 sent to filehelper；库里 type=1, status=2。
 
 # 5) wxguard：全新安装已默认 ARMED；本机 guard.state 里是 ARMED 才对
 su -c 'sh /data/adb/satori-wx/wxguard.sh status --json'
@@ -361,9 +358,10 @@ JADX 也可用：`~/tools/jadx/bin/jadx --single-class <点分名> -d <输出目
 6. 写操作已做 `message.delete`（仅本账号消息）、`channel.delete`(退群)、`guild.member.kick`、
    `guild.member.role.set/unset`；剩下 5 个（§2）没做，卡点见 [群管理写操作](wechat-room.md)。
    每个都必须默认关闭；破坏性动作不伪造成功。
-7. 发送支持纯文本与本地图片。语音/视频/文件没接：新图上传的正路是 `qs5.v5.b(...)`（`da0.g`
-   协程 + `kt.d1`），文件/AppMsg 是 `dy1.g.h()` → `s61.w0/q1/r1`。已确认的类与方法签名、
-   `v51.r1` 的字段语义、以及「哪条路是 App 自己在走的」都记在
+7. **发送只有纯文本**。图片/语音/视频/文件都没做，而且图片不是「还没找到入口」，是当前约束下
+   走不通：App 发新图要跑 Kotlin 协程，收尾回调是 Kotlin 接口，native 交不出来（§6.5b）。
+   `upload.create` 仍然实现（资源路由是标准的一部分），但不会有人去消费它的 `internal:` 链接。
+   已确认的类与方法签名、`v51.r1` 的字段语义、以及三条死路都记在
    [发送各类消息](wechat-send-types.md)，接手时先读它，别再从 `v51.r1` 的短字段名猜。
 
 ## 11. 下一位接手时的第一步
@@ -375,15 +373,17 @@ JADX 也可用：`~/tools/jadx/bin/jadx --single-class <点分名> -d <输出目
    **先只读地找到微信自己的接口**（离线 DEX 反查 + 必要时 JADX），再反射调用，
    再默认关闭，最后真机验一条。群改名在可读 dex 里没有 cgi，删好友也没有 `delcontact`
    （只有 `delcontactlabel`，是标签场景），入群/好友审批依赖申请消息里的 ticket。
-   想接媒体发送先读 `docs/wechat-send-types.md`。
+   想碰媒体发送**先读** `docs/wechat-send-types.md`——图片那条路已经验证过走不通，
+   别再花一轮重启去试 type 42/66。
 4. 纪律：**每个方法真实实现后才进 `features`**；`unsupported` 只放微信真的没有的能力；
    破坏性/风控敏感动作默认关闭。往上加 `unsupported` 条目时记得同步
    `tests/capabilities_test.cpp` 的计数断言。
 
 ## 12. 版本与提交
 
-- `module.prop` / `native/version.h`：当前 **v0.9.1**（v0.9.1 修 internal: 链接解析；v0.9.0 图片发送 + 读侧管理员位 +
-  三个不可表达的方法进 unsupported + wxguard 全新安装默认 ARMED；v0.8.2 修通知渠道重建；
+- `module.prop` / `native/version.h`：当前 **v0.9.2**（v0.9.2 撤回图片发送 + `media_unsupported`；
+  v0.9.1 修 internal: 链接解析；v0.9.0 读侧管理员位 + 三个不可表达的方法进 unsupported +
+  wxguard 全新安装默认 ARMED + 图片发送（v0.9.2 已废）；v0.8.2 修通知渠道重建；
   v0.8.1 常驻通知/唤醒锁对齐知弦；v0.8.0 资源路由 upload/proxy + message.create 返回数组 +
   反射群管理；v0.7.1 修 keepalive JNI 截断崩溃；v0.7.0 取消白名单 + 常驻通知/唤醒锁 + wxguard）
 - 近期：`56cbac5` 预热等派发器 → `f797dcb` 读侧补齐 + unsupported → `1b34615` v0.6.4 读侧 →

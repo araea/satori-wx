@@ -39,7 +39,6 @@ void AddBackendStatus(cJSON *object, bool capabilities) {
         cJSON_AddNumberToObject(send, "failed", static_cast<double>(status.failed));
         cJSON_AddNumberToObject(send, "rejected", static_cast<double>(status.rejected));
         cJSON_AddNumberToObject(send, "recalled", static_cast<double>(status.recalled));
-        cJSON_AddNumberToObject(send, "media", static_cast<double>(status.media));
         if (status.last_age_ms >= 0) {
             cJSON_AddNumberToObject(send, "last_age_ms", static_cast<double>(status.last_age_ms));
             cJSON_AddBoolToObject(send, "last_ok", status.last_ok);

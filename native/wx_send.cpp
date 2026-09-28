@@ -44,7 +44,6 @@ jobject g_loader = nullptr;      // java.lang.ClassLoader (app)
 jmethodID g_loader_load = nullptr; // ClassLoader.loadClass(String), cached by Resolve
 jclass g_r0 = nullptr;           // v51.r0
 jmethodID g_r0_ctor = nullptr;   // (String,String,int,int,long,String)V
-jmethodID g_r0_ctor_media = nullptr; // (String,String,int,int,Object,String)V  -- media
 jfieldID g_r0_local = nullptr;   // f:J
 jmethodID g_r0_do_scene = nullptr; // (com.tencent.mm.network.s, com.tencent.mm.modelbase.u0)I
 jclass g_y2 = nullptr;           // com.tencent.mm.network.y2
@@ -65,7 +64,6 @@ jclass g_j0 = nullptr;             // ex0.j0 (per-account message store)
 jmethodID g_j0_get = nullptr;      // k(String,J)Le9;
 jmethodID g_e9_is_send = nullptr;  // z0()I, 1 when the message was sent by this account
 long long g_recalled = 0;
-long long g_media = 0;
 
 long long NowMs() {
     timespec ts{};
@@ -189,7 +187,6 @@ bool Resolve(JNIEnv *env, char *detail, size_t size) {
     }
     if (ok) {
         g_r0_ctor = Method(env, r0, "<init>", "(Ljava/lang/String;Ljava/lang/String;IIJLjava/lang/String;)V");
-        g_r0_ctor_media = Method(env, r0, "<init>", "(Ljava/lang/String;Ljava/lang/String;IILjava/lang/Object;Ljava/lang/String;)V");
         g_r0_local = Field(env, r0, "f", "J");
         g_r0_do_scene = Method(env, r0, "doScene", "(Lcom/tencent/mm/network/s;Lcom/tencent/mm/modelbase/u0;)I");
         g_y2_ctor = Method(env, y2, "<init>", "()V");
@@ -361,7 +358,6 @@ void SendStatusGet(SendStatus *status) {
     status->failed = g_failed;
     status->rejected = g_rejected;
     status->recalled = g_recalled;
-    status->media = g_media;
     status->last_age_ms = g_attempt_ms ? NowMs() - g_attempt_ms : -1;
     status->last_ok = g_last_ok;
     status->last_net_id = g_last_net;
@@ -506,109 +502,6 @@ SendResult SendText(const char *talker, const char *content) {
                                        talker, result.local_id, result.net_id);
     else __android_log_print(ANDROID_LOG_WARN, "SatoriWx", "send to %s failed%s: %s",
                              talker, result.rejected ? " (rejected)" : "", result.detail);
-    return result;
-}
-
-// WeChat carries a picture as a local file path plus a message type, and its own forward
-// path (`qs5.v5.fj`/`gj`) builds exactly the scene below: type 42 for a still image and 66
-// for a GIF, flags 0, and the file path where a text send puts its body. The media
-// constructor overload takes an Object in place of the local id because the app also passes
-// msgsource hints there; null means "no extra hints".
-static SendResult SendMediaInner(const char *talker, const char *file, bool gif) {
-    SendResult result{};
-    result.local_id = -1;
-    result.net_id = -1;
-    if (!talker || !*talker || !file || !*file) {
-        Detail(result.detail, sizeof(result.detail), "empty target or file");
-        return result;
-    }
-    if (!SendEnabled()) {
-        result.rejected = true;
-        Detail(result.detail, sizeof(result.detail), "send is disabled by configuration");
-        return result;
-    }
-    JNIEnv *env = Env();
-    if (!env) {
-        Detail(result.detail, sizeof(result.detail), "JavaVM unavailable");
-        return result;
-    }
-    jobject dispatcher = AcquireDispatcher(env, result);
-    if (!dispatcher) return result;
-    if (!g_r0_ctor_media) {
-        env->DeleteLocalRef(dispatcher);
-        Detail(result.detail, sizeof(result.detail), "media scene constructor unavailable (version mismatch?)");
-        return result;
-    }
-    jstring jtalker = env->NewStringUTF(talker);
-    jstring jfile = env->NewStringUTF(file);
-    jstring jempty = env->NewStringUTF("");
-    if (!jtalker || !jfile || !jempty) {
-        if (jtalker) env->DeleteLocalRef(jtalker);
-        if (jfile) env->DeleteLocalRef(jfile);
-        if (jempty) env->DeleteLocalRef(jempty);
-        env->DeleteLocalRef(dispatcher);
-        Detail(result.detail, sizeof(result.detail), "string allocation failed");
-        return result;
-    }
-    jobject scene = env->NewObject(g_r0, g_r0_ctor_media, jtalker, jfile, static_cast<jint>(gif ? 66 : 42),
-                                   static_cast<jint>(0), static_cast<jobject>(nullptr), jempty);
-    env->DeleteLocalRef(jtalker);
-    env->DeleteLocalRef(jfile);
-    env->DeleteLocalRef(jempty);
-    if (env->ExceptionCheck()) {
-        env->ExceptionClear();
-        env->DeleteLocalRef(dispatcher);
-        Detail(result.detail, sizeof(result.detail), "media scene construction failed");
-        return result;
-    }
-    if (!scene) {
-        env->DeleteLocalRef(dispatcher);
-        Detail(result.detail, sizeof(result.detail), "media scene construction returned null");
-        return result;
-    }
-    result.local_id = env->GetLongField(scene, g_r0_local);
-    jobject callback = env->NewObject(g_y2, g_y2_ctor);
-    if (env->ExceptionCheck()) { env->ExceptionClear(); callback = nullptr; }
-    if (!callback) {
-        env->DeleteLocalRef(dispatcher);
-        env->DeleteLocalRef(scene);
-        Detail(result.detail, sizeof(result.detail), "callback allocation failed");
-        return result;
-    }
-    const jint net = env->CallIntMethod(scene, g_r0_do_scene, dispatcher, callback);
-    if (env->ExceptionCheck()) {
-        env->ExceptionClear();
-        Detail(result.detail, sizeof(result.detail), "dispatch threw");
-    } else if (net < 0) {
-        Detail(result.detail, sizeof(result.detail), "dispatch rejected (netId=%d)", static_cast<int>(net));
-    } else {
-        result.ok = true;
-    }
-    result.net_id = static_cast<int>(net);
-    env->DeleteLocalRef(callback);
-    env->DeleteLocalRef(dispatcher);
-    env->DeleteLocalRef(scene);
-    return result;
-}
-
-SendResult SendMedia(const char *talker, const char *file, bool gif) {
-    SendResult result = SendMediaInner(talker, file, gif);
-    pthread_mutex_lock(&g_mu);
-    g_attempt_ms = NowMs();
-    g_last_ok = result.ok;
-    g_last_net = result.net_id;
-    g_last_local = result.local_id;
-    snprintf(g_last_target, sizeof(g_last_target), "%s", talker ? talker : "");
-    snprintf(g_last_error, sizeof(g_last_error), "%s", result.ok ? "" : result.detail);
-    if (result.ok) { ++g_sent; ++g_media; }
-    else if (result.rejected) ++g_rejected;
-    else ++g_failed;
-    pthread_mutex_unlock(&g_mu);
-    if (result.ok) __android_log_print(ANDROID_LOG_INFO, "SatoriWx",
-                                       "sent media to %s (local id %lld, netId %d, file %s)",
-                                       talker, result.local_id, result.net_id, file);
-    else __android_log_print(ANDROID_LOG_WARN, "SatoriWx", "media send to %s failed%s: %s",
-                             talker ? talker : "", result.rejected ? " (rejected)" : "", result.detail);
     return result;
 }
 

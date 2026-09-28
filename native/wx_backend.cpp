@@ -15,6 +15,7 @@
 namespace satori {
 namespace {
 constexpr size_t kOutgoingMax = 4000;
+constexpr size_t kImages = 4;
 
 // Holds the CPU (and, through the shared keeper, the Wi-Fi radio) for the duration of one
 // outbound mutation, mirroring satori-qq's WakeLockCtl.begin()/end(): WeChat's kernel can
@@ -91,54 +92,6 @@ Response BadRequest(const char *code, const char *detail) {
     return {400, body};
 }
 
-constexpr size_t kImages = 4;
-
-bool GifPath(const char *path) {
-    const size_t size = strlen(path);
-    return size > 4 && !strcasecmp(path + size - 4, ".gif");
-}
-
-// Escapes a value for an XML attribute: the Satori element we echo back is markup, so the
-// link has to survive a round trip through a client's own parser.
-bool EscapeAttribute(const char *text, char *out, size_t capacity) {
-    size_t used = 0;
-    for (const char *p = text; p && *p; ++p) {
-        const char *replacement = *p == '&' ? "&amp;" : *p == '<' ? "&lt;" : *p == '>' ? "&gt;" :
-                                   *p == '"' ? "&quot;" : nullptr;
-        const size_t n = replacement ? strlen(replacement) : 1;
-        if (n + 1 >= capacity - used) return false;
-        memcpy(out + used, replacement ? replacement : p, n);
-        used += n;
-    }
-    out[used] = 0;
-    return true;
-}
-
-// The Satori Message for a picture we just queued: same shape as SentMessage, but the
-// content is the element the client asked for rather than a flattened body.
-cJSON *SentMediaMessage(Store *store, const char *channel_id, const char *src, long long local_id) {
-    char escaped[2 * kImageSrcMax];
-    if (!EscapeAttribute(src, escaped, sizeof(escaped))) return nullptr;
-    char content[kImageSrcMax * 2 + 32];
-    snprintf(content, sizeof(content), "<img src=\"%s\"/>", escaped);
-    cJSON *message = cJSON_CreateObject();
-    cJSON *channel = cJSON_CreateObject();
-    cJSON *user = cJSON_CreateObject();
-    if (!message || !channel || !user) { cJSON_Delete(message); cJSON_Delete(channel); cJSON_Delete(user); return nullptr; }
-    cJSON_AddItemToObject(message, "channel", channel);
-    cJSON_AddItemToObject(message, "user", user);
-    char id[32];
-    snprintf(id, sizeof(id), "%lld", local_id);
-    cJSON_AddStringToObject(message, "id", id);
-    cJSON_AddStringToObject(message, "content", content);
-    cJSON_AddNumberToObject(message, "timestamp", static_cast<double>(time(nullptr)));
-    cJSON_AddNumberToObject(message, "created_at", static_cast<double>(time(nullptr)));
-    cJSON_AddStringToObject(channel, "id", channel_id);
-    cJSON_AddNumberToObject(channel, "type", strstr(channel_id, "@chatroom") ? 0 : 1);
-    cJSON_AddStringToObject(user, "id", StoreSelfId(store));
-    return message;
-}
-
 Response Call(void *, const Request &request) {
     const char *name = request.method->name;
     const OutboundHold hold(name && IsOutbound(name));
@@ -150,41 +103,29 @@ Response Call(void *, const Request &request) {
         const char *content = Text(request, "content");
         if (!*channel_id || !*content) return {400, nullptr};
         if (strlen(content) > kOutgoingMax) return {400, nullptr};
-        // WeChat carries text and pictures, nothing else. Flatten the Satori content for the
-        // text part first, or a reply or an @ would reach the chat as literal <quote>/<at>
-        // tags; the pictures become their own messages.
+        // WeChat carries plain text only through this adapter. Flatten the Satori content
+        // first, or a reply or an @ would reach the chat as literal <quote>/<at> tags.
+        // Anything that only carries an id (a photo, a file, a voice note) is not sendable
+        // here, so report that instead of sending tags or pretending it went out.
         char plain[kOutgoingMax + 1];
         PlainText(content, plain, sizeof(plain));
         char *tail = plain + strlen(plain);
         while (tail > plain && (tail[-1] == '\n' || tail[-1] == '\r' || tail[-1] == ' ' || tail[-1] == '\t')) --tail;
         *tail = 0;
-        char sources[kImages][kImageSrcMax];
-        const size_t images = ImageSources(content, sources, kImages);
-        if (!*plain && !images) return BadRequest("empty_content", "no text or image element to send");
-        // Resolve every picture to a local file before sending anything, so a link that is
-        // not one of our own uploads cannot leave a half-delivered message behind.
-        char paths[kImages][1200];
-        for (size_t i = 0; i < images; ++i)
-            if (!TempStoreResolveLink(sources[i], paths[i], sizeof(paths[i])))
-                return BadRequest("media_unavailable", sources[i]);
+        if (!*plain) {
+            char sources[kImages][kImageSrcMax];
+            if (ImageSources(content, sources, kImages))
+                return BadRequest("media_unsupported", "this adapter cannot send media elements");
+            return {400, nullptr};
+        }
+        SendResult sent = SendText(channel_id, plain);
+        if (!sent.ok) return Failure("send_failed", sent.detail, sent.rejected);
+        if (!store) return {503, nullptr};
+        cJSON *message = SentMessage(store, channel_id, plain, sent.local_id);
+        if (!message) return {500, nullptr};
         cJSON *list = cJSON_CreateArray();
-        if (!list) return {500, nullptr};
-        if (*plain) {
-            SendResult sent = SendText(channel_id, plain);
-            if (!sent.ok) { cJSON_Delete(list); return Failure("send_failed", sent.detail, sent.rejected); }
-            if (!store) { cJSON_Delete(list); return {503, nullptr}; }
-            cJSON *message = SentMessage(store, channel_id, plain, sent.local_id);
-            if (!message) { cJSON_Delete(list); return {500, nullptr}; }
-            cJSON_AddItemToArray(list, message);
-        }
-        for (size_t i = 0; i < images; ++i) {
-            SendResult sent = SendMedia(channel_id, paths[i], GifPath(paths[i]));
-            if (!sent.ok) { cJSON_Delete(list); return Failure("media_send_failed", sent.detail, sent.rejected); }
-            if (!store) { cJSON_Delete(list); return {503, nullptr}; }
-            cJSON *message = SentMediaMessage(store, channel_id, sources[i], sent.local_id);
-            if (!message) { cJSON_Delete(list); return {500, nullptr}; }
-            cJSON_AddItemToArray(list, message);
-        }
+        if (!list) { cJSON_Delete(message); return {500, nullptr}; }
+        cJSON_AddItemToArray(list, message);
         // Satori's `message.create` returns a Message[]; official clients call `.map()` on it.
         return {200, list};
     }
