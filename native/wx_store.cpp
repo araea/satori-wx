@@ -458,26 +458,33 @@ constexpr char kNameSeparator[] = "\xE3\x80\x81"; // U+3001, WeChat's member dis
 struct Chatroom {
     char *memberlist;
     char *displayname;
+    char *roomdata;
+    int roomdata_size;
     char roomowner[80];
 };
 
 void FreeChatroom(Chatroom *room) {
     free(room->memberlist);
     free(room->displayname);
+    free(room->roomdata);
     room->memberlist = nullptr;
     room->displayname = nullptr;
+    room->roomdata = nullptr;
+    room->roomdata_size = 0;
 }
 
 // Caller owns the copies inside *room and must call FreeChatroom. Locks internally.
 bool LoadChatroom(Store *store, const char *guild_id, Chatroom *room) {
     room->memberlist = nullptr;
     room->displayname = nullptr;
+    room->roomdata = nullptr;
+    room->roomdata_size = 0;
     room->roomowner[0] = 0;
     if (!store || !store->db || !SafeSql(guild_id)) return false;
     pthread_mutex_lock(&store->mutex);
     char sql[400];
     snprintf(sql, sizeof(sql),
-             "SELECT memberlist, displayname, roomowner FROM chatroom WHERE chatroomname = '%s' LIMIT 1", guild_id);
+             "SELECT memberlist, displayname, roomowner, roomdata FROM chatroom WHERE chatroomname = '%s' LIMIT 1", guild_id);
     struct Context { Chatroom *room; int found; };
     Context context{room, 0};
     WcdbRow row = [](Wcdb *db, void *stmt, void *raw) -> bool {
@@ -485,6 +492,8 @@ bool LoadChatroom(Store *store, const char *guild_id, Chatroom *room) {
         const char *members = WcdbText(db, stmt, 0);
         const char *names = WcdbText(db, stmt, 1);
         const char *owner = WcdbText(db, stmt, 2);
+        int blob_size = 0;
+        const void *blob = WcdbBlob(db, stmt, 3, &blob_size);
         if (members && *members) {
             const size_t size = strlen(members);
             ctx->room->memberlist = static_cast<char *>(malloc(size + 1));
@@ -494,6 +503,15 @@ bool LoadChatroom(Store *store, const char *guild_id, Chatroom *room) {
             const size_t size = strlen(names);
             ctx->room->displayname = static_cast<char *>(malloc(size + 1));
             if (ctx->room->displayname) memcpy(ctx->room->displayname, names, size + 1);
+        }
+        // The member flags live in this protobuf blob; keep a private copy because the
+        // statement is stepped again before the caller gets to read it.
+        if (blob && blob_size > 0) {
+            ctx->room->roomdata = static_cast<char *>(malloc(size_t(blob_size)));
+            if (ctx->room->roomdata) {
+                memcpy(ctx->room->roomdata, blob, size_t(blob_size));
+                ctx->room->roomdata_size = blob_size;
+            }
         }
         if (owner) snprintf(ctx->room->roomowner, sizeof(ctx->room->roomowner), "%s", owner);
         ctx->found = 1;
@@ -530,6 +548,95 @@ int SplitNames(char *names, const char **out, int max) {
         cursor = end + sizeof(kNameSeparator) - 1;
     }
     return count;
+}
+
+// ---- roomdata: the per-member flag bitfield -------------------------------------------
+// WeChat caches each chatroom member's flags in the `chatroom.roomdata` protobuf:
+//   ChatRoomData  { repeated ChatRoomMember member = 1; ... }
+//   ChatRoomMember{ string userName = 1; ... int32 flag = 3; ... }
+// Bit 2048 of `flag` is the group-admin bit the app itself tests. The blob is small and
+// fully local, so a tiny hand-rolled reader keeps this out of the (unreadable) app code.
+
+bool ProtoVarint(const unsigned char *bytes, size_t size, size_t *cursor, uint64_t *out) {
+    uint64_t value = 0;
+    int shift = 0;
+    while (*cursor < size) {
+        const unsigned char byte = bytes[(*cursor)++];
+        value |= static_cast<uint64_t>(byte & 0x7f) << shift;
+        if (!(byte & 0x80)) { *out = value; return true; }
+        shift += 7;
+        if (shift > 63) return false;
+    }
+    return false;
+}
+
+// Advances past a field of the given wire type. False on malformed or truncated input.
+bool ProtoSkip(const unsigned char *bytes, size_t size, size_t *cursor, unsigned wire) {
+    uint64_t length = 0;
+    switch (wire) {
+        case 0: return ProtoVarint(bytes, size, cursor, &length);
+        case 1: *cursor += 8; break;
+        case 2:
+            if (!ProtoVarint(bytes, size, cursor, &length) || *cursor > size ||
+                length > size - *cursor) return false;
+            *cursor += static_cast<size_t>(length);
+            break;
+        case 5: *cursor += 4; break;
+        default: return false;
+    }
+    return *cursor <= size;
+}
+
+// One ChatRoomMember: true when it is `user_id`; `admin` then reflects bit 2048.
+bool ProtoMember(const unsigned char *bytes, size_t size, const char *user_id, bool *admin) {
+    const char *name = nullptr;
+    size_t name_size = 0, cursor = 0;
+    uint64_t flags = 0;
+    bool has_flags = false;
+    while (cursor < size) {
+        uint64_t key = 0;
+        if (!ProtoVarint(bytes, size, &cursor, &key)) return false;
+        const unsigned field = static_cast<unsigned>(key >> 3), wire = static_cast<unsigned>(key & 7);
+        if (field == 1 && wire == 2) {
+            uint64_t length = 0;
+            if (!ProtoVarint(bytes, size, &cursor, &length) || length > size - cursor) return false;
+            name = reinterpret_cast<const char *>(bytes + cursor);
+            name_size = static_cast<size_t>(length);
+            cursor += name_size;
+        } else if (field == 3 && wire == 0) {
+            if (!ProtoVarint(bytes, size, &cursor, &flags)) return false;
+            has_flags = true;
+        } else if (!ProtoSkip(bytes, size, &cursor, wire)) {
+            return false;
+        }
+    }
+    if (!name || name_size != strlen(user_id) || memcmp(name, user_id, name_size)) return false;
+    *admin = has_flags && (flags & 2048) != 0;
+    return true;
+}
+
+// Whether `user_id` carries the admin bit in this roomdata blob. A member without an entry
+// (or without flags) is simply not an admin.
+bool RoomAdmin(const char *data, int size, const char *user_id) {
+    if (!data || size <= 0 || !user_id || !*user_id) return false;
+    const auto *bytes = reinterpret_cast<const unsigned char *>(data);
+    const size_t total = static_cast<size_t>(size);
+    size_t cursor = 0;
+    while (cursor < total) {
+        uint64_t key = 0;
+        if (!ProtoVarint(bytes, total, &cursor, &key)) return false;
+        const unsigned field = static_cast<unsigned>(key >> 3), wire = static_cast<unsigned>(key & 7);
+        if (field == 1 && wire == 2) {
+            uint64_t length = 0;
+            if (!ProtoVarint(bytes, total, &cursor, &length) || length > total - cursor) return false;
+            bool admin = false;
+            if (ProtoMember(bytes + cursor, static_cast<size_t>(length), user_id, &admin)) return admin;
+            cursor += static_cast<size_t>(length);
+        } else if (!ProtoSkip(bytes, total, &cursor, wire)) {
+            return false;
+        }
+    }
+    return false;
 }
 
 // A Satori User for a member id; falls back to {"id": ...} when rcontact has no row.
@@ -648,6 +755,8 @@ cJSON *StoreMemberRoleList(Store *store, const char *guild_id, const char *user_
     Chatroom room{};
     if (!LoadChatroom(store, guild_id, &room)) return nullptr;
     const bool owner = !strcmp(room.roomowner, user_id);
+    // Read the admin bit before splitting mutates the member list.
+    const bool admin = !owner && RoomAdmin(room.roomdata, room.roomdata_size, user_id);
     const char *ids[kMemberMax];
     const int total = SplitMembers(room.memberlist, ids, kMemberMax);
     bool present = false;
@@ -656,6 +765,7 @@ cJSON *StoreMemberRoleList(Store *store, const char *guild_id, const char *user_
     }
     FreeChatroom(&room);
     if (!present) return RoleList(nullptr, nullptr);
-    return owner ? RoleList("owner", "群主") : RoleList("member", "成员");
+    if (owner) return RoleList("owner", "群主");
+    return admin ? RoleList("admin", "管理员") : RoleList("member", "成员");
 }
 } // namespace satori

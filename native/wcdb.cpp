@@ -24,6 +24,8 @@ struct Wcdb {
     int (*column_count)(void *);
     const char *(*column_name)(void *, int);
     const char *(*column_text)(void *, int);
+    const void *(*column_blob)(void *, int);
+    int (*column_bytes)(void *, int);
     long long (*column_int64)(void *, int);
     int (*column_type)(void *, int);
     char error[256];
@@ -66,6 +68,8 @@ Wcdb *WcdbOpenEx(const char *library, const char *path, const void *key, int key
         !Resolve(db->library, "sqlite3_column_count", &db->column_count) ||
         !Resolve(db->library, "sqlite3_column_name", &db->column_name) ||
         !Resolve(db->library, "sqlite3_column_text", &db->column_text) ||
+        !Resolve(db->library, "sqlite3_column_blob", &db->column_blob) ||
+        !Resolve(db->library, "sqlite3_column_bytes", &db->column_bytes) ||
         !Resolve(db->library, "sqlite3_column_int64", &db->column_int64) ||
         !Resolve(db->library, "sqlite3_column_type", &db->column_type)) {
         Fail(db, "missing sqlite3 symbol");
@@ -147,6 +151,15 @@ const char *WcdbError(Wcdb *db) { return db ? db->error : "no database"; }
 int WcdbColumns(Wcdb *db, void *stmt) { return db && stmt ? db->column_count(stmt) : 0; }
 const char *WcdbName(Wcdb *db, void *stmt, int column) { return db && stmt ? db->column_name(stmt, column) : nullptr; }
 const char *WcdbText(Wcdb *db, void *stmt, int column) { return db && stmt ? db->column_text(stmt, column) : nullptr; }
+const void *WcdbBlob(Wcdb *db, void *stmt, int column, int *size) {
+    if (size) *size = 0;
+    if (!db || !stmt) return nullptr;
+    const void *data = db->column_blob(stmt, column);
+    const int bytes = db->column_bytes(stmt, column);
+    if (!data || bytes <= 0) return nullptr;
+    if (size) *size = bytes;
+    return data;
+}
 long long WcdbInt(Wcdb *db, void *stmt, int column) { return db && stmt ? db->column_int64(stmt, column) : 0; }
 bool WcdbIsNull(Wcdb *db, void *stmt, int column) { return !(db && stmt) || db->column_type(stmt, column) == 5 /* SQLITE_NULL */; }
 } // namespace satori

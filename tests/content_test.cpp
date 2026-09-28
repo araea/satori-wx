@@ -20,6 +20,21 @@ void Eq(const char *content, const char *expected, const char *what) {
         ++failures;
     }
 }
+
+// Collects ImageSources and compares the joined list against a '|'-separated expectation.
+void Img(const char *content, const char *expected, const char *what) {
+    char sources[4][satori::kImageSrcMax];
+    const size_t count = satori::ImageSources(content, sources, 4);
+    char joined[4 * satori::kImageSrcMax + 4] = {};
+    for (size_t i = 0; i < count; ++i) {
+        if (i) strcat(joined, "|");
+        strncat(joined, sources[i], sizeof(joined) - strlen(joined) - 1);
+    }
+    if (strcmp(joined, expected)) {
+        fprintf(stderr, "FAIL: %s\n  in:  %s\n  got: %s\n  want: %s\n", what, content, joined, expected);
+        ++failures;
+    }
+}
 }
 
 int main() {
@@ -53,6 +68,24 @@ int main() {
     Check(n == 3 && !strcmp(small, "abc"), "output is bounded and terminated");
     char one[1] = {'x'};
     Check(satori::PlainText("abc", one, sizeof(one)) == 0 && one[0] == 0, "capacity 1 yields empty");
+
+    // Image sources are collected in order for the media sender; only <img> counts, and an
+    // attribute's '>' must not be mistaken for the end of the tag.
+    Img("", "", "no images");
+    Img("纯文本", "", "text only");
+    Img("<img src=\"internal:wechat/u/_tmp/a.png\"/>", "internal:wechat/u/_tmp/a.png", "single image");
+    Img("<at id=\"1\"/><img src=\"a\"/><img src='b'/>看<img src=\"c\">",
+        "a|b|c", "several images, mixed quotes");
+    Img("<img src=\"x>y\"/>", "x>y", "quoted angle bracket");
+    Img("<img width=\"1\" src=\"z\"/>", "z", "src after another attribute");
+    Img("<img src=\"\"/>", "", "empty src drops");
+    Img("<img src=\"a\"", "", "unterminated tag drops");
+    Img("<image src=\"a\"/>", "", "only the img element counts");
+    {
+        char sources[4][satori::kImageSrcMax];
+        Check(satori::ImageSources("<img src=\"a\"/><img src=\"b\"/>", sources, 1) == 1 &&
+              !strcmp(sources[0], "a"), "max bounds the result");
+    }
 
     if (failures) { fprintf(stderr, "%d content test(s) failed\n", failures); return 1; }
     printf("content tests: PASS\n");

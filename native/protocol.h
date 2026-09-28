@@ -20,6 +20,11 @@ bool EscapeText(const char *text, char *out, size_t capacity);
 // turns <br/> into a newline, and drops elements it cannot carry (quote, at, emoji,
 // img, audio, video, file, forward...). Always NUL-terminates; returns bytes written.
 size_t PlainText(const char *content, char *out, size_t capacity);
+// Image element sources in a Satori `content` string, in order. Only <img> is collected:
+// its `src` is the one element WeChat can actually deliver from a local file. Copies are
+// NUL-terminated; returns how many were written (never more than `max`).
+constexpr size_t kImageSrcMax = 512;
+size_t ImageSources(const char *content, char (*out)[kImageSrcMax], size_t max);
 
 struct EventBus;
 EventBus *CreateBus();

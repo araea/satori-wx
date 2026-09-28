@@ -56,8 +56,13 @@ int main() {
     Check(satori::WcdbExec(writer, "INSERT INTO rcontact VALUES('wxid_friend','fri','好友备注','昵称',3,0)"), "insert friend");
     Check(satori::WcdbExec(writer, "INSERT INTO rcontact VALUES('123@chatroom','','群备注','群名',2,0)"), "insert group contact");
     Check(satori::WcdbExec(writer, "INSERT INTO rcontact VALUES('gh_abc','','','公众号',1,0)"), "insert service");
-    Check(satori::WcdbExec(writer, "CREATE TABLE chatroom(chatroomname TEXT PRIMARY KEY, memberlist TEXT, displayname TEXT, roomowner TEXT, memberCount INTEGER)"), "create chatroom");
-    Check(satori::WcdbExec(writer, "INSERT INTO chatroom VALUES('123@chatroom','wxid_abc;wxid_friend','甲、好友备注','wxid_abc',2)"), "insert chatroom");
+    Check(satori::WcdbExec(writer, "CREATE TABLE chatroom(chatroomname TEXT PRIMARY KEY, memberlist TEXT, displayname TEXT, roomowner TEXT, memberCount INTEGER, roomdata BLOB)"), "create chatroom");
+    // roomdata is WeChat's cached member protobuf: member{userName=1, flag=3}; bit 2048 is
+    // the group-admin bit. wxid_abc carries the plain member flag, wxid_friend is an admin.
+    Check(satori::WcdbExec(writer, "INSERT INTO chatroom VALUES('123@chatroom','wxid_abc;wxid_friend','甲、好友备注','wxid_abc',2,"
+                                    "X'0A0C0A08777869645F61626318010A100A0B777869645F667269656E64188110')"), "insert chatroom");
+    // A room whose cache has no roomdata at all still reports plain members.
+    Check(satori::WcdbExec(writer, "INSERT INTO chatroom VALUES('456@chatroom','wxid_plain',NULL,'wxid_owner2',1,NULL)"), "insert chatroom without roomdata");
     satori::WcdbClose(writer);
 
     satori::Store *store = satori::CreateStoreEx(library, path, nullptr, 0, 0, "self_wxid");
@@ -170,8 +175,12 @@ int main() {
     Check(owner_roles && !strcmp(Str(cJSON_GetArrayItem(Item(owner_roles, "data"), 0), "id"), "owner"), "owner role");
     cJSON_Delete(owner_roles);
     cJSON *member_roles = satori::StoreMemberRoleList(store, "123@chatroom", "wxid_friend");
-    Check(member_roles && !strcmp(Str(cJSON_GetArrayItem(Item(member_roles, "data"), 0), "id"), "member"), "member role");
+    Check(member_roles && !strcmp(Str(cJSON_GetArrayItem(Item(member_roles, "data"), 0), "id"), "admin"), "admin role from roomdata");
     cJSON_Delete(member_roles);
+    // Without a roomdata cache the admin bit is unknown, so the member stays a plain member.
+    cJSON *plain_roles = satori::StoreMemberRoleList(store, "456@chatroom", "wxid_plain");
+    Check(plain_roles && !strcmp(Str(cJSON_GetArrayItem(Item(plain_roles, "data"), 0), "id"), "member"), "plain member without roomdata");
+    cJSON_Delete(plain_roles);
     cJSON *none_roles = satori::StoreMemberRoleList(store, "123@chatroom", "nobody");
     Check(none_roles && cJSON_GetArraySize(Item(none_roles, "data")) == 0, "non-member has no roles");
     cJSON_Delete(none_roles);

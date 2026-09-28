@@ -226,6 +226,80 @@ size_t PlainText(const char *content, char *out, size_t capacity) {
     out[used] = 0;
     return used;
 }
+
+namespace {
+bool TagChar(char c) {
+    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+           (c >= '0' && c <= '9') || c == '-' || c == '_' || c == ':';
+}
+// Finds `name` inside a tag body [begin,end); writes its unquoted value into out.
+bool Attribute(const char *begin, const char *end, const char *name, char *out, size_t capacity) {
+    const size_t want = strlen(name);
+    const char *p = begin;
+    while (p < end) {
+        while (p < end && (*p == ' ' || *p == '\t' || *p == '/' || *p == '\n' || *p == '\r')) ++p;
+        const char *key = p;
+        while (p < end && TagChar(*p)) ++p;
+        const size_t key_size = static_cast<size_t>(p - key);
+        while (p < end && (*p == ' ' || *p == '\t')) ++p;
+        if (p >= end || *p != '=') {
+            while (p < end && *p != ' ' && *p != '\t') ++p;
+            continue;
+        }
+        ++p;
+        while (p < end && (*p == ' ' || *p == '\t')) ++p;
+        const char *value = p;
+        size_t value_size = 0;
+        if (p < end && (*p == '"' || *p == '\'')) {
+            const char delimiter = *p++;
+            value = p;
+            while (p < end && *p != delimiter) ++p;
+            value_size = static_cast<size_t>(p - value);
+            if (p < end) ++p;
+        } else {
+            while (p < end && *p != ' ' && *p != '\t' && *p != '/') ++p;
+            value_size = static_cast<size_t>(p - value);
+        }
+        if (key_size == want && !strncasecmp(key, name, want)) {
+            if (value_size >= capacity) value_size = capacity - 1;
+            memcpy(out, value, value_size);
+            out[value_size] = 0;
+            return true;
+        }
+    }
+    return false;
+}
+} // namespace
+
+size_t ImageSources(const char *content, char (*out)[kImageSrcMax], size_t max) {
+    if (!out || !max) return 0;
+    size_t count = 0;
+    for (const char *p = content ? content : ""; *p && count < max;) {
+        if (*p != '<') { ++p; continue; }
+        const char *q = p + 1;
+        char quote = 0;
+        for (; *q; ++q) {
+            if (quote) { if (*q == quote) quote = 0; continue; }
+            if (*q == '"' || *q == '\'') { quote = *q; continue; }
+            if (*q == '>') break;
+        }
+        if (!*q) break;  // Unterminated tag: nothing trustworthy follows.
+        const char *name = p + 1;
+        const bool closing = *name == '/';
+        if (closing) ++name;
+        const char *name_end = name;
+        while (name_end < q && TagChar(*name_end)) ++name_end;
+        if (!closing && name_end - name == 3 && !strncasecmp(name, "img", 3)) {
+            char source[kImageSrcMax];
+            if (Attribute(name_end, q, "src", source, sizeof(source)) && *source) {
+                memcpy(out[count], source, strlen(source) + 1);
+                ++count;
+            }
+        }
+        p = q + 1;
+    }
+    return count;
+}
 struct EventBus {
     pthread_mutex_t mutex;
     int fd;

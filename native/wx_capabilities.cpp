@@ -31,10 +31,14 @@ const char *const kWithSend[] = {
     "guild.member.role.unset",
 };
 // Standard methods WeChat has no concept for. Reported so clients can mark them unusable
-// instead of retrying: WeChat messages cannot be edited and carry no reactions, and groups
-// have no user-defined roles. message.delete is implemented, so it is not listed here.
+// instead of retrying: WeChat messages cannot be edited and carry no reactions, groups have
+// no user-defined roles and no sub-channels, and there is no server-side mute at all (only
+// the local "mute notifications" switch, which is not a moderation action). message.delete
+// is implemented, so it is not listed here.
 const char *const kUnsupported[] = {
     "message.update",
+    "channel.create", "channel.mute",
+    "guild.member.mute",
     "reaction.create", "reaction.delete", "reaction.clear", "reaction.list",
     "guild.role.create", "guild.role.update", "guild.role.delete",
 };

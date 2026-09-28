@@ -25,6 +25,12 @@ struct SendResult {
 };
 // Sends plain text to a talker (wxid or <id>@chatroom). Thread-safe; no rate limit.
 SendResult SendText(const char *talker, const char *content);
+// Sends a local image file to a talker through WeChat's own NetSceneSendMsg, the same route
+// the app takes when it forwards a picture: the scene is built with WeChat's media
+// constructor (message type 42, or 66 for a GIF), which inserts the row and hands the local
+// path to the image upload scene. `file` must be readable by WeChat's uid. Same opt-in
+// switch, same "accepted for dispatch" semantics as SendText.
+SendResult SendMedia(const char *talker, const char *file, bool gif);
 // Recalls one of our own messages by its local id (the id message.create returned, decimal
 // string). Uses WeChat's own NetSceneRevokeMsg scene. Refused for
 // messages the account did not send.
@@ -47,6 +53,7 @@ struct SendStatus {
     long long failed;      // reached the send pipeline but failed
     long long rejected;    // refused before dispatch (send disabled)
     long long recalled;    // revoke scenes accepted for dispatch
+    long long media;       // image scenes accepted for dispatch
     long long last_age_ms; // ms since the last attempt, or -1 when there was none
     bool last_ok;
     int last_net_id;

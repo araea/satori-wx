@@ -38,7 +38,9 @@ cJSON *StoreChannelList(Store *store, const char *guild_id, const char *next, in
 // `next` is a member offset. Satori GuildMember objects. Caller frees.
 cJSON *StoreGuildMemberList(Store *store, const char *guild_id, const char *next, int limit);
 cJSON *StoreGuildMemberGet(Store *store, const char *guild_id, const char *user_id);
-// Roles are synthetic: WeChat has no custom guild roles, so `owner` and `member` only.
+// Roles are synthetic: WeChat has no custom guild roles, so `owner`, `admin` and `member`
+// only. The admin bit comes from the chatroom's cached member flags (roomdata), so it tracks
+// guild.member.role.set/unset as soon as WeChat refreshes that row.
 cJSON *StoreGuildRoleList(Store *store, const char *guild_id);
 cJSON *StoreMemberRoleList(Store *store, const char *guild_id, const char *user_id);
 } // namespace satori

@@ -33,6 +33,9 @@ const char *WcdbError(Wcdb *db);
 int WcdbColumns(Wcdb *db, void *stmt);
 const char *WcdbName(Wcdb *db, void *stmt, int column);
 const char *WcdbText(Wcdb *db, void *stmt, int column);
+// Borrowed blob bytes for the current row; null when the column is NULL or empty. Valid
+// until the next step() over the same statement.
+const void *WcdbBlob(Wcdb *db, void *stmt, int column, int *size);
 long long WcdbInt(Wcdb *db, void *stmt, int column);
 bool WcdbIsNull(Wcdb *db, void *stmt, int column);
 } // namespace satori
