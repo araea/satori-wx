@@ -1,16 +1,24 @@
 #include "wx_store.h"
-#include "wcdb.h"
+#include "media.h"
 #include "protocol.h"
+#include "textbuf.h"
+#include "wcdb.h"
+#include "wx_message.h"
+#include "xml_lite.h"
+#include <fcntl.h>
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
 namespace satori {
 namespace {
 constexpr char kLibrary[] = "libWCDB.so";
-constexpr long long kPollLimit = 50;
-constexpr size_t kContentMax = 2000;
+constexpr int kPollLimit = 50;
+constexpr int kBatch = 100;
 constexpr int kListMax = 50;
 }
 
@@ -18,102 +26,13 @@ struct Store {
     Wcdb *db;
     char self_id[80];
     char error[256];
+    char account_dir[1100];  // <app>/MicroMsg/<hash>: where WeChat keeps this account's media
+    char app_dir[1100];      // <app>: the app's private data directory
+    long long skipped;       // rows the poller could not turn into an event (too large)
     pthread_mutex_t mutex;
 };
 
 namespace {
-// Group messages are stored as "<sender>:\n<text>"; private messages use the talker as sender.
-bool SplitGroupSender(const char *content, char *sender, size_t sender_size, const char **text) {
-    const char *marker = strstr(content, ":\n");
-    if (!marker || marker == content) return false;
-    const size_t length = static_cast<size_t>(marker - content);
-    if (length >= sender_size) return false;
-    for (size_t i = 0; i < length; ++i)
-        if (content[i] == ' ' || content[i] == '\n' || content[i] == '\r') return false;
-    memcpy(sender, content, length);
-    sender[length] = 0;
-    *text = marker + 2;
-    return true;
-}
-
-bool TextType(int type) { return type == 1 || type == 10000; }
-
-// Builds a Satori Message object: {id, content, timestamp, channel:{id,type}, user:{id}}.
-cJSON *MessageObject(const Store &store, const char *id, int is_send, long long create_time,
-                     const char *talker, const char *content) {
-    const bool group = talker && strstr(talker, "@chatroom") != nullptr;
-    char sender[80] = {};
-    const char *text = content ? content : "";
-    if (is_send) {
-        snprintf(sender, sizeof(sender), "%s", store.self_id);
-    } else if (!(group && SplitGroupSender(text, sender, sizeof(sender), &text))) {
-        snprintf(sender, sizeof(sender), "%s", talker ? talker : "");
-    }
-    char escaped[kContentMax + 64];
-    if (!EscapeText(text, escaped, sizeof(escaped))) snprintf(escaped, sizeof(escaped), "%s", text);
-    cJSON *message = cJSON_CreateObject();
-    cJSON *channel = cJSON_CreateObject();
-    cJSON *user = cJSON_CreateObject();
-    if (!message || !channel || !user) { cJSON_Delete(message); cJSON_Delete(channel); cJSON_Delete(user); return nullptr; }
-    cJSON_AddItemToObject(message, "channel", channel);
-    cJSON_AddItemToObject(message, "user", user);
-    cJSON_AddStringToObject(message, "id", id ? id : "");
-    cJSON_AddStringToObject(message, "content", escaped);
-    cJSON_AddNumberToObject(message, "timestamp", static_cast<double>(create_time));
-    cJSON_AddStringToObject(channel, "id", talker ? talker : "");
-    cJSON_AddNumberToObject(channel, "type", group ? 0 : 1);
-    cJSON_AddStringToObject(user, "id", sender[0] ? sender : (talker ? talker : ""));
-    return message;
-}
-
-cJSON *BuildEvent(const Store &store, const char *id, int is_send, long long create_time,
-                  const char *talker, const char *content, int login_sn) {
-    cJSON *message = MessageObject(store, id, is_send, create_time, talker, content);
-    if (!message) return nullptr;
-    cJSON *root = cJSON_CreateObject();
-    cJSON *login = cJSON_CreateObject();
-    if (!root || !login) { cJSON_Delete(root); cJSON_Delete(login); cJSON_Delete(message); return nullptr; }
-    cJSON_AddItemToObject(root, "login", login);
-    cJSON_AddNumberToObject(login, "sn", login_sn);
-    cJSON_AddStringToObject(root, "type", "message-created");
-    cJSON_AddItemToObject(root, "message", message);
-    cJSON *channel = cJSON_GetObjectItemCaseSensitive(message, "channel");
-    cJSON *user = cJSON_GetObjectItemCaseSensitive(message, "user");
-    if (!cJSON_AddItemToObject(root, "channel", cJSON_Duplicate(channel, true)) ||
-        !cJSON_AddItemToObject(root, "user", cJSON_Duplicate(user, true))) {
-        cJSON_Delete(root);
-        return nullptr;
-    }
-    cJSON_AddNumberToObject(root, "timestamp", static_cast<double>(create_time));
-    return root;
-}
-
-struct PollContext {
-    const Store *store;
-    int login_sn;
-    bool (*emit)(void *context, const char *event);
-    void *sink;
-};
-
-bool MessageRow(Wcdb *db, void *stmt, void *context) {
-    auto *poll = static_cast<PollContext *>(context);
-    const char *id = WcdbText(db, stmt, 1);
-    const int type = static_cast<int>(WcdbInt(db, stmt, 2));
-    const int is_send = static_cast<int>(WcdbInt(db, stmt, 3));
-    const long long create_time = WcdbInt(db, stmt, 4);
-    const char *talker = WcdbText(db, stmt, 5);
-    const char *content = WcdbText(db, stmt, 6);
-    if (!TextType(type)) return true; // media is skipped, not faked
-    cJSON *event = BuildEvent(*poll->store, id, is_send, create_time, talker, content, poll->login_sn);
-    if (!event) return true;
-    char *text = cJSON_PrintUnformatted(event);
-    cJSON_Delete(event);
-    if (!text) return false;
-    const bool ok = poll->emit(poll->sink, text);
-    free(text);
-    return ok;
-}
-
 bool WatermarkRow(Wcdb *db, void *stmt, void *context) {
     *static_cast<long long *>(context) = WcdbIsNull(db, stmt, 0) ? -1 : WcdbInt(db, stmt, 0);
     return false;
@@ -123,31 +42,6 @@ long long WatermarkLocked(Store *store) {
     long long watermark = -1;
     if (!WcdbQuery(store->db, "SELECT max(rowid) FROM message", WatermarkRow, &watermark)) return -1;
     return watermark;
-}
-
-struct ListContext {
-    const Store *store;
-    cJSON *data;
-    long long cursor;
-    long long rowids[kListMax + 1];
-    int rows;
-    int messages;
-    int limit;
-};
-
-bool ListRow(Wcdb *db, void *stmt, void *context) {
-    auto *list = static_cast<ListContext *>(context);
-    const long long rowid = WcdbInt(db, stmt, 0);
-    const char *id = WcdbText(db, stmt, 1);
-    const int is_send = static_cast<int>(WcdbInt(db, stmt, 3));
-    const long long create_time = WcdbInt(db, stmt, 4);
-    const char *talker = WcdbText(db, stmt, 5);
-    const char *content = WcdbText(db, stmt, 6);
-    if (list->rows < list->limit + 1) list->rowids[list->rows] = rowid;
-    cJSON *message = MessageObject(*list->store, id, is_send, create_time, talker, content);
-    if (message) { cJSON_AddItemToArray(list->data, message); ++list->messages; }
-    ++list->rows;
-    return list->rows <= list->limit;
 }
 
 bool SafeSql(const char *text) { return text && *text && !strchr(text, '\'') && !strchr(text, '\\') && !strchr(text, '"'); }
@@ -170,6 +64,13 @@ Store *CreateStoreEx(const char *library, const char *path, const void *key, int
         return nullptr;
     }
     if (self_id) snprintf(store->self_id, sizeof(store->self_id), "%s", self_id);
+    // <app>/MicroMsg/<hash>/EnMicroMsg.db -> its directory, and the app directory above MicroMsg.
+    const char *slash = strrchr(path, '/');
+    if (slash && static_cast<size_t>(slash - path) < sizeof(store->account_dir)) {
+        snprintf(store->account_dir, sizeof(store->account_dir), "%.*s", static_cast<int>(slash - path), path);
+        const char *marker = strstr(store->account_dir, "/MicroMsg/");
+        if (marker) snprintf(store->app_dir, sizeof(store->app_dir), "%.*s", static_cast<int>(marker - store->account_dir), store->account_dir);
+    }
     WcdbExec(store->db, "PRAGMA query_only = 1");
     return store;
 }
@@ -193,88 +94,41 @@ long long StoreWatermark(Store *store) {
     return watermark;
 }
 
-long long StorePoll(Store *store, long long since, int login_sn, bool (*emit)(void *context, const char *event), void *context) {
-    if (!store || !store->db || !emit) return since;
-    pthread_mutex_lock(&store->mutex);
-    char sql[160];
-    snprintf(sql, sizeof(sql),
-             "SELECT rowid, msgId, type, isSend, createTime, talker, content FROM message "
-             "WHERE rowid > %lld ORDER BY rowid ASC LIMIT %lld", since, kPollLimit);
-    PollContext poll{store, login_sn, emit, context};
-    WcdbQuery(store->db, sql, MessageRow, &poll);
-    const long long watermark = WatermarkLocked(store);
-    pthread_mutex_unlock(&store->mutex);
-    return watermark > since ? watermark : since;
-}
-
-cJSON *StoreMessageList(Store *store, const char *channel_id, const char *next, int limit) {
-    if (!store || !store->db || !SafeSql(channel_id)) return nullptr;
-    if (limit < 1) limit = 20;
-    if (limit > kListMax) limit = kListMax;
-    long long cursor = -1;
-    if (next && *next) {
-        char *end = nullptr;
-        cursor = strtoll(next, &end, 10);
-        if (!end || *end || cursor < 0) return nullptr;
-    }
-    pthread_mutex_lock(&store->mutex);
-    char sql[512];
-    if (cursor > 0)
-        snprintf(sql, sizeof(sql),
-                 "SELECT rowid, msgId, type, isSend, createTime, talker, content FROM message "
-                 "WHERE talker = '%s' AND type IN (1,10000) AND rowid < %lld ORDER BY rowid DESC LIMIT %d",
-                 channel_id, cursor, limit + 1);
-    else
-        snprintf(sql, sizeof(sql),
-                 "SELECT rowid, msgId, type, isSend, createTime, talker, content FROM message "
-                 "WHERE talker = '%s' AND type IN (1,10000) ORDER BY rowid DESC LIMIT %d", channel_id, limit + 1);
-    cJSON *result = cJSON_CreateObject();
-    cJSON *data = cJSON_CreateArray();
-    if (!result || !data) { cJSON_Delete(result); cJSON_Delete(data); pthread_mutex_unlock(&store->mutex); return nullptr; }
-    cJSON_AddItemToObject(result, "data", data);
-    ListContext list{store, data, 0, {}, 0, 0, limit};
-    // The +1 row is fetched only to know whether another page exists.
-    const bool ok = WcdbQuery(store->db, sql, ListRow, &list);
-    if (ok && list.messages > limit) {
-        cJSON_DeleteItemFromArray(data, list.messages - 1);
-        char buffer[32];
-        snprintf(buffer, sizeof(buffer), "%lld", list.rowids[limit - 1]);
-        cJSON_AddStringToObject(result, "next", buffer);
-    }
-    pthread_mutex_unlock(&store->mutex);
-    return result;
-}
-
-cJSON *StoreMessageGet(Store *store, const char *channel_id, const char *message_id) {
-    if (!store || !store->db || !SafeSql(channel_id) || !SafeSql(message_id)) return nullptr;
-    pthread_mutex_lock(&store->mutex);
-    char sql[512];
-    snprintf(sql, sizeof(sql),
-             "SELECT rowid, msgId, type, isSend, createTime, talker, content FROM message "
-             "WHERE talker = '%s' AND msgId = '%s' LIMIT 1", channel_id, message_id);
-    struct Context { const Store *store; cJSON *message; };
-    Context context{store, nullptr};
-    WcdbRow row = [](Wcdb *db, void *stmt, void *raw) -> bool {
-        auto *ctx = static_cast<Context *>(raw);
-        const int type = static_cast<int>(WcdbInt(db, stmt, 2));
-        if (!TextType(type)) return false;
-        ctx->message = MessageObject(*ctx->store, WcdbText(db, stmt, 1), static_cast<int>(WcdbInt(db, stmt, 3)),
-                                     WcdbInt(db, stmt, 4), WcdbText(db, stmt, 5), WcdbText(db, stmt, 6));
-        return false;
-    };
-    WcdbQuery(store->db, sql, row, &context);
-    pthread_mutex_unlock(&store->mutex);
-    return context.message;
-}
-
 namespace {
-cJSON *UserObject(const char *username, const char *alias, const char *remark, const char *nickname) {
+// The public head-image URL WeChat cached for a contact (`img_flag`: reserved2 is the large
+// picture, reserved1 the small one). Caller holds the store lock. False when there is none, or
+// when the table does not exist: an avatar is never worth failing a lookup over.
+struct AvatarContext { char *out; size_t capacity; bool found; };
+bool AvatarRow(Wcdb *db, void *stmt, void *context) {
+    auto *avatar = static_cast<AvatarContext *>(context);
+    for (int column = 0; column < 2; ++column) {
+        const char *url = WcdbText(db, stmt, column);
+        if (url && (!strncmp(url, "http://", 7) || !strncmp(url, "https://", 8)) && strlen(url) < avatar->capacity) {
+            memcpy(avatar->out, url, strlen(url) + 1);
+            avatar->found = true;
+            break;
+        }
+    }
+    return false;
+}
+bool AvatarLocked(Store *store, const char *username, char *out, size_t capacity) {
+    out[0] = 0;
+    if (!SafeSql(username)) return false;
+    char sql[300];
+    snprintf(sql, sizeof(sql), "SELECT reserved2, reserved1 FROM img_flag WHERE username = '%s' LIMIT 1", username);
+    AvatarContext context{out, capacity, false};
+    WcdbQuery(store->db, sql, AvatarRow, &context);
+    return context.found;
+}
+
+cJSON *UserObject(const char *username, const char *alias, const char *remark, const char *nickname, const char *avatar = nullptr) {
     cJSON *user = cJSON_CreateObject();
     if (!user) return nullptr;
     cJSON_AddStringToObject(user, "id", username ? username : "");
     const char *name = (remark && *remark) ? remark : alias;
     if (name && *name) cJSON_AddStringToObject(user, "name", name);
     if (nickname && *nickname) cJSON_AddStringToObject(user, "nick", nickname);
+    if (avatar && *avatar) cJSON_AddStringToObject(user, "avatar", avatar);
     return user;
 }
 
@@ -286,6 +140,7 @@ const char *ContactName(const char *alias, const char *remark, const char *nickn
 
 // kind: 1 = friend List<Friend>, 0 = guild, 2 = channel.
 struct ContactContext {
+    Store *store;
     cJSON *data;
     long long rowids[64];
     int rows;
@@ -302,7 +157,9 @@ bool ContactRow(Wcdb *db, void *stmt, void *context) {
     if (list->rows < list->limit + 1) list->rowids[list->rows] = WcdbInt(db, stmt, 4);
     if (list->kind == 1) {
         cJSON *entry = cJSON_CreateObject();
-        cJSON *user = UserObject(username, alias, remark, nickname);
+        char avatar[512];
+        AvatarLocked(list->store, username, avatar, sizeof(avatar));
+        cJSON *user = UserObject(username, alias, remark, nickname, avatar);
         if (entry && user) {
             cJSON_AddItemToObject(entry, "user", user);
             if (nickname && *nickname) cJSON_AddStringToObject(entry, "nick", nickname);
@@ -330,7 +187,7 @@ cJSON *ContactList(Store *store, const char *sql, int kind, int limit) {
     cJSON_AddItemToObject(result, "data", data);
     if (limit < 1) limit = 50;
     if (limit > 60) limit = 60;
-    ContactContext list{data, {}, 0, limit, kind};
+    ContactContext list{store, data, {}, 0, limit, kind};
     const bool ok = WcdbQuery(store->db, sql, ContactRow, &list);
     if (ok && list.rows > limit) {
         const int index = cJSON_GetArraySize(data);
@@ -342,7 +199,7 @@ cJSON *ContactList(Store *store, const char *sql, int kind, int limit) {
     return result;
 }
 
-struct OneContext { cJSON *object; int kind; };
+struct OneContext { Store *store; cJSON *object; int kind; };
 
 bool OneRow(Wcdb *db, void *stmt, void *context) {
     auto *one = static_cast<OneContext *>(context);
@@ -351,7 +208,9 @@ bool OneRow(Wcdb *db, void *stmt, void *context) {
     const char *remark = WcdbText(db, stmt, 2);
     const char *nickname = WcdbText(db, stmt, 3);
     if (one->kind == 1) {
-        one->object = UserObject(username, alias, remark, nickname);
+        char avatar[512];
+        AvatarLocked(one->store, username, avatar, sizeof(avatar));
+        one->object = UserObject(username, alias, remark, nickname, avatar);
     } else {
         cJSON *object = cJSON_CreateObject();
         if (object) {
@@ -371,7 +230,7 @@ cJSON *OneContact(Store *store, const char *id, int kind) {
     pthread_mutex_lock(&store->mutex);
     char sql[400];
     snprintf(sql, sizeof(sql), "SELECT username, alias, conRemark, nickname FROM rcontact WHERE username = '%s' LIMIT 1", id);
-    OneContext context{nullptr, kind};
+    OneContext context{store, nullptr, kind};
     WcdbQuery(store->db, sql, OneRow, &context);
     pthread_mutex_unlock(&store->mutex);
     return context.object;
@@ -410,7 +269,7 @@ cJSON *StoreFriendList(Store *store, const char *next, int limit) {
     if (cursor > 0)
         snprintf(sql, sizeof(sql), "SELECT username, alias, conRemark, nickname, rowid FROM rcontact "
                  "WHERE type = 3 AND deleteFlag = 0 AND username NOT LIKE '%%@chatroom' AND username NOT LIKE 'gh_%%' "
-                 "AND username != '%s' AND rowid < %lld ORDER BY rowid LIMIT %d", store->self_id, cursor, limit + 1);
+                 "AND username != '%s' AND rowid > %lld ORDER BY rowid LIMIT %d", store->self_id, cursor, limit + 1);
     else
         snprintf(sql, sizeof(sql), "SELECT username, alias, conRemark, nickname, rowid FROM rcontact "
                  "WHERE type = 3 AND deleteFlag = 0 AND username NOT LIKE '%%@chatroom' AND username NOT LIKE 'gh_%%' "
@@ -428,7 +287,7 @@ cJSON *StoreGuildList(Store *store, const char *next, int limit) {
     char sql[640];
     if (cursor > 0)
         snprintf(sql, sizeof(sql), "SELECT username, alias, conRemark, nickname, rowid FROM rcontact "
-                 "WHERE username LIKE '%%@chatroom' AND deleteFlag = 0 AND rowid < %lld ORDER BY rowid LIMIT %d", cursor, limit + 1);
+                 "WHERE username LIKE '%%@chatroom' AND deleteFlag = 0 AND rowid > %lld ORDER BY rowid LIMIT %d", cursor, limit + 1);
     else
         snprintf(sql, sizeof(sql), "SELECT username, alias, conRemark, nickname, rowid FROM rcontact "
                  "WHERE username LIKE '%%@chatroom' AND deleteFlag = 0 ORDER BY rowid LIMIT %d", limit + 1);
@@ -767,5 +626,604 @@ cJSON *StoreMemberRoleList(Store *store, const char *guild_id, const char *user_
     if (!present) return RoleList(nullptr, nullptr);
     if (owner) return RoleList("owner", "群主");
     return admin ? RoleList("admin", "管理员") : RoleList("member", "成员");
+}
+} // namespace satori
+
+// ==== messages ===============================================================================
+// Rows are copied out of the statement (under the store lock) and only then decoded, because
+// building a Satori message needs more lookups (contact, group member, quoted message) and the
+// lock is not recursive. Nothing below may be called with the lock held.
+namespace satori {
+namespace {
+constexpr char kRowColumns[] = "rowid, msgId, msgSvrId, type, isSend, createTime, talker, content, imgPath, lvbuffer";
+
+struct Row {
+    long long rowid, id, svr_id, create_time;
+    int type, is_send;
+    char *talker, *content, *img_path, *msg_source;
+};
+
+void FreeRow(Row &row) {
+    free(row.talker); free(row.content); free(row.img_path); free(row.msg_source);
+    row = Row{};
+}
+
+char *Dup(const char *text) { return strdup(text ? text : ""); }
+
+// The <msgsource> XML WeChat keeps in `lvbuffer`, behind a few bytes of binary header.
+char *ExtractMsgSource(const void *blob, int size) {
+    if (!blob || size <= 0) return nullptr;
+    const char *begin = static_cast<const char *>(memmem(blob, static_cast<size_t>(size), "<msgsource>", 11));
+    if (!begin) return nullptr;
+    const char *end_of_blob = static_cast<const char *>(blob) + size;
+    const char *stop = static_cast<const char *>(memmem(begin, static_cast<size_t>(end_of_blob - begin), "</msgsource>", 12));
+    if (!stop) return nullptr;
+    stop += 12;
+    char *copy = static_cast<char *>(malloc(static_cast<size_t>(stop - begin) + 1));
+    if (!copy) return nullptr;
+    memcpy(copy, begin, static_cast<size_t>(stop - begin));
+    copy[stop - begin] = 0;
+    return copy;
+}
+
+struct RowSink { Row *rows; int count, max; };
+
+bool CopyRow(Wcdb *db, void *stmt, void *context) {
+    auto *sink = static_cast<RowSink *>(context);
+    if (sink->count >= sink->max) return false;
+    Row &row = sink->rows[sink->count];
+    row = Row{};
+    row.rowid = WcdbInt(db, stmt, 0);
+    row.id = WcdbInt(db, stmt, 1);
+    row.svr_id = WcdbInt(db, stmt, 2);
+    row.type = static_cast<int>(WcdbInt(db, stmt, 3));
+    row.is_send = static_cast<int>(WcdbInt(db, stmt, 4));
+    row.create_time = WcdbInt(db, stmt, 5);
+    row.talker = Dup(WcdbText(db, stmt, 6));
+    row.content = Dup(WcdbText(db, stmt, 7));
+    row.img_path = Dup(WcdbText(db, stmt, 8));
+    int size = 0;
+    const void *blob = WcdbBlob(db, stmt, 9, &size);
+    row.msg_source = ExtractMsgSource(blob, size);
+    ++sink->count;
+    return true;
+}
+
+// Copies up to `max` rows of `sql` (which must select kRowColumns). False on a query error, in
+// which case the caller must not treat the (possibly empty) result as "nothing there".
+bool FetchRows(Store *store, const char *sql, Row *rows, int max, int *count) {
+    RowSink sink{rows, 0, max};
+    pthread_mutex_lock(&store->mutex);
+    const bool ok = WcdbQuery(store->db, sql, CopyRow, &sink);
+    pthread_mutex_unlock(&store->mutex);
+    *count = sink.count;
+    return ok;
+}
+
+MessageRow View(const Row &row) {
+    MessageRow view;
+    view.id = row.id; view.svr_id = row.svr_id; view.type = row.type; view.is_send = row.is_send;
+    view.create_time = row.create_time;
+    view.talker = row.talker ? row.talker : "";
+    view.content = row.content ? row.content : "";
+    view.img_path = row.img_path ? row.img_path : "";
+    view.msg_source = row.msg_source ? row.msg_source : "";
+    return view;
+}
+
+// The local id of the message a reply quotes. WeChat records the pair in `MsgQuote`, but the
+// row may land a moment after the message itself, so fall back to the quoted server id from
+// the reply's own XML.
+struct QuoteIds { long long local, server; };
+bool QuoteRow(Wcdb *db, void *stmt, void *context) {
+    auto *ids = static_cast<QuoteIds *>(context);
+    ids->local = WcdbInt(db, stmt, 0);
+    ids->server = WcdbInt(db, stmt, 1);
+    return false;
+}
+bool LocalIdRow(Wcdb *db, void *stmt, void *context) {
+    *static_cast<long long *>(context) = WcdbInt(db, stmt, 0);
+    return false;
+}
+bool FindQuotedId(Store *store, long long reply_id, const char *server_id, char *out, size_t capacity) {
+    out[0] = 0;
+    QuoteIds ids{0, 0};
+    char sql[200];
+    pthread_mutex_lock(&store->mutex);
+    snprintf(sql, sizeof(sql), "SELECT quotedMsgId, quotedMsgSvrId FROM MsgQuote WHERE msgId = %lld LIMIT 1", reply_id);
+    WcdbQuery(store->db, sql, QuoteRow, &ids);
+    long long server = ids.server > 0 ? ids.server : (server_id && *server_id ? atoll(server_id) : 0);
+    long long local = ids.local;
+    if (local <= 0 && server > 0) {
+        snprintf(sql, sizeof(sql), "SELECT msgId FROM message WHERE msgSvrId = %lld LIMIT 1", server);
+        WcdbQuery(store->db, sql, LocalIdRow, &local);
+    }
+    pthread_mutex_unlock(&store->mutex);
+    if (local <= 0) return false;
+    snprintf(out, capacity, "%lld", local);
+    return true;
+}
+
+struct Parts { cJSON *channel = nullptr, *guild = nullptr, *user = nullptr, *member = nullptr; };
+void FreeParts(Parts &parts) {
+    cJSON_Delete(parts.channel); cJSON_Delete(parts.guild); cJSON_Delete(parts.user); cJSON_Delete(parts.member);
+    parts = Parts{};
+}
+
+// Who wrote the row, and where. Group senders come with their in-group nickname.
+void BuildParts(Store *store, const Row &row, const Decoded &decoded, Parts *parts) {
+    const char *talker = row.talker ? row.talker : "";
+    const bool group = strstr(talker, "@chatroom") != nullptr;
+    char sender[96];
+    if (row.is_send && store->self_id[0]) snprintf(sender, sizeof(sender), "%s", store->self_id);
+    else if (decoded.sender[0]) snprintf(sender, sizeof(sender), "%s", decoded.sender);
+    else snprintf(sender, sizeof(sender), "%s", talker);
+    if (group) {
+        cJSON *member = StoreGuildMemberGet(store, talker, sender);
+        if (member) {
+            parts->user = cJSON_DetachItemFromObjectCaseSensitive(member, "user");
+            parts->member = member;
+        }
+        parts->guild = OneContact(store, talker, 0);
+        if (!parts->guild) {
+            parts->guild = cJSON_CreateObject();
+            if (parts->guild) cJSON_AddStringToObject(parts->guild, "id", talker);
+        }
+    }
+    if (!parts->user) parts->user = MemberUser(store, sender);
+    parts->channel = cJSON_CreateObject();
+    if (parts->channel) {
+        cJSON_AddStringToObject(parts->channel, "id", talker);
+        cJSON_AddNumberToObject(parts->channel, "type", group ? 0 : 1);
+        const cJSON *name = parts->guild ? cJSON_GetObjectItemCaseSensitive(parts->guild, "name") : nullptr;
+        if (cJSON_IsString(name) && *name->valuestring) cJSON_AddStringToObject(parts->channel, "name", name->valuestring);
+    }
+}
+
+// A reply's `<quote>` element and `message.quote`. With the quoted message's local id the
+// element is a bare reference (what Satori clients resolve); without one it carries the
+// quoted text itself so the reply still reads.
+char *ComposeContent(Store *store, const Row &row, const Decoded &decoded, cJSON **quote) {
+    *quote = nullptr;
+    if (decoded.kind != MsgKind::Quote) return strdup(decoded.content ? decoded.content : "");
+    char quoted_id[24];
+    const bool known = FindQuotedId(store, row.id, decoded.refer_svr_id, quoted_id, sizeof(quoted_id));
+    TextBuf escaped;
+    escaped.Text(decoded.refer_text ? decoded.refer_text : "");
+    TextBuf out;
+    if (known) {
+        out.Append("<quote id=\""); out.Attr(quoted_id); out.Append("\"/>");
+    } else {
+        out.Append("<quote>");
+        if (decoded.refer_user[0]) {
+            out.Append("<author user-id=\""); out.Attr(decoded.refer_user); out.Append("\"");
+            if (decoded.refer_name[0]) { out.Append(" nickname=\""); out.Attr(decoded.refer_name); out.Append("\""); }
+            out.Append("/>");
+        }
+        if (escaped.data) out.Append(escaped.data, escaped.size);
+        out.Append("</quote>");
+    }
+    out.Append(decoded.content ? decoded.content : "");
+    cJSON *object = cJSON_CreateObject();
+    if (object) {
+        if (known) cJSON_AddStringToObject(object, "id", quoted_id);
+        cJSON_AddStringToObject(object, "content", escaped.data ? escaped.data : "");
+        if (decoded.refer_user[0]) {
+            cJSON *user = cJSON_CreateObject();
+            if (user) {
+                cJSON_AddStringToObject(user, "id", decoded.refer_user);
+                if (decoded.refer_name[0]) cJSON_AddStringToObject(user, "name", decoded.refer_name);
+                cJSON_AddItemToObject(object, "user", user);
+            }
+        }
+        *quote = object;
+    }
+    return out.Take();
+}
+
+// The Satori Message for a decoded, deliverable row. `keep`, when given, receives the channel /
+// guild / user / member the event wrapper needs (ownership moves to the caller); otherwise they
+// are discarded.
+cJSON *BuildMessage(Store *store, const Row &row, const Decoded &decoded, Parts *keep) {
+    Parts parts;
+    BuildParts(store, row, decoded, &parts);
+    cJSON *quote = nullptr;
+    char *content = ComposeContent(store, row, decoded, &quote);
+    cJSON *message = cJSON_CreateObject();
+    if (!message || !content || !parts.channel || !parts.user) {
+        cJSON_Delete(message); cJSON_Delete(quote); free(content); FreeParts(parts);
+        return nullptr;
+    }
+    char id[24];
+    snprintf(id, sizeof(id), "%lld", row.id);
+    cJSON_AddStringToObject(message, "id", id);
+    cJSON_AddStringToObject(message, "content", content);
+    cJSON_AddNumberToObject(message, "timestamp", static_cast<double>(row.create_time));
+    free(content);
+    cJSON_AddItemToObject(message, "channel", cJSON_Duplicate(parts.channel, true));
+    cJSON_AddItemToObject(message, "user", cJSON_Duplicate(parts.user, true));
+    if (parts.guild) cJSON_AddItemToObject(message, "guild", cJSON_Duplicate(parts.guild, true));
+    if (parts.member) cJSON_AddItemToObject(message, "member", cJSON_Duplicate(parts.member, true));
+    if (quote) cJSON_AddItemToObject(message, "quote", quote);
+    if (keep) *keep = parts; else FreeParts(parts);
+    return message;
+}
+
+// The event wrapper Satori wants around a message: the same resources, promoted to the top.
+char *MessageEventJson(int login_sn, const char *type, cJSON *message, Parts &parts, double timestamp) {
+    cJSON *root = cJSON_CreateObject();
+    cJSON *login = cJSON_CreateObject();
+    if (!root || !login) { cJSON_Delete(root); cJSON_Delete(login); return nullptr; }
+    cJSON_AddNumberToObject(login, "sn", login_sn);
+    cJSON_AddItemToObject(root, "login", login);
+    cJSON_AddStringToObject(root, "type", type);
+    cJSON_AddNumberToObject(root, "timestamp", timestamp);
+    if (parts.channel) { cJSON_AddItemToObject(root, "channel", parts.channel); parts.channel = nullptr; }
+    if (parts.guild) { cJSON_AddItemToObject(root, "guild", parts.guild); parts.guild = nullptr; }
+    if (parts.user) { cJSON_AddItemToObject(root, "user", parts.user); parts.user = nullptr; }
+    if (parts.member) { cJSON_AddItemToObject(root, "member", parts.member); parts.member = nullptr; }
+    cJSON_AddItemToObject(root, "message", message);
+    char *text = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+    return text;
+}
+
+bool AllDigits(const char *text) {
+    if (!text || !*text) return false;
+    for (const char *p = text; *p; ++p) if (*p < '0' || *p > '9') return false;
+    return strlen(text) < 19;
+}
+
+// Rows of a channel that can be chat messages at all; the decoder makes the final call.
+constexpr char kNotSystem[] = "(type & 65535) NOT IN (10000, 10002)";
+
+struct Page {
+    cJSON *messages[kListMax + 1];
+    long long rowids[kListMax + 1];
+    int count = 0;
+};
+
+void FreePage(Page &page) {
+    for (int i = 0; i < page.count; ++i) cJSON_Delete(page.messages[i]);
+    page.count = 0;
+}
+
+// Walks away from `bound` and gathers up to `want` deliverable messages (system rows and
+// bookkeeping do not count, so a page is never short just because a tip sat in the way).
+bool CollectPage(Store *store, const char *channel, bool ascending, bool bounded, long long bound, int want, Page *page) {
+    long long cursor = bound;
+    bool has_bound = bounded;
+    Row rows[kBatch];
+    while (page->count < want) {
+        char sql[700];
+        char condition[64] = "";
+        if (has_bound) snprintf(condition, sizeof(condition), " AND rowid %s %lld", ascending ? ">" : "<", cursor);
+        snprintf(sql, sizeof(sql), "SELECT %s FROM message WHERE talker = '%s' AND %s%s ORDER BY rowid %s LIMIT %d",
+                 kRowColumns, channel, kNotSystem, condition, ascending ? "ASC" : "DESC", kBatch);
+        int count = 0;
+        const bool ok = FetchRows(store, sql, rows, kBatch, &count);
+        for (int i = 0; i < count; ++i) {
+            if (page->count < want) {
+                Decoded decoded;
+                DecodeMessage(View(rows[i]), store->self_id, &decoded);
+                if (decoded.deliver) {
+                    cJSON *message = BuildMessage(store, rows[i], decoded, nullptr);
+                    if (message) { page->messages[page->count] = message; page->rowids[page->count] = rows[i].rowid; ++page->count; }
+                }
+            }
+            cursor = rows[i].rowid;
+            FreeRow(rows[i]);
+        }
+        if (!ok) return false;
+        has_bound = true;
+        if (count < kBatch) break;
+    }
+    return true;
+}
+
+bool ExistsRow(Wcdb *, void *, void *context) { *static_cast<bool *>(context) = true; return false; }
+// Whether the channel has a chat row beyond `rowid` in the given direction.
+bool HasBeyond(Store *store, const char *channel, long long rowid, bool after) {
+    char sql[400];
+    snprintf(sql, sizeof(sql), "SELECT 1 FROM message WHERE talker = '%s' AND %s AND rowid %s %lld LIMIT 1",
+             channel, kNotSystem, after ? ">" : "<", rowid);
+    bool found = false;
+    pthread_mutex_lock(&store->mutex);
+    WcdbQuery(store->db, sql, ExistsRow, &found);
+    pthread_mutex_unlock(&store->mutex);
+    return found;
+}
+
+void ReversePage(Page &page) {
+    for (int i = 0, j = page.count - 1; i < j; ++i, --j) {
+        cJSON *message = page.messages[i]; page.messages[i] = page.messages[j]; page.messages[j] = message;
+        const long long rowid = page.rowids[i]; page.rowids[i] = page.rowids[j]; page.rowids[j] = rowid;
+    }
+}
+} // namespace
+
+long long StoreSkipped(Store *store) { return store ? store->skipped : 0; }
+
+long long StorePoll(Store *store, long long since, int login_sn, bool (*emit)(void *context, const char *event), void *context, bool *more) {
+    if (more) *more = false;
+    if (!store || !store->db || !emit) return since;
+    char sql[300];
+    snprintf(sql, sizeof(sql), "SELECT %s FROM message WHERE rowid > %lld ORDER BY rowid ASC LIMIT %d", kRowColumns, since, kPollLimit);
+    Row rows[kPollLimit];
+    int count = 0;
+    // A failed read must not move the watermark: WeChat may be mid-write, and the same rows are
+    // simply read again on the next pass.
+    if (!FetchRows(store, sql, rows, kPollLimit, &count)) {
+        for (int i = 0; i < count; ++i) FreeRow(rows[i]);
+        return since;
+    }
+    long long last = since;
+    bool stalled = false;
+    for (int i = 0; i < count; ++i) {
+        if (!stalled) {
+            Decoded decoded;
+            DecodeMessage(View(rows[i]), store->self_id, &decoded);
+            if (decoded.deliver) {
+                Parts parts;
+                cJSON *message = BuildMessage(store, rows[i], decoded, &parts);
+                char *text = message ? MessageEventJson(login_sn, "message-created", message, parts, static_cast<double>(rows[i].create_time)) : nullptr;
+                FreeParts(parts);
+                if (text && strlen(text) >= kEventSize) { free(text); text = nullptr; ++store->skipped; }
+                if (text) {
+                    const bool accepted = emit(context, text);
+                    free(text);
+                    // The bus is full: keep this row for the next pass rather than lose it.
+                    if (!accepted) stalled = true;
+                }
+            }
+            if (!stalled) last = rows[i].rowid;
+        }
+        FreeRow(rows[i]);
+    }
+    if (more) *more = !stalled && count == kPollLimit;
+    return last;
+}
+
+cJSON *StoreMessageGet(Store *store, const char *channel_id, const char *message_id) {
+    if (!store || !store->db || !SafeSql(channel_id) || !AllDigits(message_id)) return nullptr;
+    const long long wanted = atoll(message_id);
+    char sql[600];
+    snprintf(sql, sizeof(sql),
+             "SELECT %s FROM message WHERE talker = '%s' AND (msgId = %lld OR msgSvrId = %lld) ORDER BY msgId = %lld DESC LIMIT 1",
+             kRowColumns, channel_id, wanted, wanted, wanted);
+    Row rows[1];
+    int count = 0;
+    if (!FetchRows(store, sql, rows, 1, &count) || count < 1) return nullptr;
+    Decoded decoded;
+    DecodeMessage(View(rows[0]), store->self_id, &decoded);
+    cJSON *message = decoded.deliver ? BuildMessage(store, rows[0], decoded, nullptr) : nullptr;
+    FreeRow(rows[0]);
+    return message;
+}
+
+cJSON *StoreMessageList(Store *store, const char *channel_id, const char *next, const char *direction, int limit, const char *order) {
+    if (!store || !store->db || !SafeSql(channel_id)) return nullptr;
+    if (limit < 1) limit = kListMax;
+    if (limit > kListMax) limit = kListMax;
+    const bool has_cursor = next && *next;
+    if (has_cursor && !AllDigits(next)) return nullptr;
+    const long long cursor = has_cursor ? atoll(next) : 0;
+    // Without a cursor the only sensible direction is "before the newest".
+    const bool after = has_cursor && direction && !strcmp(direction, "after");
+    const bool around = has_cursor && direction && !strcmp(direction, "around");
+    const bool descending = order && !strcmp(order, "desc");
+
+    Page older, newer;
+    bool ok = true;
+    if (around) {
+        // The anchor itself is the first (newest) row of the "older" walk from cursor + 1.
+        const int before = limit / 2 + 1 > limit ? limit : limit / 2 + 1;
+        ok = CollectPage(store, channel_id, false, true, cursor + 1, before, &older);
+        ok = ok && CollectPage(store, channel_id, true, true, cursor, limit - older.count, &newer);
+    } else if (after) {
+        ok = CollectPage(store, channel_id, true, true, cursor, limit, &newer);
+    } else {
+        ok = CollectPage(store, channel_id, false, has_cursor, cursor, limit, &older);
+    }
+    if (!ok) { FreePage(older); FreePage(newer); return nullptr; }
+    ReversePage(older);  // older pages are gathered newest-first; the result is oldest-first
+
+    // At most `limit` in total by construction, so everything fits.
+    Page all;
+    for (int i = 0; i < older.count; ++i) { all.messages[all.count] = older.messages[i]; all.rowids[all.count++] = older.rowids[i]; }
+    for (int i = 0; i < newer.count; ++i) { all.messages[all.count] = newer.messages[i]; all.rowids[all.count++] = newer.rowids[i]; }
+    older.count = newer.count = 0;
+
+    long long oldest = 0, newest = 0;
+    if (all.count) { oldest = all.rowids[0]; newest = all.rowids[all.count - 1]; }
+    if (descending) ReversePage(all);
+    cJSON *result = cJSON_CreateObject();
+    cJSON *data = cJSON_CreateArray();
+    if (!result || !data) { cJSON_Delete(result); cJSON_Delete(data); FreePage(all); return nullptr; }
+    cJSON_AddItemToObject(result, "data", data);
+    for (int i = 0; i < all.count; ++i) cJSON_AddItemToArray(data, all.messages[i]);
+    if (all.count) {
+        char token[32];
+        if (HasBeyond(store, channel_id, oldest, false)) { snprintf(token, sizeof(token), "%lld", oldest); cJSON_AddStringToObject(result, "prev", token); }
+        if (HasBeyond(store, channel_id, newest, true)) { snprintf(token, sizeof(token), "%lld", newest); cJSON_AddStringToObject(result, "next", token); }
+    }
+    return result;
+}
+
+// ---- media files ------------------------------------------------------------------------------
+namespace {
+bool SafeName(const char *name) {
+    const size_t n = name ? strlen(name) : 0;
+    if (!n || n > 120 || strstr(name, "..")) return false;
+    for (size_t i = 0; i < n; ++i) {
+        const char c = name[i];
+        if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' || c == '-' || c == '.')) return false;
+    }
+    return true;
+}
+
+bool HexToken(const char *text, size_t length) {
+    if (strlen(text) != length) return false;
+    for (size_t i = 0; i < length; ++i) if (!((text[i] >= '0' && text[i] <= '9') || (text[i] >= 'a' && text[i] <= 'f'))) return false;
+    return true;
+}
+
+// Reads the first bytes of a regular file and names what it is. "" means a WeChat-private
+// image container (wxgf) no client can open; null means unreadable or not a regular file.
+const char *SniffImage(const char *path) {
+    const int fd = open(path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+    if (fd < 0) return nullptr;
+    struct stat info {};
+    unsigned char head[16] = {};
+    const bool regular = !fstat(fd, &info) && S_ISREG(info.st_mode) && info.st_size > 0;
+    const ssize_t got = regular ? read(fd, head, sizeof(head)) : -1;
+    close(fd);
+    if (got < 4) return nullptr;
+    if (head[0] == 0xFF && head[1] == 0xD8 && head[2] == 0xFF) return "image/jpeg";
+    if (head[0] == 0x89 && head[1] == 'P' && head[2] == 'N' && head[3] == 'G') return "image/png";
+    if (!memcmp(head, "GIF8", 4)) return "image/gif";
+    if (got >= 12 && !memcmp(head, "RIFF", 4) && !memcmp(head + 8, "WEBP", 4)) return "image/webp";
+    return "";
+}
+
+bool RegularFile(const char *path) {
+    struct stat info {};
+    return !stat(path, &info) && S_ISREG(info.st_mode) && info.st_size > 0;
+}
+
+// The extension decides the type of received files; anything unknown downloads as bytes.
+const char *TypeByExtension(const char *path) {
+    const char *dot = strrchr(path, '.');
+    if (!dot) return "application/octet-stream";
+    static const struct { const char *ext, *type; } table[] = {
+        {".pdf", "application/pdf"}, {".zip", "application/zip"}, {".txt", "text/plain; charset=utf-8"},
+        {".json", "application/json"}, {".mp4", "video/mp4"}, {".mp3", "audio/mpeg"}, {".png", "image/png"},
+        {".jpg", "image/jpeg"}, {".jpeg", "image/jpeg"}, {".gif", "image/gif"}, {".webp", "image/webp"},
+        {".doc", "application/msword"}, {".docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"},
+        {".xls", "application/vnd.ms-excel"}, {".xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"},
+        {".ppt", "application/vnd.ms-powerpoint"}, {".pptx", "application/vnd.openxmlformats-officedocument.presentationml.presentation"},
+    };
+    for (const auto &entry : table) if (!strcasecmp(dot, entry.ext)) return entry.type;
+    return "application/octet-stream";
+}
+
+struct MediaRow {
+    bool found;
+    char img_path[256];
+    char xml_md5[40];
+    char full_path[1400];
+};
+bool MediaRowCallback(Wcdb *db, void *stmt, void *context) {
+    auto *media = static_cast<MediaRow *>(context);
+    media->found = true;
+    const char *img_path = WcdbText(db, stmt, 0);
+    snprintf(media->img_path, sizeof(media->img_path), "%s", img_path ? img_path : "");
+    const char *content = WcdbText(db, stmt, 1);
+    // The XML follows the optional "sender:" header; both emoji and image name their md5 there.
+    const char *xml = content ? strstr(content, "<msg") : nullptr;
+    if (xml) {
+        char md5[40] = {};
+        XmlSlice root = XmlDocument(xml);
+        if (!XmlGetAttribute(root, "msg/emoji", "md5", md5, sizeof(md5))) XmlGetAttribute(root, "msg/img", "md5", md5, sizeof(md5));
+        snprintf(media->xml_md5, sizeof(media->xml_md5), "%s", md5);
+    }
+    return false;
+}
+bool FilePathRow(Wcdb *db, void *stmt, void *context) {
+    auto *media = static_cast<MediaRow *>(context);
+    const char *path = WcdbText(db, stmt, 0);
+    if (path) snprintf(media->full_path, sizeof(media->full_path), "%s", path);
+    return false;
+}
+
+// "THUMBNAIL_DIRPATH://th_<md5>", "th_<md5>hd", "<md5>": the 32 hex digits inside.
+bool ImageHash(const char *img_path, char *out) {
+    for (const char *p = img_path; *p; ++p) {
+        size_t n = 0;
+        while (p[n] && ((p[n] >= '0' && p[n] <= '9') || (p[n] >= 'a' && p[n] <= 'f'))) ++n;
+        if (n >= 32) { memcpy(out, p, 32); out[32] = 0; return true; }
+        p += n;
+        if (!*p) break;
+    }
+    return false;
+}
+} // namespace
+
+bool StoreMediaFile(Store *store, const char *kind, long long msg_id, char *path, size_t path_capacity, char *content_type, size_t type_capacity) {
+    if (!store || !store->db || !kind || msg_id <= 0 || !store->account_dir[0]) return false;
+    char sql[200];
+    MediaRow media{};
+    pthread_mutex_lock(&store->mutex);
+    snprintf(sql, sizeof(sql), "SELECT imgPath, content FROM message WHERE msgId = %lld LIMIT 1", msg_id);
+    WcdbQuery(store->db, sql, MediaRowCallback, &media);
+    if (media.found && !strcmp(kind, "file")) {
+        snprintf(sql, sizeof(sql), "SELECT fileFullPath FROM appattach WHERE msgInfoId = %lld LIMIT 1", msg_id);
+        WcdbQuery(store->db, sql, FilePathRow, &media);
+    }
+    pthread_mutex_unlock(&store->mutex);
+    if (!media.found) return false;
+
+    char candidate[1500];
+    auto accept = [&](const char *file, const char *type) {
+        if (strlen(file) >= path_capacity || strlen(type) >= type_capacity) return false;
+        memcpy(path, file, strlen(file) + 1);
+        memcpy(content_type, type, strlen(type) + 1);
+        return true;
+    };
+
+    if (!strcmp(kind, "image") || !strcmp(kind, "emoji")) {
+        char hashes[2][40] = {};
+        int hash_count = 0;
+        if (!strcmp(kind, "image") && ImageHash(media.img_path, hashes[hash_count])) ++hash_count;
+        if (HexToken(media.xml_md5, 32)) { snprintf(hashes[hash_count], sizeof(hashes[0]), "%s", media.xml_md5); ++hash_count; }
+        for (int h = 0; h < hash_count; ++h) {
+            const char *hash = hashes[h];
+            const char *names[5];
+            char dirs[8], pattern[5][80];
+            int names_count = 0;
+            if (!strcmp(kind, "emoji")) {
+                snprintf(pattern[0], sizeof(pattern[0]), "emoji/%s", hash);
+                names[names_count++] = pattern[0];
+            } else {
+                snprintf(dirs, sizeof(dirs), "%.2s/%.2s", hash, hash + 2);
+                snprintf(pattern[0], sizeof(pattern[0]), "image2/%s/%s", dirs, hash);
+                snprintf(pattern[1], sizeof(pattern[1]), "image2/%s/%s.jpg", dirs, hash);
+                snprintf(pattern[2], sizeof(pattern[2]), "image2/%s/th_%shd", dirs, hash);
+                snprintf(pattern[3], sizeof(pattern[3]), "image2/%s/th_%s", dirs, hash);
+                for (int i = 0; i < 4; ++i) names[names_count++] = pattern[i];
+            }
+            for (int i = 0; i < names_count; ++i) {
+                snprintf(candidate, sizeof(candidate), "%s/%s", store->account_dir, names[i]);
+                const char *type = SniffImage(candidate);
+                if (type && *type) return accept(candidate, type);  // "" = wxgf: keep looking for a smaller, usable copy
+            }
+        }
+        return false;
+    }
+    if (!strcmp(kind, "voice")) {
+        if (!SafeName(media.img_path)) return false;
+        char md5[33];
+        Md5Hex(media.img_path, strlen(media.img_path), md5);
+        snprintf(candidate, sizeof(candidate), "%s/voice2/%.2s/%.2s/msg_%s.amr", store->account_dir, md5, md5 + 2, media.img_path);
+        return RegularFile(candidate) && accept(candidate, "audio/silk");
+    }
+    if (!strcmp(kind, "video") || !strcmp(kind, "videothumb")) {
+        if (!SafeName(media.img_path)) return false;
+        const bool thumb = !strcmp(kind, "videothumb");
+        snprintf(candidate, sizeof(candidate), "%s/video/%s.%s", store->account_dir, media.img_path, thumb ? "jpg" : "mp4");
+        return RegularFile(candidate) && accept(candidate, thumb ? "image/jpeg" : "video/mp4");
+    }
+    if (!strcmp(kind, "file")) {
+        const char *file = media.full_path;
+        if (*file != '/' || strstr(file, "..")) return false;
+        // Only files WeChat itself keeps: its private data, or its folder on shared storage.
+        char private_prefix[1110];
+        snprintf(private_prefix, sizeof(private_prefix), "%s/", store->app_dir);
+        const bool allowed = (store->app_dir[0] && !strncmp(file, private_prefix, strlen(private_prefix))) ||
+                             !strncmp(file, "/storage/emulated/0/Android/data/com.tencent.mm/", 49) ||
+                             !strncmp(file, "/sdcard/Android/data/com.tencent.mm/", 37);
+        return allowed && RegularFile(file) && accept(file, TypeByExtension(file));
+    }
+    return false;
 }
 } // namespace satori

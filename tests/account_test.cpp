@@ -247,9 +247,14 @@ void TestMissingAndMalformed() {
     Check(!account.exists || account.online == false, "no online claim without isLogin");
 }
 
+// Copies the next queued event into `out` (the bus now hands out heap strings).
 bool TakeEvent(satori::EventBus *bus, char *out) {
     bool meta = false;
-    return satori::Take(bus, out, &meta);
+    char *event = satori::Take(bus, &meta);
+    if (!event) return false;
+    snprintf(out, satori::kEventSize, "%s", event);
+    free(event);
+    return true;
 }
 
 void TestAdapterTransitions() {
@@ -259,7 +264,7 @@ void TestAdapterTransitions() {
     Check(bus != nullptr, "create bus");
     satori::Adapter *adapter = satori::CreateAdapter(fixture.dir, bus);
     Check(adapter != nullptr, "create adapter");
-    char event[satori::kEventSize];
+    static char event[satori::kEventSize];
     Check(satori::AdapterRefresh(adapter), "first refresh");
     Check(TakeEvent(bus, event), "added event published");
     cJSON *root = cJSON_Parse(event);

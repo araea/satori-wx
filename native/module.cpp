@@ -7,6 +7,8 @@
 #include "wx_keepalive.h"
 #include "wx_key.h"
 #include "wx_live.h"
+#include "wx_media.h"
+#include "media.h"
 #include "wx_send.h"
 #include <android/log.h>
 #include <errno.h>
@@ -141,6 +143,10 @@ public:
                 snprintf(temp_dir, sizeof(temp_dir), "%s/files/satori-wx-tmp", g_data_dir);
                 satori::SetTempDir(temp_dir);
             }
+            // Received-media links are signed with a key derived from the token, and served by
+            // the store-backed resolver; nothing verifies until the token is known.
+            if (configured_) satori::MediaSetSecret(g_config.token);
+            satori::SetMediaResolver(satori::WeChatMediaResolver);
             satori::SetStatusProvider(AddBackendStatus);
             satori::SetWakelockProvider(satori::KeepaliveWakelock);
             if (configured_ && g_config.send)

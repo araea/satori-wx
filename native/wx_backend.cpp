@@ -176,7 +176,8 @@ Response Call(void *, const Request &request) {
     if (!strcmp(name, "message.get"))
         return Read(StoreMessageGet(store, Text(request, "channel_id"), Text(request, "message_id")));
     if (!strcmp(name, "message.list")) {
-        cJSON *list = StoreMessageList(store, Text(request, "channel_id"), Text(request, "next"), Limit(request, 20));
+        cJSON *list = StoreMessageList(store, Text(request, "channel_id"), Text(request, "next"), Text(request, "direction"),
+                                       Limit(request, 50), Text(request, "order"));
         return list ? Response{200, list} : Response{400, nullptr};
     }
     if (!strcmp(name, "user.get"))

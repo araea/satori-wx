@@ -20,10 +20,19 @@ SATORI_WCDB_LIB="${SATORI_WCDB_LIB:-/data/data/com.termux/files/usr/lib/libsqlit
 SATORI_ACCOUNT_TMP="$R/build/tests/tmp" "$R/build/tests/wcdb-test"
 clang++ -std=c++20 -O1 -g -fno-exceptions -fno-rtti -nostdinc++ -nostdlib++ \
     -Wall -Wextra -Werror -I "$R/native" "$R/tests/store_test.cpp" "$R/native/wx_store.cpp" "$R/native/wcdb.cpp" \
+    "$R/native/wx_message.cpp" "$R/native/media.cpp" "$R/native/xml_lite.cpp" "$R/native/wx_media.cpp" \
     "$R/native/protocol.cpp" "$R/build/tests/cjson.o" -ldl -o "$R/build/tests/store-test"
 SATORI_WCDB_LIB="${SATORI_WCDB_LIB:-/data/data/com.termux/files/usr/lib/libsqlite3.so}" \
 SATORI_ACCOUNT_TMP="$R/build/tests/tmp" "$R/build/tests/store-test"
 python3 "$R/tests/protocol_test.py" "$R/build/tests/server"
+clang++ -std=c++20 -O1 -g -fno-exceptions -fno-rtti -nostdinc++ -nostdlib++ \
+    -Wall -Wextra -Werror -I "$R/native" "$R/tests/media_test.cpp" "$R/native/media.cpp" "$R/native/xml_lite.cpp" \
+    -o "$R/build/tests/media-test"
+"$R/build/tests/media-test"
+clang++ -std=c++20 -O1 -g -fno-exceptions -fno-rtti -nostdinc++ -nostdlib++ \
+    -Wall -Wextra -Werror -I "$R/native" "$R/tests/message_test.cpp" "$R/native/wx_message.cpp" "$R/native/media.cpp" \
+    "$R/native/xml_lite.cpp" -o "$R/build/tests/message-test"
+"$R/build/tests/message-test"
 clang++ -std=c++20 -O1 -g -fno-exceptions -fno-rtti -nostdinc++ -nostdlib++ \
     -Wall -Wextra -Werror -I "$R/native" "$R/tests/capabilities_test.cpp" "$R/native/wx_capabilities.cpp" \
     "$R/native/wx_send.cpp" "$R/native/server.cpp" "$R/native/protocol.cpp" "$R/native/multipart.cpp" \

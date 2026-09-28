@@ -20,13 +20,28 @@ const char *StoreError(Store *store);
 const char *StoreSelfId(Store *store);
 // Highest message rowid, or -1 when it cannot be read.
 long long StoreWatermark(Store *store);
-// Emits one JSON event per new message (rowid > since). Returns the new watermark.
-long long StorePoll(Store *store, long long since, int login_sn, bool (*emit)(void *context, const char *event), void *context);
-// Satori List of messages for a channel, newest first. `next` is a rowid cursor from a
-// previous call or null. Caller frees the result.
-cJSON *StoreMessageList(Store *store, const char *channel_id, const char *next, int limit);
-// One message by platform id within a channel. Caller frees.
+// Emits one `message-created` event per new chat message (rowid > since) and returns the new
+// watermark: the last row that was handled. A row whose event `emit` refuses (the queue is
+// full) is *not* passed, so it is offered again on the next call instead of being lost; rows
+// that are not chat messages (system tips, call logs) are passed silently. `more` (optional)
+// reports that a full batch was read and another call should follow immediately.
+long long StorePoll(Store *store, long long since, int login_sn, bool (*emit)(void *context, const char *event), void *context,
+                    bool *more = nullptr);
+// Rows the poller had to drop because their event could never fit the bus.
+long long StoreSkipped(Store *store);
+// Satori BidiList of messages for a channel. `next` is a token from a previous result (empty:
+// start from the newest message); `direction` is before|after|around relative to it; `order` is
+// asc|desc for the returned page (the default, asc, is oldest first whatever the direction). The
+// result carries `prev` (more older messages exist) and `next` (more newer ones do) tokens.
+// Null on a malformed token or unknown channel id. Caller frees.
+cJSON *StoreMessageList(Store *store, const char *channel_id, const char *next, const char *direction, int limit, const char *order);
+// One message by id within a channel (the local id, or WeChat's server id). Caller frees.
 cJSON *StoreMessageGet(Store *store, const char *channel_id, const char *message_id);
+// Resolves a message-media kind (image|voice|video|videothumb|emoji|file) of local message
+// `msg_id` to a file on disk plus a content type. Everything derived from the database is
+// validated before it becomes part of a path.
+bool StoreMediaFile(Store *store, const char *kind, long long msg_id, char *path, size_t path_capacity,
+                    char *content_type, size_t type_capacity);
 // Contacts from rcontact. Satori User / Friend / Guild / Channel shapes. Caller frees.
 cJSON *StoreUserGet(Store *store, const char *user_id);
 cJSON *StoreFriendList(Store *store, const char *next, int limit);

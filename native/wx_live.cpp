@@ -156,12 +156,15 @@ void *Loop(void *argument) {
     nanosleep(&grace, nullptr);
     long long logged = -1;
     for (;;) {
-        live->watermark = StorePoll(live->store, live->watermark, live->login_sn, Emit, live);
+        bool more = false;
+        live->watermark = StorePoll(live->store, live->watermark, live->login_sn, Emit, live, &more);
         if (live->emitted != logged) {
             logged = live->emitted;
             Log(live->app_data, "emitted=%lld watermark=%lld", live->emitted, live->watermark);
         }
-        const timespec delay{2, 0};
+        // A full batch means a burst is still being read; do not make it wait for the next tick.
+        if (more) continue;
+        const timespec delay{1, 0};
         nanosleep(&delay, nullptr);
     }
 }
