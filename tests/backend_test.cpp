@@ -82,16 +82,6 @@ const char *Code(const Outcome &outcome) {
 } // namespace
 
 int main() {
-    // send=off: the method is not published, so it must not even be attempted.
-    satori::SetSendEnabled(false);
-    {
-        const Outcome outcome = Create("你好");
-        Check(outcome.status == 404, "send off returns 404 for message.create");
-        cJSON_Delete(outcome.body);
-    }
-
-    satori::SetSendEnabled(true);
-
     // Text is flattened and handed to the sender. There is no JavaVM here, so the sender
     // refuses after the flattening step: that is the proof the text path was taken and not
     // some earlier refusal.
@@ -223,7 +213,6 @@ int main() {
         cJSON_Delete(outcome.body);
     }
 
-    satori::SetSendEnabled(false);
     char cleanup[600];
     snprintf(cleanup, sizeof(cleanup), "rm -rf '%s'", directory);
     if (system(cleanup)) fprintf(stderr, "warning: could not remove %s\n", directory);

@@ -491,7 +491,7 @@ public final class MainActivity extends Activity
                 if (l.startsWith("port=")) port = parsePort(l.substring(5));
             }
         }
-        return new Conf(port, token == null ? Conf.newToken() : token, false);
+        return new Conf(port, token == null ? Conf.newToken() : token);
     }
 
     private static int parsePort(String value) {
@@ -623,11 +623,6 @@ public final class MainActivity extends Activity
         } catch (Exception error) {
             snackbar.show("没有可以分享的应用，请改用复制", null, null);
         }
-    }
-
-    @Override public void enableSend() {
-        openSettings();
-        snackbar.show("打开「允许客户端发送消息」，保存后重新启动微信", null, null);
     }
 
     // ------------------------------------------------------------------ 设置页动作

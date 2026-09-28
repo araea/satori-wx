@@ -51,7 +51,6 @@ ICONS = {
     "group": ("group", "default"),
     "edit": ("edit", "default"),
     "link": ("link", "default"),
-    "block": ("block", "default"),
     "folder": ("folder", "default"),
 }
 MIRRORED = {"arrow_back", "chevron_right", "open_in_new"}

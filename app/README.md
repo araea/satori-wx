@@ -1,6 +1,6 @@
 # 知言应用
 
-知言模块的原生管理界面（`com.satori.wx`）：查看服务是否连通、断在哪一环、下一步做什么；管理发送开关、端口与令牌；一键重新启动微信让配置生效。同时是微信常驻通知上「唤醒锁」按钮的落点（`keepalive.WakeToggleReceiver` 把切换转给模块的 `POST /v1/internal/wakelock`）。设计规范见 [知言应用设计规范](../docs/app-design.md)。
+知言模块的原生管理界面（`com.satori.wx`）：查看服务是否连通、断在哪一环、下一步做什么；管理端口与令牌；一键重新启动微信让配置生效。同时是微信常驻通知上「唤醒锁」按钮的落点（`keepalive.WakeToggleReceiver` 把切换转给模块的 `POST /v1/internal/wakelock`）。设计规范见 [知言应用设计规范](../docs/app-design.md)。
 
 零依赖：只用 Android 框架 API，不引入 androidx / Material Components；视图直接构造，不解析 XML 布局。
 

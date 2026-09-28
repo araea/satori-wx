@@ -8,9 +8,9 @@
 // app's own database and `doScene()` dispatches it to the mars transport, exactly as the
 // app does. Nothing is hooked, no ArtMethod is rewritten and no dex is loaded.
 //
-// The sender is opt-in: only usable after SendInit() (JavaVM from postAppSpecialize) and when
-// the config says send=on. There is neither a target whitelist nor a rate limit: once on, a
-// client's message.create is dispatched immediately, like any other Satori implementation.
+// Only usable after SendInit() (JavaVM from postAppSpecialize). There is no on/off switch, no
+// target whitelist and no rate limit: a client's message.create is dispatched immediately, like
+// any other Satori implementation. Not connecting the client is how you stop it sending.
 // Delivery is asynchronous: a successful call means the scene was accepted for dispatch, not
 // that the peer received anything.
 namespace satori {
@@ -18,7 +18,7 @@ void SendInit(void *vm);
 bool SendReady();
 struct SendResult {
     bool ok;
-    bool rejected;      // refused before dispatch because send is disabled
+    bool rejected;      // refused before dispatch (bad request or not allowed, e.g. recalling someone else's message)
     long long local_id; // WeChat local message id (msgId), or -1
     int net_id;         // dispatcher return; negative means the scene was rejected
     char detail[160];   // human-readable reason when ok is false
@@ -49,13 +49,12 @@ bool SendDispatcherReady();
 // Snapshot for /v1/internal/status and /v1/internal/capabilities. Counters are per process
 // and reset on restart.
 struct SendStatus {
-    bool enabled;          // send=on with a valid configuration
     bool ready;            // JavaVM is wired into the sender (it will attempt to resolve)
     bool resolved;         // WeChat send classes are cached on the host class loader
     bool dispatcher;       // the network dispatcher was reachable at the last probe
     long long sent;        // dispatched successfully
     long long failed;      // reached the send pipeline but failed
-    long long rejected;    // refused before dispatch (send disabled)
+    long long rejected;    // refused before dispatch (bad request, or a message that is not ours to recall)
     long long recalled;    // revoke scenes accepted for dispatch
     long long media;       // pictures handed to the image pipeline
     long long last_age_ms; // ms since the last attempt, or -1 when there was none

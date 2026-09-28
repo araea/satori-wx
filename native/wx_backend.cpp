@@ -1,5 +1,4 @@
 #include "wx_backend.h"
-#include "wx_capabilities.h"
 #include "wx_keepalive.h"
 #include "wx_live.h"
 #include "wx_room.h"
@@ -245,7 +244,6 @@ Response FailureAfter(const char *code, const char *detail, bool rejected, size_
 }
 
 Response CreateMessages(const Request &request, Store *store) {
-    if (!SendEnabled()) return {404, nullptr};
     if (!store) return {503, nullptr};
     const char *channel_id = Text(request, "channel_id");
     const char *content = Text(request, "content");
@@ -365,7 +363,6 @@ Response Call(void *, const Request &request) {
     if (!strcmp(name, "message.create")) return CreateMessages(request, store);
 
     if (!strcmp(name, "message.delete")) {
-        if (!SendEnabled()) return {404, nullptr};
         const char *channel_id = Text(request, "channel_id");
         const char *message_id = Text(request, "message_id");
         if (!*channel_id || !*message_id) return {400, nullptr};
@@ -379,7 +376,6 @@ Response Call(void *, const Request &request) {
     // Write actions reuse the sender's opt-in switch. Success means WeChat's own scene was
     // accepted for dispatch, not that the group server applied it.
     if (!strcmp(name, "channel.delete")) {
-        if (!SendEnabled()) return {404, nullptr};
         const char *channel_id = Text(request, "channel_id");
         if (!*channel_id || !strstr(channel_id, "@chatroom")) return {400, nullptr};
         ActionResult action = RoomRemoveMember(channel_id, StoreSelfId(store));
@@ -387,7 +383,6 @@ Response Call(void *, const Request &request) {
         return {200, cJSON_CreateObject()};
     }
     if (!strcmp(name, "guild.member.kick")) {
-        if (!SendEnabled()) return {404, nullptr};
         const char *guild_id = Text(request, "guild_id"), *user_id = Text(request, "user_id");
         if (!*guild_id || !*user_id) return {400, nullptr};
         ActionResult action = RoomRemoveMember(guild_id, user_id);
@@ -395,7 +390,6 @@ Response Call(void *, const Request &request) {
         return {200, cJSON_CreateObject()};
     }
     if (!strcmp(name, "guild.member.role.set") || !strcmp(name, "guild.member.role.unset")) {
-        if (!SendEnabled()) return {404, nullptr};
         const char *guild_id = Text(request, "guild_id"), *user_id = Text(request, "user_id");
         const char *role_id = Text(request, "role_id");
         if (!*guild_id || !*user_id || !*role_id) return {400, nullptr};

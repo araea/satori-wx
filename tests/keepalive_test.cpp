@@ -61,6 +61,42 @@ int main() {
     CheckNumber(keep, "uptime_ms", 0); // uptime starts on the keeper tick, not here
     cJSON_Delete(status);
 
+    // What the resident notification says. The collapsed row is the title plus one line; the
+    // expanded body repeats that line and adds the uptime, but never the title a second time, and
+    // says nothing about the wake lock (the button's own label does) or about sending (always on).
+    {
+        char title[96], text[160], big[320];
+        satori::g_login_count = 1; satori::g_server_ready = true; satori::g_client_count = 0;
+        satori::KeepaliveRender(0, title, sizeof(title), text, sizeof(text), big, sizeof(big));
+        Check(!strcmp(title, "知言 · 运行中"), "notification: title while serving");
+        Check(strstr(text, "等待客户端连接") != nullptr, "notification: waiting for a client");
+        Check(!strstr(big, "知言"), "notification: the body does not repeat the title");
+        Check(!strcmp(big, text), "notification: with no uptime the body is just the line");
+
+        satori::g_client_count = 3;
+        satori::KeepaliveRender((2 * 3600 + 5 * 60) * 1000LL + 999, title, sizeof(title), text, sizeof(text), big, sizeof(big));
+        Check(strstr(text, "已连接 3 个客户端") != nullptr, "notification: client count in the line");
+        Check(!strstr(big, "知言") && !strstr(big, "运行中"), "notification: body has neither the app name nor the state again");
+        Check(strstr(big, text) == big && strstr(big, "\n已在线 2 小时 5 分") != nullptr, "notification: body is the line, then the uptime");
+        Check(!strstr(big, "唤醒锁") && !strstr(big, "CPU") && !strstr(big, "Wi-Fi"), "notification: no wake-lock detail");
+        Check(!strstr(big, "发送") && !strstr(text, "发送"), "notification: no send-switch line");
+
+        satori::KeepaliveRender(30 * 1000LL, title, sizeof(title), text, sizeof(text), big, sizeof(big));
+        Check(strstr(big, "\n刚刚上线") != nullptr, "notification: under a minute reads as just online");
+        satori::KeepaliveRender(59 * 60 * 1000LL, title, sizeof(title), text, sizeof(text), big, sizeof(big));
+        Check(strstr(big, "\n已在线 59 分") != nullptr, "notification: minutes");
+        satori::KeepaliveRender(49 * 3600 * 1000LL, title, sizeof(title), text, sizeof(text), big, sizeof(big));
+        Check(strstr(big, "\n已在线 2 天 1 小时") != nullptr, "notification: days");
+
+        satori::g_login_count = 0;
+        satori::KeepaliveRender(0, title, sizeof(title), text, sizeof(text), big, sizeof(big));
+        Check(!strcmp(title, "知言 · 等待登录") && !strstr(big, "\n"), "notification: waiting for login has no uptime line");
+        satori::g_login_count = 1; satori::g_server_ready = false;
+        satori::KeepaliveRender(0, title, sizeof(title), text, sizeof(text), big, sizeof(big));
+        Check(!strcmp(title, "知言 · 服务异常") && strstr(text, "未监听") != nullptr, "notification: port not listening");
+        satori::g_server_ready = true; satori::g_client_count = 2;
+    }
+
     // The automatic hold is ref-counted and symmetric even with no JVM attached.
     satori::KeepaliveWakelockBegin();
     satori::KeepaliveWakelockBegin();

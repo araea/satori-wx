@@ -94,12 +94,12 @@ public final class DesignSmoke extends Instrumentation {
         Status.Snapshot s = new Status.Snapshot();
         s.checked = true;
         s.device = Root.parse("module=1\nversion=v0.7.0\npid=6312\n");
-        s.conf = new Conf(5601, TOKEN, true);
+        s.conf = new Conf(5601, TOKEN);
         s.wechatVersion = "8.0.78";
         s.http = 200;
         s.port = 5601;
         s.status = new JSONObject("{\"version\":\"0.7.0\",\"standard_methods\":37,\"event_replay\":true,\"replay_capacity\":64,"
-                + "\"send\":{\"enabled\":true,\"sent\":128,\"failed\":1,\"rejected\":3,\"recalled\":2},"
+                + "\"send\":{\"ready\":true,\"resolved\":true,\"dispatcher\":true,\"sent\":128,\"failed\":1,\"rejected\":3,\"recalled\":2},"
                 + "\"keepalive\":{\"notification\":true,\"wakelock\":true}}");
         s.meta = new JSONObject("{\"logins\":[{\"sn\":1,\"status\":1,\"features\":[\"message.get\",\"message.list\",\"user.get\","
                 + "\"friend.list\",\"guild.get\",\"guild.list\",\"message.create\",\"message.delete\"],"
@@ -111,7 +111,7 @@ public final class DesignSmoke extends Instrumentation {
         Status.Snapshot s = new Status.Snapshot();
         s.checked = true;
         s.device = Root.parse("module=1\nversion=v0.7.0\npid=6312\n");
-        s.conf = new Conf(5601, TOKEN, false);
+        s.conf = new Conf(5601, TOKEN);
         s.wechatVersion = "8.0.78";
         return s;
     }
@@ -191,7 +191,6 @@ public final class DesignSmoke extends Instrumentation {
             Bundle draft = new Bundle();
             draft.putString("draft_port", "5602");
             draft.putString("draft_token", TOKEN);
-            draft.putBoolean("draft_send", true);
             page.restoreState(draft);
             page.notice(Status.applied(s));
         }

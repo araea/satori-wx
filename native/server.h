@@ -7,10 +7,9 @@ struct Backend;
 struct Config {
     uint16_t port = 5601;
     char token[129] = {};
-    // Opt-in reflection sender. Off unless the config says `send=on`. Once on, any talker is
-    // accepted (the old send_allow whitelist was retired; the key is still accepted but
-    // ignored so configs written before the change keep starting the server).
-    bool send = false;
+    // There is no send switch any more: the sender is always available. `send=on|off` and
+    // `send_allow=` are still accepted in the config file (and ignored) so files written by
+    // earlier versions, and the app's own older builds, keep starting the server.
 };
 // Optional backend-specific fields added to the /v1/internal/status and
 // /v1/internal/capabilities objects. `capabilities` is true for the latter, where a backend

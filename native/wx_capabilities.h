@@ -5,12 +5,10 @@
 // backend (wx_backend.cpp). It must stay in one place: a method is only listed once the
 // backend really implements it.
 //
-// "message.create" is the reflection-based sender (wx_send.cpp). It is opt-in through the
-// module configuration, so the list is only stable within a process and only meaningful
-// after SetSendEnabled() has been called for that process.
+// The write methods (message.create and friends, sent through the reflection sender in
+// wx_send.cpp) are always part of it: there is no switch. A client that must not send is a
+// client that is not connected.
 namespace satori {
-void SetSendEnabled(bool enabled);
-bool SendEnabled();
 const char *const *WeChatFeatures(size_t *count);
 // Standard methods WeChat cannot express at all (message.update, reaction.*, custom roles).
 const char *const *WeChatUnsupported(size_t *count);

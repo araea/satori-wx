@@ -5,13 +5,13 @@
 // approach as the sender: the app's own NetScene classes are constructed and dispatched
 // through the app's own network queue. Nothing is hooked and no dex is loaded.
 //
-// These are opt-in together with the sender (`send=on`). A successful call means the scene
+// Like the sender they are always available. A successful call means the scene
 // was accepted for dispatch, not that the server applied it; the client gets a 200 and the
 // async result is only visible in WeChat.
 namespace satori {
 struct ActionResult {
     bool ok;
-    bool rejected;      // refused before dispatch (write actions disabled)
+    bool rejected;      // refused before dispatch
     char detail[160];   // reason when ok is false
 };
 // qn.p (delchatroommember) with one member: kick, or leave when user == self.

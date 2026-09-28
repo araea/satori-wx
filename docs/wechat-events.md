@@ -10,6 +10,8 @@
 | `guild-added` `guild-removed` | `guild` | 自己入群 / 退群、被移出、群被解散 |
 | `friend-added` `friend-removed` | `user` `friend` | `rcontact` 里好友集合的差异 |
 
+`message-created` 是毫秒级的：`wx_watch` 用 inotify 盯着账号库所在目录，微信一写库就立刻读新行（机制见[消息内容](wechat-content.md#轮询)），从微信落库到事件发出通常不到 50ms。下面几类没有「新行」可等，走扫描器，延迟以秒计。
+
 微信不宣告这些变化，它们只体现为库里状态的改动。`native/wx_events.{h,cpp}` 的扫描器每 3 秒对比一次快照。有两条规矩：
 
 1. **启动时只做快照，不发事件。** 已经存在的群、好友、已撤回的消息都不算新闻。

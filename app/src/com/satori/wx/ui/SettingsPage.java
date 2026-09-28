@@ -16,10 +16,10 @@ import com.satori.wx.core.Conf;
 import com.satori.wx.core.Status;
 
 /**
- * 设置：发送开关、端口与令牌。保存只写配置文件，微信下次启动时读取。
+ * 设置：端口与令牌。保存只写配置文件，微信下次启动时读取。
  *
  * <p>交互约定（取自 HIG，外观全部是 M3E）：草稿跨页面切换与实例重建保留；有改动才出现底部工具栏；
- * 开启发送先确认；令牌默认隐藏，显示期间禁止截屏；校验在保存时做，出错的字段就地显示原因并获得焦点。
+ * 令牌默认隐藏，显示期间禁止截屏；校验在保存时做，出错的字段就地显示原因并获得焦点。
  */
 final class SettingsPage {
     interface Actions {
@@ -41,7 +41,6 @@ final class SettingsPage {
     private final Ui ui;
     private final Tokens t;
     private final Actions actions;
-    private final Item sendSwitch;
     private final Field port, token;
     private final ImageButton reveal;
     private final LinearLayout saveBar;
@@ -50,7 +49,6 @@ final class SettingsPage {
 
     /** 已保存的配置（基准）；文件无效或尚未读到时为 null。 */
     private Conf saved;
-    private boolean send;
     private boolean saving, revealing, loading, lastDirty, baseline;
     private int bottomInset;
 
@@ -78,7 +76,7 @@ final class SettingsPage {
 
         TextView title = ui.heading("设置", Tokens.DISPLAY_SMALL, t.onSurface);
         content.addView(title, Ui.stack(t.spaceSm));
-        content.addView(ui.text("发送开关、令牌与端口。保存后，重新启动微信时生效。",
+        content.addView(ui.text("令牌与端口。保存后，重新启动微信时生效。",
                 Tokens.BODY_LARGE, t.onSurfaceVariant), Ui.stack(t.spaceXs));
         bar.follow(scroll, title);
 
@@ -86,31 +84,6 @@ final class SettingsPage {
         notice.setId(R.id.config_notice);
         notice.action("重新启动微信", v -> actions.restartWeChat());
         content.addView(notice, Ui.stack(t.spaceXl));
-
-        // ---- 消息发送 ----
-        content.addView(ui.sectionTitle("消息发送"), Ui.stack(t.space2xl));
-        Ui.Group sendGroup = ui.group();
-        sendSwitch = sendGroup.add(new Item(t, Item.SWITCH, "允许客户端发送消息",
-                "只发纯文本，发给任意会话，不限速"));
-        sendSwitch.setId(R.id.send_switch);
-        sendSwitch.setOnToggle((item, checked) -> {
-            if (!checked) {
-                send = false;
-                changed();
-                return;
-            }
-            item.setChecked(false, false);
-            Dialogs.show(ui, "允许客户端发送消息？",
-                    "连接知言的客户端将能以你的微信账号，向任意会话发送文字。"
-                            + "自动发送可能触发微信的风控；请只让可信的客户端连接本机服务。",
-                    new Dialogs.Action("取消", Btn.TEXT, null),
-                    new Dialogs.Action("允许发送", Btn.TEXT, () -> {
-                        send = true;
-                        sendSwitch.setChecked(true, true);
-                        changed();
-                    }));
-        });
-        content.addView(sendGroup, Ui.stack(0));
 
         // ---- 连接 ----
         content.addView(ui.sectionTitle("连接"), Ui.stack(t.space2xl));
@@ -221,8 +194,6 @@ final class SettingsPage {
         loading = true;
         port.setText(String.valueOf(form.port));
         token.setText(form.token);
-        send = form.send;
-        sendSwitch.setChecked(send, false);
         loading = false;
         port.error(null);
         token.error(null);
@@ -233,8 +204,7 @@ final class SettingsPage {
         if (!baseline) return false;
         if (saved == null) return true;
         if (!port.text().equals(String.valueOf(saved.port))) return true;
-        if (!token.text().equals(saved.token)) return true;
-        return send != saved.send;
+        return !token.text().equals(saved.token);
     }
 
     private void changed() {
@@ -288,7 +258,7 @@ final class SettingsPage {
             return;
         }
         token.error(null);
-        Conf value = new Conf(number, token.text(), send);
+        Conf value = new Conf(number, token.text());
         try {
             value.write();
         } catch (Conf.Invalid invalid) {
@@ -352,7 +322,6 @@ final class SettingsPage {
     void saveState(Bundle out) {
         out.putString("draft_port", port.text());
         out.putString("draft_token", token.text());
-        out.putBoolean("draft_send", send);
         out.putInt("settings_scroll", scroll.getScrollY());
     }
 
@@ -363,8 +332,6 @@ final class SettingsPage {
         loading = true;
         port.setText(state.getString("draft_port", ""));
         token.setText(state.getString("draft_token", ""));
-        send = state.getBoolean("draft_send");
-        sendSwitch.setChecked(send, false);
         loading = false;
         changed();
         final int y = state.getInt("settings_scroll");

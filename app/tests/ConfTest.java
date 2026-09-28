@@ -13,10 +13,11 @@ import java.util.List;
  * Conf.parse / Conf.write 与服务端 satori::ReadConfig 的一致性。
  *
  * <p>服务端是 fail-closed：它拒绝的文件会让知言服务不启动。所以每个样例都同时交给两边判定，
- * 结论（接受与否、端口、send）必须完全相同；Conf.write 写出的每个文件都必须被服务端接受。
+ * 结论（接受与否、端口）必须完全相同；Conf.write 写出的每个文件都必须被服务端接受。
  * 服务端判定来自 test.sh 编译的 build/tests/conf-parity（链接 ../native/server.cpp）。
  *
- * <p>发送白名单已取消：{@code send_allow} 键仍被接受（值忽略），两边必须一致地接受一次、拒绝重复。
+ * <p>发送开关与白名单都已取消：{@code send}（值仍须是 on 或 off）与 {@code send_allow} 键仍被接受、值被忽略，
+ * 两边必须一致地接受一次、拒绝重复与非法值。
  */
 public final class ConfTest {
     private static final String TOKEN = "0123456789abcdef0123456789abcdef";
@@ -40,6 +41,8 @@ public final class ConfTest {
                 "token=" + TOKEN + "!\n",
                 "token=" + TOKEN + "\ntoken=" + TOKEN + "\n",
                 "token=" + TOKEN + "\nport=5601\nport=5602\n",
+                "token=" + TOKEN + "\nsend=on\nsend=off\n",
+                "token=" + TOKEN + "\nsend=ON\n",
                 "token=" + TOKEN + "\nsend=yes\n",
                 "token=" + TOKEN + "\nsend=\n",
                 "token=" + TOKEN + "\nsend_allow=\n",
@@ -61,9 +64,9 @@ public final class ConfTest {
 
         // Conf.write 的输出也要过服务端。
         List<String> written = new ArrayList<>();
-        written.add(new Conf(5601, TOKEN, false).write());
-        written.add(new Conf(1024, Conf.newToken(), true).write());
-        written.add(new Conf(65535, repeat('Z', 128), true).write());
+        written.add(new Conf(5601, TOKEN).write());
+        written.add(new Conf(1024, Conf.newToken()).write());
+        written.add(new Conf(65535, repeat('Z', 128)).write());
         samples.addAll(written);
 
         File dir = Files.createTempDirectory("conf-parity").toFile();
@@ -87,7 +90,7 @@ public final class ConfTest {
             String actual;
             try {
                 Conf c = Conf.parse(samples.get(i));
-                actual = "ok " + c.port + " " + (c.send ? "on" : "off");
+                actual = "ok " + c.port;
             } catch (Conf.Invalid invalid) {
                 actual = "bad";
             }
@@ -100,9 +103,13 @@ public final class ConfTest {
         for (File f : dir.listFiles()) f.delete();
         dir.delete();
 
+        // 写出的文件仍带一行 send=on，给还没换成新版的模块看（新版忽略它）。
+        check(written.get(0).contains("\nsend=on\n"), "Conf.write 应保留 send=on 给老版本模块");
+        check(!Conf.parse(written.get(0)).sameAs(null) && Conf.parse(written.get(0)).sameAs(new Conf(5601, TOKEN)), "写出再读回应当等价");
+
         // 写出前的防线：写不出一个坏文件。
-        expectInvalid(() -> new Conf(80, TOKEN, false).write());
-        expectInvalid(() -> new Conf(5601, "short", false).write());
+        expectInvalid(() -> new Conf(80, TOKEN).write());
+        expectInvalid(() -> new Conf(5601, "short").write());
 
         // 会话 ID 规则（仍用于校验客户端传来的 channel_id）。
         check(Talker.valid("filehelper") && Talker.valid("wxid_abc") && Talker.valid("12345@chatroom"), "合法 ID 被拒");

@@ -11,8 +11,10 @@ import java.security.SecureRandom;
  * 必须和它判得一模一样，{@link #write} 写出的每个文件都必须能被它接受；
  * {@code tests/ConfTest} 用同一组样例钉住两边。
  *
- * <p>发送白名单（{@code send_allow}）已经取消：{@code send=on} 后任何会话都可以发。旧文件里的
- * {@code send_allow} 行仍然被接受（键只能出现一次，值被忽略），保证升级后不用手改配置。
+ * <p>发送没有开关：模块里的发送永远可用。旧文件里的 {@code send=on|off} 与 {@code send_allow} 行仍然被接受
+ * （键只能出现一次，值被忽略；{@code send} 的值仍须是 on 或 off），保证升级后不用手改配置。
+ * {@link #write} 仍会写一行 {@code send=on}：老版本模块没有这行就把发送当作关闭，模块还没换成新版的那段时间里，
+ * 应用改端口或令牌不能顺带把发送关掉。
  */
 public final class Conf {
     /** 服务端读取缓冲 1025 字节，读满 1024 即判失败，所以文件至多 1023 字节。 */
@@ -25,12 +27,10 @@ public final class Conf {
 
     public final int port;
     public final String token;
-    public final boolean send;
 
-    public Conf(int port, String token, boolean send) {
+    public Conf(int port, String token) {
         this.port = port;
         this.token = token;
-        this.send = send;
     }
 
     /** 解析失败：{@link #getMessage()} 是给人看的中文原因。 */
@@ -49,8 +49,7 @@ public final class Conf {
         if (text.indexOf('\0') >= 0) throw new Invalid("配置文件含有空字符");
         Integer port = null;
         String token = null;
-        Boolean send = null;
-        boolean allowSeen = false;
+        boolean sendSeen = false, allowSeen = false;
         // strtok_r 以 \n 切分并跳过空段；行尾的 \r 去掉；空行与 # 开头的行忽略。
         for (String raw : text.split("\n", -1)) {
             String line = raw.endsWith("\r") ? raw.substring(0, raw.length() - 1) : raw;
@@ -61,11 +60,11 @@ public final class Conf {
                 token = value;
             } else if (line.startsWith("port=") && port == null) {
                 port = parsePort(line.substring(5));
-            } else if (line.startsWith("send=") && send == null) {
+            } else if (line.startsWith("send=") && !sendSeen) {
+                // 已取消的开关：值仍须是 on 或 off（写错依然是错误），但不起任何作用，和 native ReadConfig 一致。
                 String value = line.substring(5);
-                if (value.equals("on")) send = true;
-                else if (value.equals("off")) send = false;
-                else throw new Invalid("send 只能是 on 或 off");
+                if (!value.equals("on") && !value.equals("off")) throw new Invalid("send 只能是 on 或 off");
+                sendSeen = true;
             } else if (line.startsWith("send_allow=") && !allowSeen) {
                 // 已取消的白名单：接受旧键、忽略其值，和 native ReadConfig 一致。
                 allowSeen = true;
@@ -79,7 +78,7 @@ public final class Conf {
             }
         }
         if (token == null) throw new Invalid("缺少令牌（token）");
-        return new Conf(port == null ? DEFAULT_PORT : port, token, send != null && send);
+        return new Conf(port == null ? DEFAULT_PORT : port, token);
     }
 
     private static int parsePort(String value) throws Invalid {
@@ -104,7 +103,7 @@ public final class Conf {
         out.append("# 由知言应用写入；未知键或非法值会让服务端拒绝启动。\n");
         out.append("port=").append(port).append('\n');
         out.append("token=").append(token).append('\n');
-        out.append("send=").append(send ? "on" : "off").append('\n');
+        out.append("send=on\n"); // 只给还没换成新版的模块看：新版忽略它，老版没有它就不能发
         String text = out.toString();
         if (text.getBytes(StandardCharsets.UTF_8).length > MAX_BYTES) {
             throw new Invalid("配置超过 " + MAX_BYTES + " 字节");
@@ -114,7 +113,7 @@ public final class Conf {
 
     /** 与另一份配置运行效果是否相同。 */
     public boolean sameAs(Conf other) {
-        return other != null && port == other.port && token.equals(other.token) && send == other.send;
+        return other != null && port == other.port && token.equals(other.token);
     }
 
     // ------------------------------------------------------------------ 规则

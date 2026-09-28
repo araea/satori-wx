@@ -9,7 +9,7 @@ if [ -f "$old_config" ]; then
 else
     token=$(od -An -N32 -tx1 /dev/urandom | tr -d ' \n')
     [ "${#token}" -eq 64 ] || abort "无法生成访问令牌"
-    (umask 077; printf 'port=5601\ntoken=%s\nsend=off\n' "$token" > "$MODPATH/satori-wx.conf") || abort "无法写入配置"
+    (umask 077; printf 'port=5601\ntoken=%s\n' "$token" > "$MODPATH/satori-wx.conf") || abort "无法写入配置"
 fi
 set_perm_recursive "$MODPATH" 0 0 0755 0644
 set_perm "$MODPATH/satori-wx.conf" 0 0 0600

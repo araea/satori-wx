@@ -13,7 +13,6 @@
 //   com.tencent.mm.modelsimple.d1.<init>(e9, hint, "") -> cgi /cgi-bin/micromsg-bin/revokemsg
 //   d1.doScene(dispatcher, com.tencent.mm.network.y2)   -> int netId (>= 0 accepted).
 #include "wx_send.h"
-#include "wx_capabilities.h"
 #include <jni.h>
 #include <pthread.h>
 #include <stdarg.h>
@@ -367,7 +366,6 @@ bool SendDispatcherReady() {
 void SendStatusGet(SendStatus *status) {
     if (!status) return;
     pthread_mutex_lock(&g_mu);
-    status->enabled = SendEnabled();
     status->ready = g_vm != nullptr;
     status->resolved = g_resolved;
     status->dispatcher = g_dispatcher_ok;
@@ -388,7 +386,6 @@ void SendStatusGet(SendStatus *status) {
 // Resolves the send classes and probes the dispatcher without sending anything. Called from
 // the module's warm-up thread after login so the status block reports real capability.
 bool SendWarmUp() {
-    if (!SendEnabled()) return false;
     JNIEnv *env = Env();
     if (!env) return false;
     char detail[160] = {};
@@ -432,11 +429,6 @@ static SendResult SendTextInner(const char *talker, const char *content, const c
     result.net_id = -1;
     if (!talker || !*talker || !content || !*content) {
         Detail(result.detail, sizeof(result.detail), "empty target or content");
-        return result;
-    }
-    if (!SendEnabled()) {
-        result.rejected = true;
-        Detail(result.detail, sizeof(result.detail), "send is disabled by configuration");
         return result;
     }
     JNIEnv *env = Env();
@@ -556,11 +548,6 @@ SendResult SendImage(const char *talker, const char *self_id, const char *path) 
         Detail(result.detail, sizeof(result.detail), "empty target, sender or path");
         return result;
     }
-    if (!SendEnabled()) {
-        result.rejected = true;
-        Detail(result.detail, sizeof(result.detail), "send is disabled by configuration");
-        return result;
-    }
     JNIEnv *env = Env();
     if (!env) {
         Detail(result.detail, sizeof(result.detail), "JavaVM unavailable");
@@ -655,11 +642,6 @@ SendResult SendRecall(const char *talker, const char *message_id) {
     result.net_id = -1;
     if (!talker || !*talker || !message_id || !*message_id) {
         Detail(result.detail, sizeof(result.detail), "empty target or message id");
-        return result;
-    }
-    if (!SendEnabled()) {
-        result.rejected = true;
-        Detail(result.detail, sizeof(result.detail), "send is disabled by configuration");
         return result;
     }
     char *tail = nullptr;

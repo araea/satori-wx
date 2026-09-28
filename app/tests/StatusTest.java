@@ -58,7 +58,7 @@ public final class StatusTest {
 
         s.http = 200;
         s.status = new JSONObject("{\"version\":\"0.7.0\",\"standard_methods\":37,\"event_replay\":true,\"replay_capacity\":64,"
-                + "\"send\":{\"enabled\":true,\"sent\":3,\"failed\":0,\"rejected\":1,\"recalled\":0},"
+                + "\"send\":{\"ready\":true,\"resolved\":true,\"dispatcher\":true,\"sent\":3,\"failed\":2,\"rejected\":1,\"recalled\":0},"
                 + "\"keepalive\":{\"notification\":true,\"wakelock\":false}}");
         s.meta = new JSONObject("{\"logins\":[]}");
         expect(s, Status.LOGGED_OUT, Status.ACTION_OPEN_WECHAT);
@@ -70,8 +70,14 @@ public final class StatusTest {
         s.meta = new JSONObject("{\"logins\":[{\"sn\":1,\"status\":1,\"features\":[\"message.create\"],"
                 + "\"user\":{\"id\":\"wxid_secret\",\"nick\":\"小明\",\"name\":\"xm\"}}]}");
         expect(s, Status.READY, Status.ACTION_NONE);
-        check(Status.hero(s).detail.contains("小明") && Status.hero(s).detail.contains("任意会话"), "就绪要说出账号与可发送");
+        check(Status.hero(s).detail.contains("小明") && Status.hero(s).detail.contains("收发"), "就绪要说出账号与可收发");
+        check(!Status.hero(s).detail.contains("发送已关闭") && !Status.hero(s).detail.contains("只收不发"), "发送没有关闭这回事");
         check(Arrays.equals(Status.steps(s), new int[]{Status.STEP_OK, Status.STEP_OK, Status.STEP_OK, Status.STEP_OK}), "就绪时链路全通");
+        check(Status.stepValues(s)[3].equals("就绪"), "发送一环就绪时只说「就绪」：" + Status.stepValues(s)[3]);
+        // 发送没有开关：这一环只反映微信网络层是否可派发。
+        s.status.getJSONObject("send").put("dispatcher", false);
+        check(Status.steps(s)[3] == Status.STEP_WAIT && Status.stepValues(s)[3].contains("网络层"), "网络层未就绪时发送一环是等待");
+        s.status.getJSONObject("send").put("dispatcher", true);
 
         // 拿不到数据时不沿用在线结论
         s.http = Api.UNREACHABLE;
@@ -81,31 +87,20 @@ public final class StatusTest {
 
         // ---- 已保存待生效 ----
         check(Status.applied(s).tone == Status.SUCCESS, "文件与运行一致 → 已生效");
+        // 配置里遗留的 send=off 不再有任何效果：不算「待生效」，也不改变结论。
         s.conf = Conf.parse("token=" + TOKEN + "\nsend=off\n");
-        Status.Line pending = Status.applied(s);
-        check(pending.tone == Status.WARNING && pending.action == Status.ACTION_RESTART_WECHAT
-                && pending.detail.contains("发送开关"), "说清哪些没生效：" + pending.detail);
+        check(Status.applied(s).tone == Status.SUCCESS && Status.differences(s).isEmpty(), "旧文件里的 send=off 不是待生效项");
         s.conf = Conf.parse(conf);
         s.viaPrevious = true;
         check(Status.applied(s).detail.contains("端口或令牌"), "旧入口应答 → 端口或令牌待生效");
         s.viaPrevious = false;
 
-        // ---- 被拦下的发送 ----
-        s.status.getJSONObject("send").put("last_age_ms", 120000).put("last_ok", false)
-                .put("last_error", "send is disabled by configuration").put("last_target", "123@chatroom");
-        check(Status.blocked(s) == null, "发送开启时关闭提示不出现");
-        s.conf = Conf.parse("token=" + TOKEN + "\n");
-        Status.Blocked blocked = Status.blocked(s);
-        check(blocked != null && blocked.reason == Status.BLOCKED_DISABLED, "发送关闭被拦");
-        s.status.getJSONObject("send").put("last_ok", true);
-        check(Status.blocked(s) == null, "上次成功就不提示");
-        s.conf = Conf.parse(conf);
-
         // ---- 诊断报告不泄露 ----
         String report = Status.report(s, "1.0.0", 0);
         check(!report.contains(TOKEN) && !report.contains("wxid_secret") && !report.contains("小明")
                 && !report.contains("filehelper"), "报告泄露了令牌 / 微信号 / 昵称 / 会话：\n" + report);
-        check(report.contains("v0.7.0") && report.contains("发送开启"), "报告缺少版本或配置摘要");
+        check(report.contains("v0.7.0") && report.contains("配置：端口 5601") && !report.contains("发送开启") && !report.contains("发送关闭"), "报告缺少版本或配置摘要");
+        check(report.contains("已发 3 · 失败 2 · 撤回 0") && !report.contains("拦下"), "发送计数不再有「拦下」：\n" + report);
 
         check(Status.ago(30_000).equals("刚刚") && Status.ago(5 * 60_000).equals("5 分钟前") && Status.ago(3 * 3600_000L).equals("3 小时前"), "时间描述");
         check(Status.reason("JavaVM unavailable").contains("未就绪"), "原因翻译");

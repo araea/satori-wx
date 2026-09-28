@@ -9,7 +9,6 @@
 // request object is handed to com.tencent.mm.modelbase.z2.d(o, null, false) which dispatches
 // it exactly like the app does. No hook, no patch and no dex.
 #include "wx_room.h"
-#include "wx_capabilities.h"
 #include "wx_send.h"
 #include <android/log.h>
 #include <jni.h>
@@ -147,11 +146,6 @@ bool DispatchCgi(JNIEnv *env, jobject scene, ActionResult *result) {
 }
 
 bool Prepare(ActionResult *result, JNIEnv **env) {
-    if (!SendEnabled()) {
-        result->rejected = true;
-        Detail(result->detail, sizeof(result->detail), "write actions are disabled by configuration");
-        return false;
-    }
     *env = static_cast<JNIEnv *>(ReflectEnv());
     if (!*env) {
         Detail(result->detail, sizeof(result->detail), "JavaVM unavailable");

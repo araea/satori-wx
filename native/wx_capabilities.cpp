@@ -2,19 +2,7 @@
 
 namespace satori {
 namespace {
-volatile bool g_send_enabled = false;
-// Read surface backed by the read-only WeChat store (EnMicroMsg.db).
-const char *const kReadOnly[] = {
-    "message.get", "message.list",
-    "user.get", "friend.list",
-    "guild.get", "guild.list",
-    "guild.member.get", "guild.member.list",
-    "guild.role.list", "guild.member.role.list",
-    "channel.get", "channel.list",
-    "user.channel.create",
-    "upload.create",
-};
-const char *const kWithSend[] = {
+const char *const kFeatures[] = {
     "message.get", "message.list",
     "user.get", "friend.list",
     "guild.get", "guild.list",
@@ -44,16 +32,9 @@ const char *const kUnsupported[] = {
 };
 } // namespace
 
-void SetSendEnabled(bool enabled) { g_send_enabled = enabled; }
-bool SendEnabled() { return g_send_enabled; }
-
 const char *const *WeChatFeatures(size_t *count) {
-    if (g_send_enabled) {
-        if (count) *count = sizeof(kWithSend) / sizeof(kWithSend[0]);
-        return kWithSend;
-    }
-    if (count) *count = sizeof(kReadOnly) / sizeof(kReadOnly[0]);
-    return kReadOnly;
+    if (count) *count = sizeof(kFeatures) / sizeof(kFeatures[0]);
+    return kFeatures;
 }
 
 const char *const *WeChatUnsupported(size_t *count) {

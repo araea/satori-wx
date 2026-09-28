@@ -30,7 +30,6 @@ final class HomePage {
         void copyToken();
         void copyReport();
         void shareReport();
-        void enableSend();
     }
 
     /** 首页渲染需要的全部输入。 */
@@ -52,8 +51,7 @@ final class HomePage {
     private final TextView heroLabel, heroTitle, heroDetail;
     private final Btn heroAction, heroSecondary;
     private final LinearLayout heroActions;
-    private final Notice blocked;
-    private final TextView sent, rejected;
+    private final TextView sent, failed;
     private final Item[] chain = new Item[4];
     private final Item endpoint, token, openWeChat, restartWeChat;
     private final Item[] data;
@@ -62,7 +60,6 @@ final class HomePage {
     private int heroActionKind = Status.ACTION_NONE;
     private int heroSecondaryKind = Status.ACTION_NONE;
     private int[] stepStates = new int[0];
-    private Status.Blocked blockedNow;
 
     HomePage(Ui ui, Actions actions, boolean showSettingsEntry) {
         this.ui = ui;
@@ -141,21 +138,11 @@ final class HomePage {
         hero.addView(heroActions, Ui.stack(t.spaceXl));
         content.addView(hero, Ui.stack(t.spaceXl));
 
-        // ---- 被拦下的发送 ----
-        blocked = new Notice(t);
-        blocked.setId(R.id.blocked);
-        blocked.action("", v -> {
-            if (blockedNow == null) return;
-            actions.enableSend();
-        });
-        blocked.setVisibility(View.GONE);
-        content.addView(blocked, Ui.stack(t.spaceMd));
-
         // ---- 两个指标 ----
         boolean pair = ui.layout.pair();
         LinearLayout metrics = pair ? ui.row() : ui.column();
         TextView[] values = new TextView[2];
-        String[] labels = {"已发出", "被拦下"};
+        String[] labels = {"已发出", "发送失败"};
         for (int i = 0; i < 2; i++) {
             LinearLayout tile = ui.column();
             tile.setPadding(t.spaceLg + t.spaceXs, t.spaceLg, t.spaceLg + t.spaceXs, t.spaceLg);
@@ -176,7 +163,7 @@ final class HomePage {
             for (int i = 0; i < 2; i++) ((LinearLayout.LayoutParams) metrics.getChildAt(i).getLayoutParams()).height = -1;
         }
         sent = values[0];
-        rejected = values[1];
+        failed = values[1];
         content.addView(metrics, Ui.stack(t.spaceMd));
 
         // ---- 连接链路 ----
@@ -271,20 +258,10 @@ final class HomePage {
         // 文字按钮跟随卡片的语调色，与说明文字同一套对比度。
         heroSecondary.setTextColor(line.tone == Status.NEUTRAL ? t.primary : t.toneOnContainer(line.tone));
 
-        // ---- 被拦下 ----
-        blockedNow = Status.blocked(s);
-        if (blockedNow == null) {
-            blocked.setVisibility(View.GONE);
-        } else {
-            String when = Status.ago(blockedNow.ageMs);
-            blocked.show(Status.WARNING, "有一条消息没有发出", when + "，客户端尝试发送，但发送已关闭。", "去开启发送");
-            blocked.setVisibility(View.VISIBLE);
-        }
-
         // ---- 指标 ----
         JSONObject send = s.http == 200 && s.status != null ? s.status.optJSONObject("send") : null;
         Ui.set(sent, send == null ? "—" : String.valueOf(send.optLong("sent")));
-        Ui.set(rejected, send == null ? "—" : String.valueOf(send.optLong("rejected")));
+        Ui.set(failed, send == null ? "—" : String.valueOf(send.optLong("failed")));
 
         // ---- 链路 ----
         int[] steps = Status.steps(s);
@@ -298,7 +275,6 @@ final class HomePage {
                     case Status.STEP_OK: kind = Icon.OK; color = t.success; break;
                     case Status.STEP_WAIT: kind = Icon.WAIT; color = t.warning; break;
                     case Status.STEP_FAIL: kind = Icon.ERROR; color = t.error; break;
-                    case Status.STEP_OFF: kind = Icon.BLOCK; color = t.onSurfaceVariant; break;
                     default: kind = Icon.UNKNOWN; color = t.onSurfaceVariant; break;
                 }
                 chain[i].leading(kind, color);

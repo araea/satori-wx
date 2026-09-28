@@ -33,7 +33,6 @@ void AddBackendStatus(cJSON *object, bool capabilities) {
     cJSON *send = cJSON_CreateObject();
     if (send) {
         cJSON_AddItemToObject(object, "send", send);
-        cJSON_AddBoolToObject(send, "enabled", status.enabled);
         cJSON_AddBoolToObject(send, "ready", status.ready);
         cJSON_AddBoolToObject(send, "resolved", status.resolved);
         cJSON_AddBoolToObject(send, "dispatcher", status.dispatcher);
@@ -101,7 +100,6 @@ void *Serve(void *) {
 // after the app has finished starting, and only ever reads.
 void *WarmSend(void *) {
     pthread_setname_np(pthread_self(), "satori-wx-sendwarm");
-    if (!satori::SendEnabled()) return nullptr;
     for (int i = 0; i < 300 && satori::g_login_count <= 0; ++i) {
         const timespec second{1, 0};
         nanosleep(&second, nullptr);
@@ -159,8 +157,6 @@ public:
             if (fd >= 0) close(fd);
             if (dir >= 0) close(dir);
             if (!configured_) __android_log_print(ANDROID_LOG_ERROR, "SatoriWx", "missing or invalid satori-wx.conf; server disabled");
-            // The sender is opt-in; once on, any talker is accepted and pacing still applies.
-            satori::SetSendEnabled(configured_ && g_config.send);
             if (g_data_dir[0]) {
                 char temp_dir[300];
                 snprintf(temp_dir, sizeof(temp_dir), "%s/files/satori-wx-tmp", g_data_dir);
@@ -172,8 +168,6 @@ public:
             satori::SetMediaResolver(satori::WeChatMediaResolver);
             satori::SetStatusProvider(AddBackendStatus);
             satori::SetWakelockProvider(satori::KeepaliveWakelock);
-            if (configured_ && g_config.send)
-                __android_log_print(ANDROID_LOG_WARN, "SatoriWx", "message sender enabled for every talker");
         }
         if (!target_ || !configured_) api_->setOption(zygisk::DLCLOSE_MODULE_LIBRARY);
     }
@@ -211,13 +205,11 @@ public:
         if (g_data_dir[0] && !satori::StartLiveStore(g_data_dir, g_bus, 1))
             __android_log_print(ANDROID_LOG_WARN, "SatoriWx", "live message store not started");
         // Resolve the sender once the account is online so status reflects real capability.
-        if (satori::SendEnabled()) {
-            pthread_t warm;
-            if (pthread_create(&warm, nullptr, WarmSend, nullptr)) {
-                __android_log_print(ANDROID_LOG_WARN, "SatoriWx", "send warm-up thread creation failed: %s", strerror(errno));
-            } else {
-                pthread_detach(warm);
-            }
+        pthread_t warm;
+        if (pthread_create(&warm, nullptr, WarmSend, nullptr)) {
+            __android_log_print(ANDROID_LOG_WARN, "SatoriWx", "send warm-up thread creation failed: %s", strerror(errno));
+        } else {
+            pthread_detach(warm);
         }
     }
     void preServerSpecialize(zygisk::ServerSpecializeArgs *) override {

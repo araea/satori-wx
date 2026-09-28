@@ -24,8 +24,8 @@ while [ "$i" -lt 90 ]; do
         SEND_EXPECTED=0
         SEND_OK=1
         TARGET=none
-        # v0.6.0: exercise the opt-in reflection sender when the config enables it.
-        if grep -q '^send=on' "$MOD/satori-wx.conf"; then
+        # 发送没有开关，验证一律做（自发自收，目标是文件传输助手）；SATORI_VERIFY_SEND=0 可跳过。
+        if [ "${SATORI_VERIFY_SEND:-1}" = 1 ]; then
             SEND_EXPECTED=1
             SEND_OK=0
             TOKEN=$(sed -n 's/^token=//p' "$MOD/satori-wx.conf")

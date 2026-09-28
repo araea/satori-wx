@@ -704,15 +704,13 @@ bool ReadConfig(int fd, Config *config) {
             if (port < 1024) return false;
             parsed.port = port; port_seen = true;
         } else if (!strncmp(line, "send=", 5) && !send_seen) {
+            // Retired switch: the value must still be on|off (a typo stays a hard error), but it
+            // changes nothing.
             const char *value = line + 5;
-            if (!strcmp(value, "on")) parsed.send = true;
-            else if (!strcmp(value, "off")) parsed.send = false;
-            else return false;
+            if (strcmp(value, "on") && strcmp(value, "off")) return false;
             send_seen = true;
         } else if (!strncmp(line, "send_allow=", 11) && !allow_seen) {
-            // Retired whitelist. The key is still accepted (and its value ignored) so configs
-            // written before send_allow was removed keep starting the server; send=on now
-            // allows every talker.
+            // Retired whitelist; accepted and ignored for the same reason.
             allow_seen = true;
         } else return false;
     }

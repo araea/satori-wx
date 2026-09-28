@@ -8,20 +8,20 @@
 
 纯 native C++：无 DEX、无 Java 助手、无 ArtMethod 改写、无 hook 引擎。连发送都是纯反射调用微信自己的代码，不加载任何额外东西。
 
-当前版本 v0.10.0：读侧与事件侧补齐，发送侧加了群内 @ 与图片。
+当前版本 v0.11.0：响应速度与去开关。v0.10.0 之前读侧与事件侧补齐、发送侧有了群内 @ 与图片；v0.11.0 把新消息的到达从 1–2 秒一拍的轮询改成 inotify 驱动（毫秒级），把 wxguard 的解冻从 5 秒轮询改成 cgroup 事件驱动（几毫秒），撤掉发送开关（写方法始终在 features 里；旧配置里的 `send=` 仍被接受但不起作用），并整理了常驻通知（不再重复标题、不再显示唤醒锁与发送状态）。
 
 - 收到的消息按 Satori 元素解码（图片 / 语音 / 视频 / 表情 / 链接 / 文件 / 回复 / @），媒体是签名链接，由 `/v1/proxy` 流式回包，见 [消息内容](wechat-content.md)。
 - 事件：`message-created`（带 `guild` `member` 与头像）、`message-deleted`、`guild-member-added|removed`、`guild-added|removed`、`friend-added|removed`，见 [事件](wechat-events.md)。
 - `message.list` 是 Satori 的双向分页；事件不再有 4 KiB 上限（128 KiB）；轮询水位不再吞消息。
 - `message.create`：群里的 `<at>` 是真提及；`<img>` 走聊天界面自己的 `rj()` 图片管线（**真机未验证**，见 [发送各类消息](wechat-send-types.md)）；回复 `<quote>` 仍被当元素丢掉。
 - `upload.create` 收得下 16 MiB，`/v1/proxy` 流式回包、支持 `Range`。
-- 模块默认 `send=off`；开启后所有会话都可发送，没有限速也没有白名单。
+- 发送没有开关：所有会话都可发送，没有限速也没有白名单，模块自己也不给发送加任何延迟。
 
 ## 协议覆盖（37 个标准方法）
 
 | | 数量 | 方法 |
 | --- | --- | --- |
-| 已实现、真机验证 | **21** | 读侧 13：`message.get/list`、`user.get`、`friend.list`、`guild.get/list`、`guild.member.get/list`、`guild.role.list`、`guild.member.role.list`、`channel.get/list`、`user.channel.create`；资源 1：`upload.create`；写侧 6（`send=on`）：`message.create`、`message.delete`、`channel.delete`（退群）、`guild.member.kick`、`guild.member.role.set/unset`；`login.get` |
+| 已实现、真机验证 | **21** | 读侧 13：`message.get/list`、`user.get`、`friend.list`、`guild.get/list`、`guild.member.get/list`、`guild.role.list`、`guild.member.role.list`、`channel.get/list`、`user.channel.create`；资源 1：`upload.create`；写侧 6：`message.create`、`message.delete`、`channel.delete`（退群）、`guild.member.kick`、`guild.member.role.set/unset`；`login.get` |
 | 微信无此概念 | **11** | `message.update`、`channel.create`、`channel.mute` / `guild.member.mute`、`reaction.create/delete/clear/list`、`guild.role.create/update/delete`，列在 `internal/capabilities.unsupported` |
 | 待逆向的写操作 | **5** | `channel.update`（群改名）、`friend.delete`、`friend.approve`、`guild.approve`、`guild.member.approve`，卡点见 [群管理写操作](wechat-room.md) |
 
@@ -46,10 +46,9 @@ cd /data/data/com.termux/files/home/dev/araea/satori-wx
 ```ini
 port=5601
 token=<32-128 位字母数字-_>
-send=off            # 默认关闭；on 才进 features 并允许向任意会话发送
 ```
 
-未知键、非法值会让 `ReadConfig` 失败，服务端不启动（fail-closed）。`send=on` 后既没有白名单也没有实现端限速。`app/src/com/satori/wx/core/Conf.java` 必须与 `ReadConfig` 判得完全一致（`app/test.sh` 的 `ConfTest` 逐条比对）。
+未知键、非法值会让 `ReadConfig` 失败，服务端不启动（fail-closed）。发送没有开关也没有实现端限速；`send=on|off` 与 `send_allow=` 是已退役的键，仍被接受（值必须是 on / off）但不起作用，好让旧配置文件继续能启动。`app/src/com/satori/wx/core/Conf.java` 必须与 `ReadConfig` 判得完全一致（`app/test.sh` 的 `ConfTest` 逐条比对）。
 
 ## 文件职责
 
@@ -67,8 +66,8 @@ send=off            # 默认关闭；on 才进 features 并允许向任意会话
 | `native/xml_lite.cpp/.h`、`native/textbuf.h` | 微信 XML 的轻量扫描器（只认直接子元素、CDATA、实体）与变长文本缓冲；模块不带 C++ 标准库 |
 | `native/media.cpp/.h`、`native/wx_media.cpp/.h` | MD5 / SHA-256 / HMAC 与媒体链接签名（密钥由 token 派生）；`/v1/proxy` 的媒体解析器（先验签，再碰库与文件） |
 | `native/wx_events.cpp/.h` | 事件扫描器：撤回、群成员、好友的差异 → `message-deleted` / `guild-*` / `friend-*`，启动只快照、两轮确认、重试队列 |
-| `native/wx_live.cpp/.h` | 读主模块捕获的 key.log，只读打开库；每秒轮询新消息 → `message-created`，每 3 秒跑一次事件扫描器 |
-| `native/wx_backend.cpp/.h` | Backend：13 个读方法 + `message.create`（`send=on` 时：按 `<img>` 切成有序的文本 / 图片消息，图片先全部解析核对；音视频文件回 400 `media_unsupported`） |
+| `native/wx_live.cpp/.h`、`native/wx_watch.cpp/.h` | 读主模块捕获的 key.log，只读打开库；`wx_watch` 用 inotify 盯着库所在目录，微信一写 `EnMicroMsg.db` / `-wal` 就立刻读新消息 → `message-created`（30ms、150ms 各补读一次；1 秒超时兜底；inotify 不可用退回 250ms 轮询），每 3 秒跑一次事件扫描器 |
+| `native/wx_backend.cpp/.h` | Backend：13 个读方法 + `message.create`（按 `<img>` 切成有序的文本 / 图片消息，图片先全部解析核对；音视频文件回 400 `media_unsupported`） |
 | `native/wx_capabilities.cpp/.h` | 唯一 features 列表 + `unsupported` 列表 |
 | `native/wx_send.cpp/.h` | 反射发送器（`SendText` 文本与 @、`SendImage` 图片、`SendRecall` 撤回）+ 状态 / 计数快照（无白名单、无限速）；对外暴露 ReflectEnv / ReflectResolve / ReflectLoad / ReflectDispatchScene 供群管理复用 |
 | `native/wx_room.cpp/.h` | 反射群管理写操作：`qn.p`（踢人 / 退群，`m1` 派发）与 `qn.b` / `qn.e`（设 / 撤管理员，`z2.d` Cgi 派发） |
@@ -124,7 +123,7 @@ send=off            # 默认关闭；on 才进 features 并允许向任意会话
 `v51.r0.f`(J) 是本地消息 id。加密、序号、重发全是微信自己的代码。高层入口不用找，`com.tencent.mm.network.a3.b(j1,m1)` 的实现就是 `m1.doScene(j1, new y2())`。完整逆向过程见 [微信消息发送路径](wechat-send.md)。
 
 - 派发器要在构造场景之前拿到：构造器会写库，拿不到派发器时不该先落一条 SENDING 行
-- 默认 `send=off`；开启后不限目标、不限速
+- 没有开关；不限目标、不限速
 - 成功 = 已交给微信派发，不是投递确认；不伪造成功
 - 微信 `doScene` 会把库里所有待发（SENDING）消息一起派发，历史遗留的孤儿行会跟着出去
 
@@ -146,7 +145,7 @@ MsgInfo = ex0.k0.F0.k(talker, localId)          // ex0.j0，按 talker+本地 ms
 
 只撤回本账号发出的消息（`MsgInfo.z0()==1`）；别人的消息返回 502 + `rejected:true`。群主撤回他人消息要走另一套 ticket，未做。
 
-群管理写操作（`send=on`）：`channel.delete`（退群）/ `guild.member.kick` 用 `qn.p`（cgi `delchatroommember`）复用发送路径的 `doScene(派发器, y2)`；`guild.member.role.set/unset` 用 `qn.b` / `qn.e`（cgi `add/delchatroomadmin`），经 `com.tencent.mm.modelbase.z2.d(o, null, false)` 交给微信自带 Cgi 运行器。详情、参数与未做的方法见 [群管理写操作](wechat-room.md)。
+群管理写操作：`channel.delete`（退群）/ `guild.member.kick` 用 `qn.p`（cgi `delchatroommember`）复用发送路径的 `doScene(派发器, y2)`；`guild.member.role.set/unset` 用 `qn.b` / `qn.e`（cgi `add/delchatroomadmin`），经 `com.tencent.mm.modelbase.z2.d(o, null, false)` 交给微信自带 Cgi 运行器。详情、参数与未做的方法见 [群管理写操作](wechat-room.md)。
 
 资源路由：`upload.create` 由 `native/tempstore.cpp` 落盘，返回 `internal:wechat/<user>/_tmp/<name>`（5 分钟）；收到的消息媒体是 `internal:wechat/<user>/_msg/<kind>/<id>/<签名>`（见 [消息内容](wechat-content.md)）。`/v1/proxy/{url}` 在 `server.cpp` 里：`internal:` 解析登录号后流式回文件（`_tmp` 直接查，`_msg` 交给已登记的解析器，先验签）；http(s) 前缀未登记则 403；非法 400；未知登录 / 验签失败 404；带 CORS，不需 Satori 登录头。`proxy_urls` 仍为空（微信没有公网资源 URL）。
 
@@ -179,12 +178,12 @@ python3 tools/dexmethodstrings.py $APK 'Lcom/tencent/mm/app/q3;' b
 
 ## 已知限制 / 安全项
 
-1. 微信被系统反复冻结。真机（ColorOS）实测 `OplusHansManager` 按 uid 冻结微信，被冻期间回环端口握手成功但不回任何东西，客户端挂起至超时。应对：进程内常驻通知 + 唤醒锁 + `startService` 重拉 `CoreService`，加 root 侧 `wxguard` 轮询解冻（见 [常驻通知与保活](keepalive.md)）。`wxguard` 全新安装默认 ARMED。
+1. 微信被系统反复冻结。真机（ColorOS）实测 `OplusHansManager` 按 uid 冻结微信，被冻期间回环端口握手成功但不回任何东西，客户端挂起至超时。应对：进程内常驻通知 + 唤醒锁 + `startService` 重拉 `CoreService`，加 root 侧 `wxguard` 监听冻结事件、几毫秒内解冻（见 [常驻通知与保活](keepalive.md)）。`wxguard` 全新安装默认 ARMED。
 2. 密钥捕获把明文写进 `files/satori-wx/key.log`（0600）；后续可改为只在内存里传给 `wx_live`。
 3. 微信 `:push` 子进程有 mars；服务端只在主进程（发送靠反射，不依赖子进程）。
 4. 只支持 arm64。
-5. 发送默认关闭，但开启后不做实现端限速 / 白名单，不伪造成功；风控责任在调用方。
-6. 写操作已做 `message.delete`（仅本账号消息）、`channel.delete`（退群）、`guild.member.kick`、`guild.member.role.set/unset`；剩下 5 个（见上）没做，卡点见 [群管理写操作](wechat-room.md)。每个都必须默认关闭；破坏性动作不伪造成功。
+5. 发送没有开关，也不做实现端限速 / 白名单 / 延迟，不伪造成功；风控责任在调用方。
+6. 写操作已做 `message.delete`（仅本账号消息）、`channel.delete`（退群）、`guild.member.kick`、`guild.member.role.set/unset`；剩下 5 个（见上）没做，卡点见 [群管理写操作](wechat-room.md)。破坏性动作不伪造成功。
 7. 发送：文本、群内 @、图片（未真机验证）。回复 `<quote>`、语音、视频、文件没做；GIF 按静态图发。
 8. 收到的图片多半只有缩略图：原图是微信私有的 `wxgf` 容器（客户端打不开），要等用户在微信里点开才下载，模块不触发下载。语音是 SILK（`audio/silk`），不转码。
 9. 事件延迟：撤回 ≤ 3 秒，群成员 ≥ 3 秒（要两轮确认），好友 12–24 秒；模块启动前发生的变化不会补发。撤回事件里群消息的作者只有模块启动之后见过的消息才知道。
@@ -195,11 +194,11 @@ python3 tools/dexmethodstrings.py $APK 'Lcom/tencent/mm/app/q3;' b
 ## 接手第一步
 
 1. `./tests/run.sh` 确认全绿；`git log --oneline -10`
-2. 读 `internal/status` 的 `send` 与 `keepalive` 块确认线上状态：发送是否开启、常驻通知是否发布、唤醒锁是否持有、进程 `oom_score_adj` / `wchan`。要接真实用例直接发即可，无需白名单。
-3. 想继续写功能：从 5 个待做写操作里挑一个，按发送 / 撤回的老路子做。先只读地找到微信自己的接口（离线 DEX 反查 + 必要时 JADX），再反射调用，再默认关闭，最后真机验一条。群改名在可读 dex 里没有 cgi，删好友也没有 `delcontact`（只有 `delcontactlabel`），入群 / 好友审批依赖申请消息里的 ticket。想碰媒体发送先读 [发送各类消息](wechat-send-types.md)。
-4. 纪律：每个方法真实实现后才进 `features`；`unsupported` 只放微信真的没有的能力；破坏性 / 风控敏感动作默认关闭。往上加 `unsupported` 条目时记得同步 `tests/capabilities_test.cpp` 的计数断言。
+2. 读 `internal/status` 的 `send`、`events`、`keepalive` 块确认线上状态：派发器是否就绪（`send.dispatcher`）、事件是否由变更通知驱动（`events.watching`）、常驻通知是否发布、唤醒锁是否持有、进程 `oom_score_adj` / `wchan`。要量响应速度跑 `python3 tools/latency-probe.py`。要接真实用例直接发即可，没有开关也没有白名单。
+3. 想继续写功能：从 5 个待做写操作里挑一个，按发送 / 撤回的老路子做。先只读地找到微信自己的接口（离线 DEX 反查 + 必要时 JADX），再反射调用，最后真机验一条。群改名在可读 dex 里没有 cgi，删好友也没有 `delcontact`（只有 `delcontactlabel`），入群 / 好友审批依赖申请消息里的 ticket。想碰媒体发送先读 [发送各类消息](wechat-send-types.md)。
+4. 纪律：每个方法真实实现后才进 `features`；`unsupported` 只放微信真的没有的能力；破坏性动作不伪造成功。往上加 `unsupported` 条目时记得同步 `tests/capabilities_test.cpp` 的计数断言。
 
-## v0.10.0 真机验收清单（重启手机、微信起来之后按顺序跑一遍）
+## v0.10.0 / v0.11.0 真机验收清单（重启手机、微信起来之后按顺序跑一遍）
 
 模块的 `.so` 在开机时被 Zygisk Next 钉成 memfd，覆盖磁盘文件后必须重启手机才会加载新代码（见 `satori-wx-module-deploy` 记忆条目）。主机测试里没有的部分只能在这里验：JNI 调用、真实的库与文件。
 
@@ -209,6 +208,10 @@ T=$(su -c 'cat /data/adb/modules/satori_wx/satori-wx.conf' | sed -n 's/^token=//
 ME=wxid_8zxjsghrk8vz41
 api() { local body=${2:-'{}'}; curl -s -X POST "http://127.0.0.1:5601/v1/$1" -H "Authorization: Bearer $T" \
   -H "Satori-Platform: wechat" -H "Satori-User-ID: $ME" -H 'Content-Type: application/json' -d "$body"; echo; }
+
+# 0) v0.11.0：events.watching 必须是 true，然后量延迟——http 几十毫秒、event 也是几十毫秒（旧轮询是 200–1900ms 均匀分布）
+api internal/status | head -c 600
+python3 tools/latency-probe.py -n 10
 
 # 1) 版本、事件计数、send.media；capabilities 里要有 event_types
 api internal/status | head -c 1500

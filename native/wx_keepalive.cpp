@@ -53,7 +53,6 @@ pthread_mutex_t g_mu = PTHREAD_MUTEX_INITIALIZER;
 bool g_started = false;
 char g_token[129] = {};
 unsigned g_port = 5601;
-bool g_send = false;
 
 volatile bool g_want_lock = false;
 volatile bool g_lock_held = false;
@@ -75,7 +74,7 @@ volatile long long g_reposts = 0;
 char g_notify_detail[48] = "init";
 char g_service_detail[64] = "init";
 long long g_kick_ms = 0;
-char g_last_key[320] = {};
+char g_last_key[480] = {};
 long long g_last_post_ms = 0;
 
 long long NowMs() {
@@ -484,19 +483,23 @@ void Kick(JNIEnv *env) {
     env->DeleteLocalRef(intent);
 }
 
+// Minute resolution: the notification is only redrawn when its text changes, so a per-second
+// figure would repost it every refresh. Under a minute reads as "just came online".
 void FormatUptime(long long ms, char *out, size_t size) {
     if (ms < 0) ms = 0;
-    const long long seconds = ms / 1000, minutes = seconds / 60, hours = minutes / 60, days = hours / 24;
-    if (days > 0) snprintf(out, size, "%lld 天 %lld 小时", days, hours % 24);
-    else if (hours > 0) snprintf(out, size, "%lld 小时 %lld 分", hours, minutes % 60);
-    else if (minutes > 0) snprintf(out, size, "%lld 分", minutes);
-    else snprintf(out, size, "%lld 秒", seconds);
+    const long long minutes = ms / 60000, hours = minutes / 60, days = hours / 24;
+    if (days > 0) snprintf(out, size, "已在线 %lld 天 %lld 小时", days, hours % 24);
+    else if (hours > 0) snprintf(out, size, "已在线 %lld 小时 %lld 分", hours, minutes % 60);
+    else if (minutes > 0) snprintf(out, size, "已在线 %lld 分", minutes);
+    else snprintf(out, size, "刚刚上线");
 }
 
 // Renders the resident entry from live state and returns its accent color. The online/listening
-// split, the attached-client count and the uptime line mirror satori-qq's StatusNotice; the
-// CPU/Wi-Fi detail mirrors its WakeLockCtl.
-int RenderState(char *title, size_t title_size, char *text, size_t text_size, char *big, size_t big_size) {
+// split and the attached-client count mirror satori-qq's StatusNotice. The collapsed row is the
+// title plus `text`; `big` (the expanded body) repeats `text` and adds the uptime, and never the
+// title again. Nothing else belongs here: the wake-lock state is the button's own label, and
+// sending is always on, so there is no state to report for either.
+int RenderState(long long serving_ms, char *title, size_t title_size, char *text, size_t text_size, char *big, size_t big_size) {
     const bool online = g_login_count > 0;
     const bool listening = g_server_ready;
     const int clients = g_client_count > 0 ? g_client_count : 0;
@@ -515,18 +518,13 @@ int RenderState(char *title, size_t title_size, char *text, size_t text_size, ch
         snprintf(title, title_size, "知言 · 服务异常");
         snprintf(text, text_size, "本地端口 %u 未监听", g_port);
     }
-    int used = snprintf(big, big_size, "%s\n%s", title, text);
-    if (used < 0 || static_cast<size_t>(used) >= big_size) return color;
-    if (online && listening && g_serving_since_ms > 0) {
-        char uptime[48];
-        FormatUptime(NowMs() - g_serving_since_ms, uptime, sizeof(uptime));
-        used += snprintf(big + used, big_size - used, "\n已在线 %s", uptime);
-        if (used < 0 || static_cast<size_t>(used) >= big_size) return color;
+    snprintf(big, big_size, "%s", text);
+    if (online && listening && serving_ms > 0) {
+        char uptime[64];
+        FormatUptime(serving_ms, uptime, sizeof(uptime));
+        const size_t used = strlen(big);
+        if (used < big_size) snprintf(big + used, big_size - used, "\n%s", uptime);
     }
-    used += snprintf(big + used, big_size - used, "\n唤醒锁 %s：CPU %s · Wi-Fi %s", g_want_lock ? "已开启" : "已关闭",
-                     g_cpu_held ? "持有" : "释放", g_wifi_held ? "持有" : "释放");
-    if (used < 0 || static_cast<size_t>(used) >= big_size) return color;
-    snprintf(big + used, big_size - used, "\n发送 %s", g_send ? "已开启" : "只收不发");
     return color;
 }
 
@@ -559,10 +557,11 @@ void Notify(JNIEnv *env) {
     }
     g_notify_enabled = enabled;
 
-    char title[96], text[160], big[320], key[320];
-    const int color = RenderState(title, sizeof(title), text, sizeof(text), big, sizeof(big));
-    snprintf(key, sizeof(key), "%s|%s|%d|%d|%d|%d", title, text, g_login_count, g_want_lock ? 1 : 0,
-             g_cpu_held ? 1 : 0, g_wifi_held ? 1 : 0);
+    char title[96], text[160], big[320], key[480];
+    const int color = RenderState(g_serving_since_ms > 0 ? NowMs() - g_serving_since_ms : 0, title, sizeof(title),
+                                  text, sizeof(text), big, sizeof(big));
+    // Everything the entry shows: the collapsed row, the expanded body (uptime), the button label.
+    snprintf(key, sizeof(key), "%s|%s|%d|%d", title, big, g_login_count, g_want_lock ? 1 : 0);
     const bool changed = strcmp(key, g_last_key) != 0;
     const long long now = NowMs();
     const bool alive = changed || StillPosted(env);
@@ -717,12 +716,16 @@ void *Manager(void *) {
 }
 } // namespace
 
+int KeepaliveRender(long long serving_ms, char *title, size_t title_size, char *text, size_t text_size,
+                    char *big, size_t big_size) {
+    return RenderState(serving_ms, title, title_size, text, text_size, big, big_size);
+}
+
 void KeepaliveStart(void *vm, const Config &config) {
     if (g_started || !vm) return;
     g_started = true;
     g_vm = static_cast<JavaVM *>(vm);
     g_port = config.port;
-    g_send = config.send;
     snprintf(g_token, sizeof(g_token), "%s", config.token);
     pthread_t thread;
     if (pthread_create(&thread, nullptr, Manager, nullptr)) {

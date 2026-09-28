@@ -1,8 +1,8 @@
 # Satori v1 协议层验收
 
-本版本提供 native 协议服务端、native 后端接口、只读账号身份与消息库适配层、**内置资源路由**（`upload.create` 与 `/v1/proxy`），以及一个**默认关闭**的反射写操作集（消息发送 / 撤回 + 群管理）。
+本版本提供 native 协议服务端、native 后端接口、只读账号身份与消息库适配层、**内置资源路由**（`upload.create` 与 `/v1/proxy`），以及一套反射写操作（消息发送 / 撤回 + 群管理，没有开关）。
 
-读侧 13 个方法已实现（消息、历史、联系人 / 群 / 频道、群成员与角色、私聊频道），`upload.create` 1 个；`send=on` 时另实现 `message.create/delete`、`channel.delete`（退群）、`guild.member.kick`、`guild.member.role.set/unset` 共 6 个；`login.get` 1 个；11 个方法微信无法表达（见下），其余为尚未实现的写操作。下表中的「完成」指协议层及带独立测试后端 / 账号适配层的验收，不代表微信支持或已适配所有 API。
+读侧 13 个方法已实现（消息、历史、联系人 / 群 / 频道、群成员与角色、私聊频道），`upload.create` 1 个；另实现 `message.create/delete`、`channel.delete`（退群）、`guild.member.kick`、`guild.member.role.set/unset` 共 6 个；`login.get` 1 个；11 个方法微信无法表达（见下），其余为尚未实现的写操作。下表中的「完成」指协议层及带独立测试后端 / 账号适配层的验收，不代表微信支持或已适配所有 API。
 
 | 标准项目 | 实现 / 验证 |
 | --- | --- |
@@ -12,11 +12,11 @@
 | 方法可用性 | 登录快照 features 控制；不支持返回 404（在参数校验之前判定，不支持的方法缺参也回 404 而非 400），声明支持但无 handler 返回 501，离线返回 503 |
 | login.get / meta / READY | 同一份登录快照；登录身份由只读偏好解析得到，无账号时为空 |
 | message.create / update 的 content | 保留 Satori 标记字符串；提供 native 文本转义 helper，不把标记当 HTML 执行 |
-| message.create（可选发送） | `send=on` 时反射调微信自己的发送管线；内容按 `<img>` 切成有序的文本 / 图片消息，**返回 `Message[]`（官方客户端对结果调用 `.map()`）**；文本走 `NetSceneSendMsg`，群里的 `<at>` 是真提及（`atuserlist`），图片走聊天界面自己的 `rj()` 管线；默认关闭，开启后不限目标、不限速；成功＝已派发，非投递确认（图片要等库里出现行才回 200） |
+| message.create（发送） | 反射调微信自己的发送管线；内容按 `<img>` 切成有序的文本 / 图片消息，**返回 `Message[]`（官方客户端对结果调用 `.map()`）**；文本走 `NetSceneSendMsg`，群里的 `<at>` 是真提及（`atuserlist`），图片走聊天界面自己的 `rj()` 管线；不限目标、不限速；成功＝已派发，非投递确认（图片要等库里出现行才回 200） |
 | message.create 的图片 | `src` 只认 `upload.create` 的 `internal:` 链接与 `data:image/…;base64`；所有图片先解析、核对魔数，坏一张整条 400（`media_unresolved` / `media_unsupported` / `image_too_large` / `too_many_images`）；6 秒内没入库回 502 `image_unconfirmed`，不假报成功。见 [发送各类消息](wechat-send-types.md) |
 | message.create 的其它媒体元素 | 只带 `<audio>` `<video>` `<file>` 的 content 回 400 `media_unsupported`；与文字同在时元素被丢弃、文字照发；`<quote>` 同样被丢弃（回复没做） |
-| message.delete（可选撤回） | `send=on` 时用 `ex0.k0.F0.k(talker,localId)` 取 MsgInfo，反射调 `com.tencent.mm.modelsimple.d1`（cgi revokemsg）；只撤回本账号消息，复用同一套开关 |
-| channel.delete / guild.member.kick（可选） | `send=on` 时反射 `qn.p`（cgi delchatroommember），退群用 `[self]`，踢人用目标 wxid；`send=on` 才进 features |
+| message.delete（撤回） | 用 `ex0.k0.F0.k(talker,localId)` 取 MsgInfo，反射调 `com.tencent.mm.modelsimple.d1`（cgi revokemsg）；只撤回本账号消息 |
+| channel.delete / guild.member.kick | 反射 `qn.p`（cgi delchatroommember），退群用 `[self]`，踢人用目标 wxid |
 | guild.member.role.set / unset（可选） | 反射 `qn.b` / `qn.e`（cgi add/delchatroomadmin），经 `com.tencent.mm.modelbase.z2.d(o,null,false)` 走微信 Cgi 运行器；只变更 `admin` 角色 |
 | upload.create | core 内置 SDK 默认实现，`multipart/form-data` 落盘为 `internal:wechat/<user>/_tmp/<name>`（5 分钟、随机名、0600），落在微信数据目录下的 `files/satori-wx-tmp/`；链接由 `/v1/proxy` 回读（发送端不消费） |
 | /v1/proxy/{url} | `internal:` 链接按登录号解析并流式回文件（`Range`、`HEAD`、百分号编码）；`_tmp` 是上传，`_msg` 是收到的消息媒体（验签失败与不存在都是 404）；未登记 http(s) 前缀 403；非法 400；未知登录 404；带 CORS，不需 Satori 登录头 |

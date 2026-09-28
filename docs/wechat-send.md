@@ -42,7 +42,7 @@ com.tencent.mm.network.y2.<init>()   微信自己在 a3.b 里用的空回调（�
 
 - 只做反射：`ActivityThread.currentApplication()` 取宿主 ClassLoader → `loadClass` `v51.r0` / `com.tencent.mm.network.y2` / `com.tencent.mm.network.a3` / `com.tencent.mm.modelbase.r1` → 缓存 `GetMethodID` / `GetFieldID`（jmethodID 跨线程稳定）。
 - 调用线程 attach 到 JVM 并 `Looper.prepare()`；`m1.dispatch` 里有无 Looper 两条分支，prepare 之后「无参 `new Handler()`」的错误路径不会抛。
-- **默认关闭**：配置 `send=on` 才进 features；开启后不限目标、不限速。客户端要求发就立即交给微信派发。
+- **没有开关**：`message.create` 等写方法始终在 features 里，不限目标、不限速。客户端要求发就立即交给微信派发，模块自己不加任何延迟；要停发，断开客户端。旧配置里的 `send=on|off` 仍被接受，但已不起作用。
 - 返回的是「场景已被接受派发」（`netId >= 0`），**不是投递确认**；`message.create` 返回的消息 id 是本地 id，形状由实现端按 Satori Message 构造，不回读数据库。
 - 全程不 hook、不改 ArtMethod、不加载 dex、不写微信代码段。
 
@@ -52,7 +52,6 @@ com.tencent.mm.network.y2.<init>()   微信自己在 a3.b 里用的空回调（�
 
 ```json
 "send": {
-  "enabled": true,          // 配置 send=on 且配置有效
   "ready": true,            // JavaVM 已交给发送器（可以尝试发送）
   "resolved": true,         // 微信发送类已在宿主 ClassLoader 上解析成功
   "dispatcher": true,       // 上次探测时微信网络派发器可达
@@ -68,15 +67,15 @@ com.tencent.mm.network.y2.<init>()   微信自己在 a3.b 里用的空回调（�
 
 `resolved` / `dispatcher` 由**预热线程**维护：登录后它主动解析一次类并探一次派发器（不发送任何消息），所以这两个字段不需要先发一条消息才有值；若解析失败会每 10 秒重试。`ready` 只表示 JavaVM 已接上；能不能发看 `resolved` + `dispatcher`。
 
-计数含义：`sent` = 已交微信派发；`failed` = 到了发送管线但失败（含解析不到类、派发返回负值）；`rejected` = 在派发前被策略拒绝（`send=off`）。计数按进程计，重启归零。`message.create` 失败时返回的 502 体会带 `rejected: true` 以示区别。
+计数含义：`sent` = 已交微信派发；`failed` = 到了发送管线但失败（含解析不到类、派发返回负值）；`rejected` = 在派发前被拒绝（请求不合法，或撤回的不是本账号的消息）。计数按进程计，重启归零。`message.create` 失败时返回的 502 体会带 `rejected: true` 以示区别。
 
 ## 四、验证状态
 
-- 离线：`tests/capabilities_test.cpp` 覆盖 features 开关、配置解析（旧 `send_allow` 仍接受）、连续发送不限速与无 VM 的拒绝路径；`./tests/run.sh` 全绿。
+- 离线：`tests/capabilities_test.cpp` 覆盖 features、配置解析（旧 `send` / `send_allow` 仍接受）、连续发送不限速与无 VM 的拒绝路径；`./tests/run.sh` 全绿。
 - **真机 v0.6.1（2026-09-27）：发送打通。** 开机自检自动向 `filehelper` 调一次 `message.create`，得到 `{"channel":{"id":"filehelper","type":1},"id":"3257",...}`，logcat `SatoriWx: sent to filehelper (local id 3257, netId 0)`，`SEND verdict ok=1`。
 - v0.6.0 真机（同一轮）：模块 / 协议 / 身份全 PASS、`features` 含 `message.create`、反射解析全通过，但 `a3.c()` 在主进程为 null → `network dispatcher unavailable`。据此改成 `r1.y.k()` 优先。
 - **副作用（v0.6.0 遗留）**：v0.6.0 的实现在拿到派发器**之前**就构造了场景，13 次失败尝试各在 `message` 表留下一条 SENDING 行（`3244`–`3256`）。v0.6.1 首次成功发送时 `doScene` 把待发 SENDING 消息一并派发，于是这些行也被发到 `filehelper`（只发给自己，无社交影响）。v0.6.1 已把派发器检查移到构造场景之前，不再产生这种孤儿行。
-- 发送是风控最敏感动作，线上必须保持默认关闭；风控责任在调用方。
+- 发送是风控最敏感的动作，但模块不再替调用方设卡：没有开关、没有限速、没有延迟，风控责任在调用方。
 
 ## 五、已知边界
 

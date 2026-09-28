@@ -48,8 +48,7 @@ public final class Status {
     public static final int STEP_OK = 0;
     public static final int STEP_WAIT = 1;
     public static final int STEP_FAIL = 2;
-    public static final int STEP_OFF = 3;
-    public static final int STEP_UNKNOWN = 4;
+    public static final int STEP_UNKNOWN = 3;
 
     /** 一次检查的全部输入。字段由宿主填，这里只读。 */
     public static final class Snapshot {
@@ -192,14 +191,8 @@ public final class Status {
             default:
                 JSONObject login = login(s);
                 String name = displayName(login);
-                return new Line(SUCCESS, "服务就绪", (name.isEmpty() ? "微信已登录。" : "已登录「" + name + "」。") + sendSummary(s));
+                return new Line(SUCCESS, "服务就绪", (name.isEmpty() ? "微信已登录。" : "已登录「" + name + "」。") + "客户端可以收发消息。");
         }
-    }
-
-    private static String sendSummary(Snapshot s) {
-        JSONObject send = s.status == null ? null : s.status.optJSONObject("send");
-        if (send == null || !send.optBoolean("enabled")) return "客户端可以接收消息；发送已关闭。";
-        return "客户端可以接收消息，也可以向任意会话发送文字。";
     }
 
     /** 已登录（status = 1）的那个账号；没有则 null。 */
@@ -251,11 +244,11 @@ public final class Status {
         else if (state == WECHAT_FROZEN) service = STEP_WAIT;
         else service = STEP_FAIL;
         int account = !serving ? STEP_UNKNOWN : login(s) != null ? STEP_OK : d.wechatAuthed ? STEP_FAIL : STEP_WAIT;
+        // 发送没有开关，这一环只看微信自己的网络层是否已经可以派发。
         int send;
         JSONObject block = serving ? s.status.optJSONObject("send") : null;
         if (block == null) send = STEP_UNKNOWN;
-        else if (!block.optBoolean("enabled")) send = STEP_OFF;
-        else send = STEP_OK;
+        else send = block.optBoolean("dispatcher") ? STEP_OK : STEP_WAIT;
         return new int[]{wechat, service, account, send};
     }
 
@@ -289,8 +282,8 @@ public final class Status {
         String send;
         JSONObject block = serving ? s.status.optJSONObject("send") : null;
         if (block == null) send = "—";
-        else if (!block.optBoolean("enabled")) send = "已关闭 · 只收不发";
-        else send = "已开启 · 可发任意会话";
+        else if (!block.optBoolean("dispatcher")) send = "等待微信网络层";
+        else send = "就绪";
         return new String[]{wechat, service, account, send};
     }
 
@@ -330,40 +323,7 @@ public final class Status {
         java.util.ArrayList<String> out = new java.util.ArrayList<>();
         if (s.conf == null || s.status == null) return out;
         if (s.viaPrevious) out.add("端口或令牌");
-        JSONObject send = s.status.optJSONObject("send");
-        if (send == null) return out;
-        if (send.optBoolean("enabled") != s.conf.send) out.add("发送开关");
         return out;
-    }
-
-    // ------------------------------------------------------------------ 被拦下的发送
-
-    public static final int BLOCKED_DISABLED = 2;
-
-    /** 最近一次发送被策略拦下：给首页一个「去开启发送」的捷径。 */
-    public static final class Blocked {
-        public final int reason;
-        public final String target;
-        public final long ageMs;
-
-        Blocked(int reason, String target, long ageMs) {
-            this.reason = reason;
-            this.target = target;
-            this.ageMs = ageMs;
-        }
-    }
-
-    public static Blocked blocked(Snapshot s) {
-        if (s.http != 200 || s.status == null || s.conf == null) return null;
-        JSONObject send = s.status.optJSONObject("send");
-        if (send == null || !send.has("last_age_ms") || send.optBoolean("last_ok", true)) return null;
-        String error = send.optString("last_error", "");
-        String target = send.optString("last_target", "");
-        long age = send.optLong("last_age_ms");
-        if (error.equals("send is disabled by configuration")) {
-            return s.conf.send ? null : new Blocked(BLOCKED_DISABLED, target, age);
-        }
-        return null;
     }
 
     // ------------------------------------------------------------------ 诊断
@@ -385,7 +345,7 @@ public final class Status {
         }
         JSONObject send = serving ? s.status.optJSONObject("send") : null;
         String counts = send == null ? "—" : "已发 " + send.optLong("sent") + " · 失败 " + send.optLong("failed")
-                + " · 拦下 " + send.optLong("rejected") + " · 撤回 " + send.optLong("recalled");
+                + " · 撤回 " + send.optLong("recalled");
         String last = "—";
         if (send != null && send.has("last_age_ms")) {
             last = ago(send.optLong("last_age_ms")) + " · " + (send.optBoolean("last_ok")
@@ -415,7 +375,6 @@ public final class Status {
     /** 服务端英文原因 → 界面上的中文说明。 */
     public static String reason(String error) {
         switch (error) {
-            case "send is disabled by configuration": return "发送已关闭";
             case "empty target or content": return "目标或内容为空";
             case "JavaVM unavailable": return "微信运行环境未就绪";
             default:
@@ -444,7 +403,7 @@ public final class Status {
         out.append("结论：").append(hero.title).append('\n');
         for (String[] row : diagnostics(s, appVersion)) out.append(row[0]).append("：").append(row[1]).append('\n');
         if (s.conf != null) {
-            out.append("配置：端口 ").append(s.conf.port).append(" · 发送").append(s.conf.send ? "开启" : "关闭").append('\n');
+            out.append("配置：端口 ").append(s.conf.port).append('\n');
         } else if (s.confError != null) {
             out.append("配置：无效（").append(s.confError).append("）\n");
         }

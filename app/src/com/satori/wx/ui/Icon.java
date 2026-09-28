@@ -39,7 +39,6 @@ final class Icon {
     static final int GROUP = R.drawable.ms_group;
     static final int EDIT = R.drawable.ms_edit;
     static final int LINK = R.drawable.ms_link;
-    static final int BLOCK = R.drawable.ms_block;
     static final int FOLDER = R.drawable.ms_folder;
 
     static Drawable of(Tokens t, int kind, int color) {
