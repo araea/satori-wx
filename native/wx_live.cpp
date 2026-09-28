@@ -2,7 +2,9 @@
 #include "wx_events.h"
 #include "wx_store.h"
 #include "wx_account.h"
+#include "wx_watch.h"
 #include <dirent.h>
+#include <poll.h>
 #include <pthread.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -10,6 +12,7 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <time.h>
+#include <unistd.h>
 
 namespace satori {
 namespace {
@@ -21,6 +24,7 @@ struct Spec {
 };
 struct Live {
     char app_data[1024];
+    char database[1600];
     EventBus *bus;
     int login_sn;
     Store *store;
@@ -33,6 +37,19 @@ Store *g_live_store = nullptr;
 volatile long long g_live_emitted = 0;
 Scanner *g_live_scanner = nullptr;
 int g_live_login_sn = 0;
+volatile bool g_live_watching = false;
+volatile long long g_live_wakes = 0;
+
+// How the poller learns that WeChat wrote something. A change notice on the database directory
+// wakes it within milliseconds; the timeouts below only cover a notice that never comes.
+constexpr int kFallbackMs = 1000;    // longest sleep while a watch is active
+constexpr int kNoWatchMs = 250;      // sleep when inotify is unavailable and we must poll blindly
+constexpr int kScanEveryMs = 3000;   // recalls / roster / friends scanner cadence
+constexpr int kMinGapMs = 10;        // a write burst must not turn into a busy loop
+// A notice can land a hair before WeChat's commit is visible to a second connection, and a lone
+// write produces no further notice: read again shortly after every wake.
+constexpr int kTailMs[] = {30, 150};
+constexpr int kTails = sizeof(kTailMs) / sizeof(kTailMs[0]);
 
 bool Emit(void *context, const char *event) {
     auto *live = static_cast<Live *>(context);
@@ -128,12 +145,25 @@ bool TryOpen(Live *live, Store **out) {
     Account account;
     const char *self_id = ReadAccount(live->app_data, &account) && account.exists ? account.wxid : nullptr;
     Store *store = CreateStore(database, spec.key, spec.size, spec.version, self_id);
+    snprintf(live->database, sizeof(live->database), "%s", database);
     if (!store) { Log(live->app_data, "open: failed (%s) compat=%d len=%d", StoreError(nullptr), spec.version, spec.size); return false; }
     const long long watermark = StoreWatermark(store);
     if (watermark < 0) { Log(live->app_data, "open: watermark failed (%s)", StoreError(store)); DestroyStore(store); return false; }
     Log(live->app_data, "opened: compat=%d len=%d watermark=%lld", spec.version, spec.size, watermark);
     *out = store;
     return true;
+}
+
+long long MonotonicMs() {
+    timespec now{};
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    return static_cast<long long>(now.tv_sec) * 1000 + now.tv_nsec / 1000000;
+}
+
+long long RealtimeMs() {
+    timespec now{};
+    clock_gettime(CLOCK_REALTIME, &now);
+    return static_cast<long long>(now.tv_sec) * 1000 + now.tv_nsec / 1000000;
 }
 
 void *Loop(void *argument) {
@@ -162,15 +192,20 @@ void *Loop(void *argument) {
     // snapshots them now (announcing nothing for what already exists) and diffs on every pass.
     Scanner *scanner = CreateScanner(live->store, live->login_sn);
     g_live_scanner = scanner;
-    long long last_scan = 0;
+    const int watch = WatchOpen(live->database);
+    g_live_watching = watch >= 0;
+    if (watch >= 0) Log(live->app_data, "watching %s for writes", live->database);
+    else Log(live->app_data, "inotify unavailable: polling every %d ms", kNoWatchMs);
+    long long last_scan = MonotonicMs();
+    long long last_poll = 0;
+    long long tail_at[kTails] = {};
     long long logged = -1;
     for (;;) {
-        if (scanner) {
-            timespec now{};
-            clock_gettime(CLOCK_REALTIME, &now);
-            const long long now_ms = static_cast<long long>(now.tv_sec) * 1000 + now.tv_nsec / 1000000;
-            if (now_ms - last_scan >= 3000) { ScannerStep(scanner, Emit, live, now_ms); last_scan = now_ms; }
+        if (scanner && MonotonicMs() - last_scan >= kScanEveryMs) {
+            ScannerStep(scanner, Emit, live, RealtimeMs());
+            last_scan = MonotonicMs();
         }
+        last_poll = MonotonicMs();
         bool more = false;
         live->watermark = StorePoll(live->store, live->watermark, live->login_sn, Emit, live, &more);
         if (live->emitted != logged) {
@@ -179,8 +214,19 @@ void *Loop(void *argument) {
         }
         // A full batch means a burst is still being read; do not make it wait for the next tick.
         if (more) continue;
-        const timespec delay{1, 0};
-        nanosleep(&delay, nullptr);
+        long long deadline = last_poll + (watch >= 0 ? kFallbackMs : kNoWatchMs);
+        if (scanner && last_scan + kScanEveryMs < deadline) deadline = last_scan + kScanEveryMs;
+        for (long long due : tail_at) if (due && due < deadline) deadline = due;
+        if (WatchWait(watch, deadline - MonotonicMs())) {
+            g_live_wakes = g_live_wakes + 1;
+            const long long woke = MonotonicMs();
+            for (int i = 0; i < kTails; ++i) tail_at[i] = woke + kTailMs[i];
+            // Coalesce a write burst: at most one read per kMinGapMs.
+            const long long since = woke - last_poll;
+            if (since < kMinGapMs) poll(nullptr, 0, static_cast<int>(kMinGapMs - since));
+        }
+        const long long now = MonotonicMs();
+        for (long long &due : tail_at) if (due && due <= now) due = 0;
     }
 }
 } // namespace
@@ -203,6 +249,8 @@ void LiveStatsGet(LiveStats *stats) {
     if (!stats) return;
     stats->open = g_live_store != nullptr;
     stats->emitted = g_live_emitted;
+    stats->watching = g_live_watching;
+    stats->wakes = g_live_wakes;
     stats->skipped = StoreSkipped(g_live_store);
     stats->dropped = ScannerDropped(g_live_scanner);
 }

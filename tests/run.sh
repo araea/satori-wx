@@ -54,6 +54,10 @@ clang++ -std=c++20 -O1 -g -fno-exceptions -fno-rtti -fno-threadsafe-statics -nos
     "$R/build/tests/cjson.o" -o "$R/build/tests/content-test"
 "$R/build/tests/content-test"
 clang++ -std=c++20 -O1 -g -fno-exceptions -fno-rtti -nostdinc++ -nostdlib++ \
+    -Wall -Wextra -Werror -I "$R/native" "$R/tests/watch_test.cpp" "$R/native/wx_watch.cpp" \
+    -lpthread -o "$R/build/tests/watch-test"
+SATORI_WATCH_TMP="$R/build/tests/tmp" "$R/build/tests/watch-test"
+clang++ -std=c++20 -O1 -g -fno-exceptions -fno-rtti -nostdinc++ -nostdlib++ \
     -Wall -Wextra -Werror -I "$R/native" "$R/tests/tempstore_test.cpp" "$R/native/tempstore.cpp" \
     -o "$R/build/tests/tempstore-test"
 SATORI_TMPROOT="$R/build/tests/tmp" "$R/build/tests/tempstore-test"

@@ -19,7 +19,7 @@ FLAGS=(-std=c++20 -O2 -fPIC -fvisibility=hidden -fno-exceptions -fno-rtti
 "$CC" -std=c11 -O2 -fPIC -fvisibility=hidden -DCJSON_HIDE_SYMBOLS -DCJSON_NESTING_LIMIT=16 \
     -c "$R/native/vendor/cjson/cJSON.c" -o "$WORK/cjson.o"
 "$CXX" "${FLAGS[@]}" -shared "$R/native/module.cpp" "$R/native/server.cpp" "$R/native/protocol.cpp" "$R/native/multipart.cpp" \
-    "$R/native/tempstore.cpp" "$R/native/webhook.cpp" "$R/native/wx_account.cpp" "$R/native/wx_adapter.cpp" "$R/native/wx_live.cpp" \
+    "$R/native/tempstore.cpp" "$R/native/webhook.cpp" "$R/native/wx_account.cpp" "$R/native/wx_adapter.cpp" "$R/native/wx_live.cpp" "$R/native/wx_watch.cpp" \
     "$R/native/wx_store.cpp" "$R/native/wx_backend.cpp" "$R/native/wx_capabilities.cpp" "$R/native/wx_send.cpp" \
     "$R/native/wx_room.cpp" "$R/native/wx_message.cpp" "$R/native/wx_events.cpp" "$R/native/wx_media.cpp" "$R/native/media.cpp" "$R/native/xml_lite.cpp" \
     "$R/native/wx_keepalive.cpp" \

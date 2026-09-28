@@ -17,6 +17,8 @@ Store *LiveStore();
 int LiveLoginSn();
 // Counters for /v1/internal/status: events handed to the bus, rows whose event could never fit
 // it, and scanner events dropped because the bus stayed full. `open` is false until the store is.
-struct LiveStats { bool open; long long emitted, skipped, dropped; };
+// `watching` is true while the poller is woken by change notices on the database directory (it
+// then reacts to a new message within milliseconds); false means it is polling blindly.
+struct LiveStats { bool open; long long emitted, skipped, dropped; bool watching; long long wakes; };
 void LiveStatsGet(LiveStats *stats);
 } // namespace satori

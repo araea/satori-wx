@@ -57,6 +57,8 @@ void AddBackendStatus(cJSON *object, bool capabilities) {
     if (events) {
         cJSON_AddItemToObject(object, "events", events);
         cJSON_AddBoolToObject(events, "open", live.open);
+        cJSON_AddBoolToObject(events, "watching", live.watching);
+        cJSON_AddNumberToObject(events, "wakes", static_cast<double>(live.wakes));
         cJSON_AddNumberToObject(events, "emitted", static_cast<double>(live.emitted));
         cJSON_AddNumberToObject(events, "skipped", static_cast<double>(live.skipped));
         cJSON_AddNumberToObject(events, "dropped", static_cast<double>(live.dropped));
