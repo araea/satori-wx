@@ -33,7 +33,8 @@
 # 环境变量（也可写进 $DIR/guard.conf，脚本会 source；环境变量优先）：
 #   WXGUARD_INTERVAL、WXGUARD_MIN_GAP、WXGUARD_MAX_RESTARTS、WXGUARD_CRASH_LIMIT、
 #   WXGUARD_CRASH_WINDOW、WXGUARD_BACKOFF_BASE/MAX、WXGUARD_GRACE、WXGUARD_RESPECT_FORCE_STOP、
-#   WXGUARD_THAW_COOLDOWN、WXGUARD_OEM=1 时额外尝试厂商 AppOps。
+#   WXGUARD_THAW_COOLDOWN、WXGUARD_OEM=1 时额外尝试厂商 AppOps、
+#   WXGUARD_FRESH_MODE=ARMED|PAUSED 只决定「没有任何 guard.state 时的初始模式」。
 set -u
 export PATH=/system/bin:/system/xbin:/data/adb/ksu/bin:/data/adb/magisk:${PATH:-}
 
@@ -63,6 +64,7 @@ THAW_COOLDOWN=${WXGUARD_THAW_COOLDOWN:-5}
 OFFLINE_LIMIT=${WXGUARD_OFFLINE_LIMIT:-10}
 OFFLINE_RESTART_WINDOW=${WXGUARD_OFFLINE_RESTART_WINDOW:-1800}
 RESPECT_FORCE_STOP=${WXGUARD_RESPECT_FORCE_STOP:-1}
+FRESH_MODE=${WXGUARD_FRESH_MODE:-ARMED}
 OEM=${WXGUARD_OEM:-0}
 PING_HOST=${WXGUARD_PING_HOST:-223.5.5.5}
 MAX_LOG_BYTES=${WXGUARD_MAX_LOG_BYTES:-2000000}
@@ -137,8 +139,16 @@ state_set() {
 
 state_init() {
     [ -s "$STATE" ] && return 0
+    # A brand-new install starts ARMED. The module exists to serve a loopback Satori API,
+    # and Android/ColorOS freeze WeChat's uid within minutes of the screen going off; with
+    # the guard paused the TCP port stays open (the kernel still completes the handshake)
+    # while nothing ever answers, so clients hang instead of seeing an error. Defaulting to
+    # PAUSED made a fresh install look healthy and silently stop working. Set
+    # WXGUARD_FRESH_MODE=PAUSED in guard.conf to opt out.
+    local mode=$FRESH_MODE
+    case "$mode" in ARMED|PAUSED) ;; *) mode=ARMED ;; esac
     : > "$STATE"
-    state_set MODE PAUSED
+    state_set MODE "$mode"
     state_set REASON fresh-install
     state_set SINCE "$(now)"
     state_set ARMS 0
