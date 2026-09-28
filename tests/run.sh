@@ -38,5 +38,9 @@ clang++ -std=c++20 -O1 -g -fno-exceptions -fno-rtti -fno-threadsafe-statics -nos
     -Wall -Wextra -Werror -I "$R/native" "$R/tests/content_test.cpp" "$R/native/protocol.cpp" \
     "$R/build/tests/cjson.o" -o "$R/build/tests/content-test"
 "$R/build/tests/content-test"
+clang++ -std=c++20 -O1 -g -fno-exceptions -fno-rtti -nostdinc++ -nostdlib++ \
+    -Wall -Wextra -Werror -I "$R/native" "$R/tests/tempstore_test.cpp" "$R/native/tempstore.cpp" \
+    -o "$R/build/tests/tempstore-test"
+SATORI_TMPROOT="$R/build/tests/tmp" "$R/build/tests/tempstore-test"
 python3 "$R/tests/account_e2e_test.py" "$R/build/tests/server"
 python3 "$R/tests/webhook_test.py" "$R/build/tests/server"

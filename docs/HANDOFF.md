@@ -12,7 +12,9 @@
 **纯 native C++**：无 DEX、无 Java 助手、无 ArtMethod 改写、无 hook 引擎。连发送都是纯反射调用
 微信自己的代码，不加载任何额外东西。
 
-- **当前版本 v0.9.0**（v0.9.0：`message.create` 支持 `<img>`——反射 `v51.r0` 的媒体重载发本地图片（type 42 / 动图 66），资源只认自己 `upload.create` 的 `internal:..._tmp/` 链接；读侧 `guild.member.role.list` 认 `chatroom.roomdata` 里的管理员位；`channel.create`/`channel.mute`/`guild.member.mute` 移入 `unsupported`；`wxguard` 全新安装默认 ARMED。v0.8.2：修通知渠道重建；v0.8.1：常驻通知/唤醒锁对齐知弦；v0.8.0：资源路由 + `message.create` 返回数组 + 反射群管理；v0.7.1：修 keepalive JNI 截断崩溃；v0.7.0：取消白名单 + 常驻通知/唤醒锁 + wxguard）。
+- **当前版本 v0.9.1**（v0.9.1：修 `internal:` 链接解析——`tempstore.cpp` 里把字符串字面量写成了
+  `constexpr const char *`，`sizeof` 拿到的是指针大小，`message.create` 的每张图片都回
+  `media_unavailable`；改成数组并补 `tests/tempstore_test.cpp`。v0.9.0：`message.create` 支持 `<img>`——反射 `v51.r0` 的媒体重载发本地图片（type 42 / 动图 66），资源只认自己 `upload.create` 的 `internal:..._tmp/` 链接；读侧 `guild.member.role.list` 认 `chatroom.roomdata` 里的管理员位；`channel.create`/`channel.mute`/`guild.member.mute` 移入 `unsupported`；`wxguard` 全新安装默认 ARMED。v0.8.2：修通知渠道重建；v0.8.1：常驻通知/唤醒锁对齐知弦；v0.8.0：资源路由 + `message.create` 返回数组 + 反射群管理；v0.7.1：修 keepalive JNI 截断崩溃；v0.7.0：取消白名单 + 常驻通知/唤醒锁 + wxguard）。
 - 家账号：`wxid_8zxjsghrk8vz41`。模块配置：`send=on`（白名单已取消，任意会话可发）。
 
 ## 2. 协议覆盖（37 个标准方法）
@@ -37,7 +39,7 @@ cd /data/data/com.termux/files/home/dev/araea/satori-wx
 ./build.sh          # 服务端 ZIP + satori-wx-check + satori-wx-account + satori-wx-wcdb
 ./tests/run.sh      # 22 socket + 11 协议 + account + wcdb + store + capabilities + keepalive + content + webhook
 
-su -c 'ksud module install build/satori-wx-server-v0.9.0.zip'   # 装机（暂存，重启才生效）
+su -c 'ksud module install build/satori-wx-server-v0.9.1.zip'   # 装机（暂存，重启才生效）
 su -c 'setsid sh -c "sleep 60; /system/bin/reboot" </dev/null >/dev/null 2>&1 &'
 ```
 
@@ -256,7 +258,7 @@ cd /data/data/com.termux/files/home/dev/araea/satori-wx
 T=$(su -c 'cat /data/adb/modules/satori_wx/satori-wx.conf' | sed -n 's/^token=//p')
 H=(-H "Authorization: Bearer $T" -H 'Content-Type: application/json')
 
-# 1) 版本与 send/keepalive 块（要看到 version 0.9.0、send.media 字段、oom_score_adj）
+# 1) 版本与 send/keepalive 块（要看到 version 0.9.1、send.media 字段、oom_score_adj）
 su -c "curl -s -X POST http://127.0.0.1:5601/v1/internal/status ${H[*]} -d '{}'"
 
 # 2) unsupported 要 11 条，含 channel.create / channel.mute / guild.member.mute
@@ -380,7 +382,7 @@ JADX 也可用：`~/tools/jadx/bin/jadx --single-class <点分名> -d <输出目
 
 ## 12. 版本与提交
 
-- `module.prop` / `native/version.h`：当前 **v0.9.0**（v0.9.0 图片发送 + 读侧管理员位 +
+- `module.prop` / `native/version.h`：当前 **v0.9.1**（v0.9.1 修 internal: 链接解析；v0.9.0 图片发送 + 读侧管理员位 +
   三个不可表达的方法进 unsupported + wxguard 全新安装默认 ARMED；v0.8.2 修通知渠道重建；
   v0.8.1 常驻通知/唤醒锁对齐知弦；v0.8.0 资源路由 upload/proxy + message.create 返回数组 +
   反射群管理；v0.7.1 修 keepalive JNI 截断崩溃；v0.7.0 取消白名单 + 常驻通知/唤醒锁 + wxguard）

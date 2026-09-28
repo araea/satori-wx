@@ -93,25 +93,6 @@ Response BadRequest(const char *code, const char *detail) {
 
 constexpr size_t kImages = 4;
 
-// Maps a Satori resource link to a local file the media sender can read. WeChat exposes no
-// public resource URLs (proxy_urls stays empty), so the only link this adapter can resolve
-// is the one its own upload.create produced: internal:wechat/<user>/_tmp/<name>. Anything
-// else is refused instead of guessed at.
-bool LocalUploadPath(const char *src, char *out, size_t capacity) {
-    constexpr const char *kScheme = "internal:";
-    if (strncmp(src, kScheme, sizeof(kScheme) - 1)) return false;
-    const char *platform = src + sizeof(kScheme) - 1;
-    const char *slash = strchr(platform, '/');
-    if (!slash || slash - platform != 6 || strncmp(platform, "wechat", 6)) return false;
-    const char *user = slash + 1;
-    const char *slash2 = strchr(user, '/');
-    if (!slash2 || slash2 == user || strncmp(slash2 + 1, "_tmp/", 5)) return false;
-    const TempFile *file = TempStoreGet(slash2 + 1 + 5);
-    if (!file || strlen(file->path) >= capacity) return false;
-    strcpy(out, file->path);
-    return true;
-}
-
 bool GifPath(const char *path) {
     const size_t size = strlen(path);
     return size > 4 && !strcasecmp(path + size - 4, ".gif");
@@ -184,7 +165,7 @@ Response Call(void *, const Request &request) {
         // not one of our own uploads cannot leave a half-delivered message behind.
         char paths[kImages][1200];
         for (size_t i = 0; i < images; ++i)
-            if (!LocalUploadPath(sources[i], paths[i], sizeof(paths[i])))
+            if (!TempStoreResolveLink(sources[i], paths[i], sizeof(paths[i])))
                 return BadRequest("media_unavailable", sources[i]);
         cJSON *list = cJSON_CreateArray();
         if (!list) return {500, nullptr};

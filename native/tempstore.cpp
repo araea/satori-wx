@@ -174,4 +174,21 @@ const TempFile *TempStoreGet(const char *name) {
     }
     return nullptr;
 }
+
+bool TempStoreResolveLink(const char *url, char *out, size_t capacity) {
+    if (!url || !out || !capacity) return false;
+    // An array (not a pointer) so sizeof() is the string length: this is the bug that made
+    // the first image send answer media_unavailable for a link that was on disk all along.
+    const char prefix[] = "internal:wechat/";
+    const size_t prefix_size = sizeof(prefix) - 1;
+    if (strncmp(url, prefix, prefix_size)) return false;
+    const char *user = url + prefix_size;
+    const char *slash = strchr(user, '/');
+    if (!slash || slash == user) return false;
+    if (strncmp(slash + 1, "_tmp/", 5)) return false;
+    const TempFile *file = TempStoreGet(slash + 1 + 5);
+    if (!file || strlen(file->path) >= capacity) return false;
+    strcpy(out, file->path);
+    return true;
+}
 } // namespace satori

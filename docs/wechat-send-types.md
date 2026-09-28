@@ -1,5 +1,9 @@
 # 微信发送各类消息的逆向记录（2026-09-28）
 
+> v0.9.1 修：`internal:` 链接的解析曾经把字符串字面量写成 `constexpr const char *`，
+> `sizeof` 拿到指针大小，所以 v0.9.0 的图片发送在真机上每张都回 `media_unavailable`。
+> 解析现在在 `tempstore.cpp` 的 `TempStoreResolveLink`，由 `tests/tempstore_test.cpp` 覆盖。
+
 目标：在只反射、不 hook 的前提下，把 Satori 的图片、语音、视频、文件发出去。
 纯文本发送、撤回、群管理已做完（见 `docs/wechat-send.md`、`docs/wechat-room.md`）。
 

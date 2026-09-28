@@ -23,4 +23,9 @@ struct TempFile {
 };
 // Looks up a stored name; null when missing or expired. The result is borrowed.
 const TempFile *TempStoreGet(const char *name);
+// Resolves a Satori resource link produced by an earlier TempStorePut
+// (`internal:wechat/<user>/_tmp/<name>`) to the local file a media sender must read.
+// False for anything else: another platform, another internal route, or a name the store
+// does not know (expired, never uploaded, or not from this process).
+bool TempStoreResolveLink(const char *url, char *out, size_t capacity);
 } // namespace satori

@@ -1,6 +1,6 @@
 # 知言（satori-wx）
 
-微信 `com.tencent.mm` 的 Zygisk 模块。v0.9.0 在 **Satori v1 服务端**
+微信 `com.tencent.mm` 的 Zygisk 模块。v0.9.1 在 **Satori v1 服务端**
 （C++ + POSIX socket，无 DEX、Java 助手、APK、ArtMethod 偏移或 hook 引擎）之上，
 加入**只读的微信账号身份 / 消息库适配层**，内置 **`upload.create` 与 `/v1/proxy` 资源路由**，
 以及一个**默认关闭的反射写操作集**（文本与图片发送、撤回、群管理）。
@@ -30,7 +30,7 @@
 
 产物：
 
-- `build/satori-wx-server-v0.9.0.zip`，模块 ID `satori_wx`。
+- `build/satori-wx-server-v0.9.1.zip`，模块 ID `satori_wx`。
 - `build/module-server/`，服务端模块目录。
 - `build/satori-wx-account`，读取某个微信数据目录并打印推导出的登录事件（诊断用，不联网）。
 - `build/satori-wx-wcdb`，只读 SQLCipher/SQLite 客户端，用微信自己的 libWCDB 读导出数据库（诊断用）。
