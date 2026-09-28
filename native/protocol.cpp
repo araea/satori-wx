@@ -363,6 +363,69 @@ size_t ImageSources(const char *content, char (*out)[kImageSrcMax], size_t max) 
     }
     return count;
 }
+size_t ImageSpans(const char *content, ImageSpan *out, size_t max) {
+    if (!out || !max) return 0;
+    size_t count = 0;
+    for (const char *p = content ? content : ""; *p && count < max;) {
+        if (*p != '<') { ++p; continue; }
+        const char *q = p + 1;
+        char quote = 0;
+        for (; *q; ++q) {
+            if (quote) { if (*q == quote) quote = 0; continue; }
+            if (*q == '"' || *q == '\'') { quote = *q; continue; }
+            if (*q == '>') break;
+        }
+        if (!*q) break;  // Unterminated tag: nothing trustworthy follows.
+        const char *name = p + 1;
+        const bool closing = *name == '/';
+        if (closing) ++name;
+        const char *name_end = name;
+        while (name_end < q && TagChar(*name_end)) ++name_end;
+        if (!closing && name_end - name == 3 && !strncasecmp(name, "img", 3)) {
+            out[count].begin = static_cast<size_t>(p - content);
+            out[count].end = static_cast<size_t>(q + 1 - content);
+            ++count;
+        }
+        p = q + 1;
+    }
+    return count;
+}
+
+bool TagAttribute(const char *content, const ImageSpan &tag, const char *name, char *out, size_t capacity) {
+    if (!content || !out || !capacity || tag.end <= tag.begin + 2) return false;
+    const char *begin = content + tag.begin + 1;
+    const char *end = content + tag.end - 1;  // the closing '>'
+    while (begin < end && TagChar(*begin)) ++begin;  // skip the element name
+    if (!Attribute(begin, end, name, out, capacity)) return false;
+    DecodeEntities(out);
+    return true;
+}
+
+long Base64Decode(const char *in, size_t size, unsigned char *out, size_t capacity) {
+    size_t used = 0;
+    unsigned accumulator = 0;
+    int bits = 0;
+    for (size_t i = 0; i < size; ++i) {
+        const char c = in[i];
+        int value;
+        if (c >= 'A' && c <= 'Z') value = c - 'A';
+        else if (c >= 'a' && c <= 'z') value = c - 'a' + 26;
+        else if (c >= '0' && c <= '9') value = c - '0' + 52;
+        else if (c == '+' || c == '-') value = 62;   // '-' and '_' for the URL-safe alphabet
+        else if (c == '/' || c == '_') value = 63;
+        else if (c == '=' || c == ' ' || c == '\n' || c == '\r' || c == '\t') continue;
+        else return -1;
+        accumulator = (accumulator << 6) | static_cast<unsigned>(value);
+        bits += 6;
+        if (bits >= 8) {
+            bits -= 8;
+            if (used >= capacity) return -1;
+            out[used++] = static_cast<unsigned char>((accumulator >> bits) & 0xFF);
+        }
+    }
+    return static_cast<long>(used);
+}
+
 struct EventBus {
     pthread_mutex_t mutex;
     int fd;

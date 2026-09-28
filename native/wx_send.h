@@ -28,6 +28,13 @@ struct SendResult {
 // occurrences in `content` real mentions: it is WeChat's own <atuserlist> in the message source,
 // passed the same way the chat UI passes it. Ignored when the send classes lack that overload.
 SendResult SendText(const char *talker, const char *content, const char *mention_ids = nullptr);
+// Sends a local image file (JPEG / PNG / GIF / WebP, readable by WeChat's own uid) to `talker`
+// through the image pipeline the app itself uses for "send picture": the message-images feature
+// service, whose rj() launches the whole prepare -> upload -> insert -> send coroutine and
+// returns only a progress flow. That call is asynchronous, so `ok` means "handed to WeChat", not
+// "a message exists": callers confirm with the database (StoreFindSentImage) before claiming
+// anything. `self_id` is this account's wxid (the pipeline needs the sender).
+SendResult SendImage(const char *talker, const char *self_id, const char *path);
 // Recalls one of our own messages by its local id (the id message.create returned, decimal
 // string). Uses WeChat's own NetSceneRevokeMsg scene. Refused for
 // messages the account did not send.
@@ -50,6 +57,7 @@ struct SendStatus {
     long long failed;      // reached the send pipeline but failed
     long long rejected;    // refused before dispatch (send disabled)
     long long recalled;    // revoke scenes accepted for dispatch
+    long long media;       // pictures handed to the image pipeline
     long long last_age_ms; // ms since the last attempt, or -1 when there was none
     bool last_ok;
     int last_net_id;

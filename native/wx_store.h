@@ -82,6 +82,10 @@ struct RevokedRow {
 int StoreRevoked(Store *store, long long since_ms, RevokedRow *out, int max);
 // Who wrote a message the poller announced earlier in this process (recent ones only).
 bool StoreAuthorOf(Store *store, long long msg_id, char *out, size_t capacity);
+// The first picture message this account sent to `talker` after row `since` (a watermark taken
+// before the send). True with its local id once WeChat's own pipeline has inserted the row: the
+// only reliable sign that an asynchronous image send really started.
+bool StoreFindSentImage(Store *store, const char *talker, long long since, long long *local_id);
 // Satori User / Guild objects for event payloads; a bare {"id"} when the contact is unknown.
 cJSON *StoreUserObject(Store *store, const char *id);
 cJSON *StoreGuildObject(Store *store, const char *id);

@@ -38,6 +38,18 @@ size_t OutgoingText(const char *content, char *out, size_t capacity, OutgoingMen
 // NUL-terminated; returns how many were written (never more than `max`).
 constexpr size_t kImageSrcMax = 512;
 size_t ImageSources(const char *content, char (*out)[kImageSrcMax], size_t max);
+// Where the <img> elements sit in `content`: [begin, end) of each whole tag, and its src. Used
+// to send a message that mixes text and pictures as the sequence of messages WeChat can carry,
+// in the order the author wrote them. `src` is not limited to kImageSrcMax here: a data: URI
+// carrying the picture itself may be megabytes, so it is copied into a buffer of `src_capacity`
+// bytes supplied by the caller, and `src_size` says how long the attribute really was.
+struct ImageSpan { size_t begin, end; };
+size_t ImageSpans(const char *content, ImageSpan *out, size_t max);
+// The value of `name` inside the tag [begin, end) of `content`, entity-decoded, or false.
+bool TagAttribute(const char *content, const ImageSpan &tag, const char *name, char *out, size_t capacity);
+// RFC 4648 base64 (whitespace ignored, padding optional). Returns the decoded size, or -1 on a
+// character outside the alphabet or when `capacity` is too small.
+long Base64Decode(const char *in, size_t size, unsigned char *out, size_t capacity);
 
 struct EventBus;
 EventBus *CreateBus();

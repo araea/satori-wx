@@ -167,6 +167,18 @@ class ProtocolTests(unittest.TestCase):
                         b'Content-Length: 5000000\r\n' + (b'Authorization: Bearer ' + auth.encode() + b'\r\n' if auth else b'') + b'\r\n')
                 w.sock.sendall(head)
                 self.assertEqual(int(w.file.readline().split()[1]), code)
+    def test_message_create_takes_an_inline_picture(self):
+        # An <img src="data:..."> carries the picture inside message.create, so that one route
+        # (like upload.create) accepts a body far past the 16 KiB JSON limit.
+        content = '<img src="data:image/png;base64,' + 'QUJD' * 700000 + '"/>'  # ~2.8 MB
+        status, body = self.http('message.create', {'channel_id': 'c', 'content': content})
+        self.assertEqual(status, 200)
+        self.assertEqual(len(body[0]['content']), len(content))
+        # Any other route keeps the small limit, and the big one still needs the token.
+        self.assertEqual(self.http('message.update', {'channel_id': 'c', 'message_id': 'm', 'content': 'x' * 20000})[0], 413)
+        with Wire() as w:
+            w.sock.sendall(b'POST /v1/message.create HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\nContent-Length: 5000000\r\n\r\n')
+            self.assertEqual(int(w.file.readline().split()[1]), 401)
     def test_expect_continue(self):
         body, h = self.multipart(b'expect-me')
         with Wire() as w:

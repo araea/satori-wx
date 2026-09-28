@@ -11,12 +11,17 @@
 #include "wx_room.h"
 #include "wx_keepalive.h"
 #include "protocol.h"
+#include "tempstore.h"
 #include <stdio.h>
+#include <stdlib.h>
+#include <unistd.h>
 #include <string.h>
 
 // ---- stubs for the WeChat-side collaborators (none of them run in this process) ----------
 namespace satori {
-Store *LiveStore() { return nullptr; }
+// A non-null handle: the stubs below ignore it, and the backend refuses to send without a store.
+Store *LiveStore() { return reinterpret_cast<Store *>(1); }
+bool StoreFindSentImage(Store *, const char *, long long, long long *) { return false; }
 int LiveLoginSn() { return 1; }
 bool StartLiveStore(const char *, EventBus *, int) { return false; }
 const char *StoreSelfId(Store *) { return "self_wxid"; }
@@ -97,20 +102,98 @@ int main() {
         cJSON_Delete(outcome.body);
     }
 
-    // A picture alone is not sendable, and the client must be able to tell that apart from
-    // "empty content" so it can stop retrying or fall back to text.
+    // ---- pictures ---------------------------------------------------------------------------------
+    // The sender cannot reach a JavaVM here, so a picture that passes every check ends at the
+    // sender with 502 send_failed; anything wrong with the request itself must be refused first
+    // (400) and, above all, before any part of the request is sent.
+    const char *scratch_root = getenv("SATORI_TMPROOT");
+    char scratch_template[512];
+    snprintf(scratch_template, sizeof(scratch_template), "%s/satori-backend-XXXXXX", scratch_root && *scratch_root ? scratch_root : ".");
+    char *directory = mkdtemp(scratch_template);
+    Check(directory != nullptr, "temp directory");
+    satori::TempStoreSetDir(directory);
+    const char jpeg[] = "\xFF\xD8\xFF\xE0\0\x10JFIF";
+    char jpeg_name[160], text_name[160];
+    Check(satori::TempStorePut("a.jpg", "image/jpeg", jpeg, sizeof(jpeg) - 1, jpeg_name, sizeof(jpeg_name)), "store a picture");
+    Check(satori::TempStorePut("notes.txt", "text/plain", "just words", 10, text_name, sizeof(text_name)), "store a non-picture");
+    char content[1024];
     {
-        const Outcome outcome = Create("<img src=\"internal:wechat/self_wxid/_tmp/a.png\"/>");
-        Check(outcome.status == 400 && !strcmp(Code(outcome), "media_unsupported"),
-              "an image-only content is refused with media_unsupported");
+        snprintf(content, sizeof(content), "<img src=\"internal:wechat/self_wxid/_tmp/%s\"/>", jpeg_name);
+        const Outcome outcome = Create(content);
+        Check(outcome.status == 502 && !strcmp(Code(outcome), "send_failed"), "a picture from upload.create reaches the sender");
         cJSON_Delete(outcome.body);
     }
-
-    // Pictures mixed with text: the text still goes out (the element is dropped, not echoed).
     {
-        const Outcome outcome = Create("<img src=\"internal:wechat/self_wxid/_tmp/a.png\"/>看图");
-        Check(outcome.status == 502 && !strcmp(Code(outcome), "send_failed"),
-              "text next to an image still reaches the sender");
+        // "Only a picture" is content, not an empty message.
+        const Outcome outcome = Create("<img src=\"internal:wechat/self_wxid/_tmp/does-not-exist.png\"/>");
+        Check(outcome.status == 400 && !strcmp(Code(outcome), "media_unresolved"), "a link that is not (or no longer) an upload is refused");
+        cJSON_Delete(outcome.body);
+    }
+    {
+        snprintf(content, sizeof(content), "<img src=\"internal:wechat/self_wxid/_tmp/%s\"/>", text_name);
+        const Outcome outcome = Create(content);
+        Check(outcome.status == 400 && !strcmp(Code(outcome), "media_unsupported"), "a file that is not a picture is refused");
+        cJSON_Delete(outcome.body);
+    }
+    {
+        const Outcome outcome = Create("<img src=\"https://example.invalid/a.png\"/>");
+        Check(outcome.status == 400 && !strcmp(Code(outcome), "media_unresolved"), "remote URLs are refused with advice");
+        cJSON_Delete(outcome.body);
+    }
+    {
+        const Outcome outcome = Create("<img/>");
+        Check(outcome.status == 400 && !strcmp(Code(outcome), "media_unresolved"), "an <img> without a source");
+        cJSON_Delete(outcome.body);
+    }
+    {
+        // 1x1 PNG, inline.
+        const Outcome outcome = Create("<img src=\"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/q842iQAAAABJRU5ErkJggg==\"/>");
+        Check(outcome.status == 502 && !strcmp(Code(outcome), "send_failed"), "an inline picture is decoded and reaches the sender");
+        cJSON_Delete(outcome.body);
+        const Outcome not_image = Create("<img src=\"data:image/png;base64,aGVsbG8gd29ybGQ=\"/>");
+        Check(not_image.status == 400 && !strcmp(Code(not_image), "media_unsupported"), "an inline blob that is not a picture");
+        cJSON_Delete(not_image.body);
+        const Outcome not_base64 = Create("<img src=\"data:image/png,rawbytes\"/>");
+        Check(not_base64.status == 400 && !strcmp(Code(not_base64), "media_unresolved"), "only base64 data: URIs");
+        cJSON_Delete(not_base64.body);
+        const Outcome garbage = Create("<img src=\"data:image/png;base64,!!!!\"/>");
+        Check(garbage.status == 400 && !strcmp(Code(garbage), "media_unresolved"), "undecodable data");
+        cJSON_Delete(garbage.body);
+        const Outcome wrong_type = Create("<img src=\"data:text/plain;base64,aGVsbG8=\"/>");
+        Check(wrong_type.status == 400 && !strcmp(Code(wrong_type), "media_unsupported"), "a data: URI that is not an image type");
+        cJSON_Delete(wrong_type.body);
+    }
+    {
+        // Text and picture mixed: the request is validated as a whole. A bad picture stops the
+        // text before it from going out, which shows in the error code (400, not 502).
+        const Outcome outcome = Create("先说这个<img src=\"https://example.invalid/a.png\"/>再说那个");
+        Check(outcome.status == 400 && !strcmp(Code(outcome), "media_unresolved"), "a bad picture stops the whole request before anything is sent");
+        cJSON_Delete(outcome.body);
+        snprintf(content, sizeof(content), "看图<img src=\"internal:wechat/self_wxid/_tmp/%s\"/>怎么样", jpeg_name);
+        const Outcome mixed = Create(content);
+        Check(mixed.status == 502 && !strcmp(Code(mixed), "send_failed"), "text before a good picture goes first (and reaches the sender)");
+        cJSON_Delete(mixed.body);
+        snprintf(content, sizeof(content), "<img src=\"internal:wechat/self_wxid/_tmp/%s\"/><img src=\"internal:wechat/self_wxid/_tmp/%s\"/><img src=\"internal:wechat/self_wxid/_tmp/%s\"/>"
+                 "<img src=\"internal:wechat/self_wxid/_tmp/%s\"/><img src=\"internal:wechat/self_wxid/_tmp/%s\"/>", jpeg_name, jpeg_name, jpeg_name, jpeg_name, jpeg_name);
+        const Outcome many = Create(content);
+        Check(many.status == 400 && !strcmp(Code(many), "too_many_images"), "more than four pictures");
+        cJSON_Delete(many.body);
+    }
+    {
+        // Audio, video and files are still not carried, and the client can tell.
+        const Outcome audio = Create("<audio src=\"internal:wechat/self_wxid/_tmp/a.mp3\"/>");
+        Check(audio.status == 400 && !strcmp(Code(audio), "media_unsupported"), "audio alone is refused as unsupported");
+        cJSON_Delete(audio.body);
+        const Outcome with_text = Create("听<audio src=\"x\"/>这个");
+        Check(with_text.status == 502 && !strcmp(Code(with_text), "send_failed"), "the text next to an unsupported element still goes");
+        cJSON_Delete(with_text.body);
+    }
+    {
+        char long_text[4200];
+        memset(long_text, 'x', sizeof(long_text) - 1);
+        long_text[sizeof(long_text) - 1] = 0;
+        const Outcome outcome = Create(long_text);
+        Check(outcome.status == 400 && !strcmp(Code(outcome), "content_too_long"), "an over-long text run is refused with a code");
         cJSON_Delete(outcome.body);
     }
 
@@ -141,6 +224,9 @@ int main() {
     }
 
     satori::SetSendEnabled(false);
+    char cleanup[600];
+    snprintf(cleanup, sizeof(cleanup), "rm -rf '%s'", directory);
+    if (system(cleanup)) fprintf(stderr, "warning: could not remove %s\n", directory);
 
     if (failures) { fprintf(stderr, "%d backend test(s) failed\n", failures); return 1; }
     printf("backend tests: PASS\n");

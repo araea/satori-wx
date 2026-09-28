@@ -1340,6 +1340,19 @@ bool StoreAuthorOf(Store *store, long long msg_id, char *out, size_t capacity) {
     return false;
 }
 
+bool StoreFindSentImage(Store *store, const char *talker, long long since, long long *local_id) {
+    if (!store || !store->db || !SafeSql(talker) || !local_id) return false;
+    char sql[300];
+    snprintf(sql, sizeof(sql), "SELECT msgId FROM message WHERE talker = '%s' AND isSend = 1 AND type = 3 AND msgId > %lld ORDER BY msgId LIMIT 1", talker, since);
+    long long found = 0;
+    pthread_mutex_lock(&store->mutex);
+    WcdbQuery(store->db, sql, LocalIdRow, &found);
+    pthread_mutex_unlock(&store->mutex);
+    if (found <= 0) return false;
+    *local_id = found;
+    return true;
+}
+
 cJSON *StoreUserObject(Store *store, const char *id) { return MemberUser(store, id); }
 
 cJSON *StoreGuildObject(Store *store, const char *id) {

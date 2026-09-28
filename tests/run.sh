@@ -60,7 +60,7 @@ SATORI_TMPROOT="$R/build/tests/tmp" "$R/build/tests/tempstore-test"
 clang++ -std=c++20 -O1 -g -fno-exceptions -fno-rtti -nostdinc++ -nostdlib++ \
     -Wall -Wextra -Werror -I "$R/native" "$R/tests/backend_test.cpp" "$R/native/wx_backend.cpp" \
     "$R/native/wx_send.cpp" "$R/native/wx_capabilities.cpp" "$R/native/protocol.cpp" \
-    "$R/native/tempstore.cpp" "$R/build/tests/cjson.o" -llog -o "$R/build/tests/backend-test"
-"$R/build/tests/backend-test"
+    "$R/native/tempstore.cpp" "$R/native/media.cpp" "$R/build/tests/cjson.o" -llog -o "$R/build/tests/backend-test"
+SATORI_TMPROOT="$R/build/tests/tmp" "$R/build/tests/backend-test"
 python3 "$R/tests/account_e2e_test.py" "$R/build/tests/server"
 python3 "$R/tests/webhook_test.py" "$R/build/tests/server"

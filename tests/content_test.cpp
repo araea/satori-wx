@@ -118,6 +118,35 @@ int main() {
         Check(!strcmp(out, "x"), "PlainText still drops mentions");
     }
 
+    // ---- ImageSpans / TagAttribute / Base64Decode -----------------------------------------------------------
+    {
+        const char *content = "看<img src=\"a&amp;b\"/>中<IMG width=\"1\" src='c'>末<image src=\"no\"/>";
+        satori::ImageSpan spans[4];
+        const size_t count = satori::ImageSpans(content, spans, 4);
+        Check(count == 2, "two <img> elements (not <image>)");
+        if (count == 2) {
+            Check(!strncmp(content + spans[0].begin, "<img src=\"a&amp;b\"/>", spans[0].end - spans[0].begin), "first span covers the whole tag");
+            Check(!strncmp(content + spans[1].begin, "<IMG width=\"1\" src='c'>", spans[1].end - spans[1].begin), "second span, upper case and mixed quotes");
+            char src[64];
+            Check(satori::TagAttribute(content, spans[0], "src", src, sizeof(src)) && !strcmp(src, "a&b"), "src is entity-decoded");
+            Check(satori::TagAttribute(content, spans[1], "src", src, sizeof(src)) && !strcmp(src, "c"), "src after another attribute");
+            Check(!satori::TagAttribute(content, spans[1], "alt", src, sizeof(src)), "missing attribute");
+        }
+        Check(satori::ImageSpans("<img src=\"a\"", spans, 4) == 0, "an unterminated tag is not a span");
+        Check(satori::ImageSpans("<img/><img/><img/>", spans, 2) == 2, "spans are bounded");
+
+        unsigned char out[64];
+        long n = satori::Base64Decode("aGVsbG8gd29ybGQ=", 16, out, sizeof(out));
+        Check(n == 11 && !memcmp(out, "hello world", 11), "base64");
+        n = satori::Base64Decode("aGVs\nbG8", 8, out, sizeof(out));
+        Check(n == 5 && !memcmp(out, "hello", 5), "whitespace ignored, padding optional");
+        n = satori::Base64Decode("-_-_", 4, out, sizeof(out));
+        Check(n == 3 && out[0] == 0xFB, "url-safe alphabet");
+        Check(satori::Base64Decode("a$b=", 4, out, sizeof(out)) == -1, "a character outside the alphabet");
+        Check(satori::Base64Decode("aGVsbG8gd29ybGQ=", 16, out, 4) == -1, "output capacity is enforced");
+        Check(satori::Base64Decode("", 0, out, sizeof(out)) == 0, "empty input");
+    }
+
     if (failures) { fprintf(stderr, "%d content test(s) failed\n", failures); return 1; }
     printf("content tests: PASS\n");
     return 0;

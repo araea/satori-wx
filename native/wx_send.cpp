@@ -68,6 +68,7 @@ jclass g_j0 = nullptr;             // ex0.j0 (per-account message store)
 jmethodID g_j0_get = nullptr;      // k(String,J)Le9;
 jmethodID g_e9_is_send = nullptr;  // z0()I, 1 when the message was sent by this account
 long long g_recalled = 0;
+long long g_media = 0;
 
 long long NowMs() {
     timespec ts{};
@@ -374,6 +375,7 @@ void SendStatusGet(SendStatus *status) {
     status->failed = g_failed;
     status->rejected = g_rejected;
     status->recalled = g_recalled;
+    status->media = g_media;
     status->last_age_ms = g_attempt_ms ? NowMs() - g_attempt_ms : -1;
     status->last_ok = g_last_ok;
     status->last_net_id = g_last_net;
@@ -543,6 +545,107 @@ SendResult SendText(const char *talker, const char *content, const char *mention
                                        talker, result.local_id, result.net_id);
     else __android_log_print(ANDROID_LOG_WARN, "SatoriWx", "send to %s failed%s: %s",
                              talker, result.rejected ? " (rejected)" : "", result.detail);
+    return result;
+}
+
+SendResult SendImage(const char *talker, const char *self_id, const char *path) {
+    SendResult result{};
+    result.local_id = -1;
+    result.net_id = -1;
+    if (!talker || !*talker || !self_id || !*self_id || !path || !*path) {
+        Detail(result.detail, sizeof(result.detail), "empty target, sender or path");
+        return result;
+    }
+    if (!SendEnabled()) {
+        result.rejected = true;
+        Detail(result.detail, sizeof(result.detail), "send is disabled by configuration");
+        return result;
+    }
+    JNIEnv *env = Env();
+    if (!env) {
+        Detail(result.detail, sizeof(result.detail), "JavaVM unavailable");
+        return result;
+    }
+    pthread_mutex_lock(&g_mu);
+    const bool resolved = g_resolved || Resolve(env, result.detail, sizeof(result.detail));
+    pthread_mutex_unlock(&g_mu);
+    if (!resolved) return result;
+
+    // Everything below is looked up per call (a picture is rare enough) so a build without the
+    // image classes degrades to one failed request, not a broken sender.
+    jclass n0 = LoadClass(env, g_loader, g_loader_load, "ph5.n0");
+    jclass service_interface = LoadClass(env, g_loader, g_loader_load, "kt.d1");
+    jclass params_class = LoadClass(env, g_loader, g_loader_load, "da0.g");
+    jclass context_class = LoadClass(env, g_loader, g_loader_load, "w90.i0");
+    jclass callback_class = LoadClass(env, g_loader, g_loader_load, "b41.k7");
+    jclass prepare_class = LoadClass(env, g_loader, g_loader_load, "com.tencent.mm.pluginsdk.ui.tools.p0");
+    jobject service = nullptr, callback = nullptr, context = nullptr, params = nullptr, flow = nullptr;
+    jstring jpath = nullptr, jself = nullptr, jtalker = nullptr, jsource = nullptr;
+    jmethodID lookup = StaticMethod(env, n0, "c", "(Ljava/lang/Class;)Lph5/m;");
+    jmethodID params_ctor = Method(env, params_class, "<init>", "(Ljava/lang/String;ILjava/lang/String;Ljava/lang/String;Lw90/i0;)V");
+    jfieldID params_source = Field(env, params_class, "j", "Ljava/lang/String;");
+    jmethodID context_ctor = Method(env, context_class, "<init>", "()V");
+    jfieldID context_kind = Field(env, context_class, "a", "I");
+    jfieldID context_callback = Field(env, context_class, "o", "Lb41/k7;");
+    jmethodID callback_ctor = Method(env, callback_class, "<init>", "()V");
+    jmethodID prepare = StaticMethod(env, prepare_class, "a", "()V");
+    if (!n0 || !service_interface || !params_class || !context_class || !callback_class || !lookup || !params_ctor || !params_source ||
+        !context_ctor || !context_kind || !context_callback || !callback_ctor) {
+        Detail(result.detail, sizeof(result.detail), "image classes not found (version mismatch?)");
+    } else {
+        service = env->CallStaticObjectMethod(n0, lookup, service_interface);
+        if (env->ExceptionCheck()) { env->ExceptionClear(); service = nullptr; }
+        jclass service_class = service ? env->GetObjectClass(service) : nullptr;
+        jmethodID send = service_class ? Method(env, service_class, "rj", "(Lda0/g;)Lkotlinx/coroutines/flow/j;") : nullptr;
+        if (service_class) env->DeleteLocalRef(service_class);
+        if (!service || !send) {
+            Detail(result.detail, sizeof(result.detail), service ? "image service has no rj() (version mismatch?)" : "image service unavailable");
+        } else {
+            // The chat UI's own call, minus the UI: source 4 = "sent from a chat", a fresh
+            // callback object for the pipeline to fill in, "msg_mgr_send_img" as the feature tag.
+            if (prepare) { env->CallStaticVoidMethod(prepare_class, prepare); if (env->ExceptionCheck()) env->ExceptionClear(); }
+            callback = env->NewObject(callback_class, callback_ctor);
+            context = env->NewObject(context_class, context_ctor);
+            jpath = env->NewStringUTF(path);
+            jself = env->NewStringUTF(self_id);
+            jtalker = env->NewStringUTF(talker);
+            jsource = env->NewStringUTF("msg_mgr_send_img");
+            if (env->ExceptionCheck()) { env->ExceptionClear(); callback = context = nullptr; }
+            if (!callback || !context || !jpath || !jself || !jtalker || !jsource) {
+                Detail(result.detail, sizeof(result.detail), "image argument allocation failed");
+            } else {
+                env->SetIntField(context, context_kind, 4);
+                env->SetObjectField(context, context_callback, callback);
+                params = env->NewObject(params_class, params_ctor, jpath, static_cast<jint>(0), jself, jtalker, context);
+                if (env->ExceptionCheck()) { env->ExceptionClear(); params = nullptr; }
+                if (!params) {
+                    Detail(result.detail, sizeof(result.detail), "image parameters construction failed");
+                } else {
+                    env->SetObjectField(params, params_source, jsource);
+                    flow = env->CallObjectMethod(service, send, params);
+                    if (env->ExceptionCheck()) {
+                        env->ExceptionClear();
+                        Detail(result.detail, sizeof(result.detail), "image pipeline threw");
+                    } else {
+                        result.ok = true;  // launched; the progress flow is not needed
+                    }
+                }
+            }
+        }
+    }
+    jobject locals[] = {n0, service_interface, params_class, context_class, callback_class, prepare_class, service, callback, context, params, flow,
+                        jpath, jself, jtalker, jsource};
+    for (jobject local : locals) if (local) env->DeleteLocalRef(local);
+    pthread_mutex_lock(&g_mu);
+    g_attempt_ms = NowMs();
+    g_last_ok = result.ok;
+    g_last_net = -1;
+    snprintf(g_last_target, sizeof(g_last_target), "%s", talker);
+    snprintf(g_last_error, sizeof(g_last_error), "%s", result.ok ? "" : result.detail);
+    if (result.ok) ++g_media; else ++g_failed;
+    pthread_mutex_unlock(&g_mu);
+    if (result.ok) __android_log_print(ANDROID_LOG_INFO, "SatoriWx", "image handed to WeChat for %s", talker);
+    else __android_log_print(ANDROID_LOG_WARN, "SatoriWx", "image send to %s failed: %s", talker, result.detail);
     return result;
 }
 

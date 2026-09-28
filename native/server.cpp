@@ -488,10 +488,11 @@ void Http(Client &c, const Config &config, Hub *hub, const Backend *backend, Web
         body_size = body_size * 10 + (*p - '0');
         if (body_size > kUploadMax) { Reply(c, 413, "Content Too Large", "{}"); return; }
     }
-    // Everything but the upload route keeps the small JSON limit. A large upload is only
-    // buffered for a caller that has already proven it holds the token.
+    // Everything but the two routes that can carry a picture keeps the small JSON limit
+    // (message.create takes an <img src="data:..."> inline, upload.create takes multipart). A
+    // large body is only buffered for a caller that has already proven it holds the token.
     if (body_size > kMessage) {
-        if (strcmp(path, "/v1/upload.create")) { Reply(c, 413, "Content Too Large", "{}"); return; }
+        if (strcmp(path, "/v1/upload.create") && strcmp(path, "/v1/message.create")) { Reply(c, 413, "Content Too Large", "{}"); return; }
         const char *auth = header("Authorization");
         if (!*auth) { Reply(c, 401, "Unauthorized", "{\"error\":\"missing_token\"}"); return; }
         if (strncasecmp(auth, "Bearer ", 7) || !EqualToken(config.token, auth + 7)) {
