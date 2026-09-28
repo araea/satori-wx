@@ -9,7 +9,7 @@
 | HTTP RPC、Bearer、Satori-Platform / Satori-User-ID | 完成；401 缺令牌、403 令牌错误或账号不存在、405 方法错误 |
 | 标准方法目录 | 37 个方法；与上游 protocol/src/index.ts 的 Methods 对照 |
 | JSON 参数 | 必填、可选、字符串、对象、布尔、非负整数、分页枚举验证 |
-| 方法可用性 | 登录快照 features 控制；不支持返回 404，声明支持但无 handler 返回 501，离线返回 503 |
+| 方法可用性 | 登录快照 features 控制；不支持返回 404（在参数校验之前判定，不支持的方法缺参也回 404 而非 400），声明支持但无 handler 返回 501，离线返回 503 |
 | login.get / meta / READY | 同一份登录快照；登录身份由只读偏好解析得到，无账号时为空 |
 | message.create / update 的 content | 保留 Satori 标记字符串；提供 native 文本转义 helper，不把标记当 HTML 执行 |
 | message.create（可选发送） | `send=on` 时反射调微信自己的 NetSceneSendMsg 发纯文本；**返回 `Message[]`（官方客户端对结果调用 `.map()`）**；默认关闭，开启后不限目标、不限速；成功＝已派发，非投递确认 |

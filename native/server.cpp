@@ -384,7 +384,10 @@ void Http(Client &c, const Config &config, Hub *hub, const Backend *backend, Web
             Reply(c, 415, "Unsupported Media Type", "{}"); return;
         }
         body = body_size ? Json(c.input + length, body_size) : cJSON_CreateObject();
-        if (!body || (rpc && !ValidateParams(*rpc, body))) { cJSON_Delete(body); bad(); return; }
+        // Structural parse only here; a method's own parameter rules are checked after we
+        // know the login actually supports it, so an unsupported method answers 404 (not a
+        // misleading 400) whatever its parameters look like.
+        if (!body) { bad(); return; }
     }
     if (meta) {
         char *text = cJSON_PrintUnformatted(Meta(hub));
@@ -471,6 +474,7 @@ void Http(Client &c, const Config &config, Hub *hub, const Backend *backend, Web
                 if (cJSON_IsString(f) && !strcmp(f->valuestring, rpc->name)) supported = true;
             if (!supported) Reply(c, 404, "Not Found", "{\"error\":\"unsupported_api\"}");
             else if (rpc->upload) Upload(c, header("Satori-Platform"), header("Satori-User-ID"), &uploads);
+            else if (!ValidateParams(*rpc, body)) Reply(c, 400, "Bad Request", "{\"error\":\"invalid_request\"}");
             else if (!backend || !backend->call) Reply(c, 501, "Not Implemented", "{\"error\":\"backend_not_implemented\"}");
             else {
                 const Request request{rpc, header("Satori-Platform"), header("Satori-User-ID"), body, type, c.input + length, body_size, rpc->upload ? &uploads : nullptr};

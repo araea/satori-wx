@@ -8,7 +8,7 @@
 
 纯 native C++：无 DEX、无 Java 助手、无 ArtMethod 改写、无 hook 引擎。连发送都是纯反射调用微信自己的代码，不加载任何额外东西。
 
-当前版本 v0.9.2：`message.create` 对只带媒体的 content 明确回 400 `media_unsupported`，不假报成功。模块默认 `send=off`；开启后所有会话都可发送，没有限速也没有白名单。
+当前版本 v0.9.3：方法可用性先于参数校验判定——不在 features 的方法一律回 404 `unsupported_api`，不管参数缺不缺、对不对，不再因为参数不合法先漏出 400 `invalid_request`（v0.9.2 及以前，`reaction.list` 之类不支持的方法在缺参时会误报 400）。`message.create` 对只带媒体的 content 明确回 400 `media_unsupported`，不假报成功。模块默认 `send=off`；开启后所有会话都可发送，没有限速也没有白名单。
 
 ## 协议覆盖（37 个标准方法）
 
@@ -139,7 +139,7 @@ MsgInfo = ex0.k0.F0.k(talker, localId)          // ex0.j0，按 talker+本地 ms
 
 - 端点：`/v1/meta`、`/v1/meta/webhook.create|delete`、`/v1/internal/status|capabilities`、`/v1/{resource}.{method}`
 - 账号类方法要 `Satori-Platform: wechat` + `Satori-User-ID: <wxid>`
-- 非 login 方法：不在 features → 404；在 features 但后端没实现 → 501
+- 非 login 方法：不在 features → 404（在参数校验之前判定，缺参也回 404 而非 400）；在 features 但后端没实现 → 501
 - `g_login_count`（protocol.cpp）由 `Apply` 更新；`wx_live` 等它 >0 再发事件，避免事件被丢
 - store 事件的 `login.sn` 必须等于账号适配器的 sn（当前 = 1）
 - `server.cpp` 不知道发送的存在，只用 `StatusProvider` 钩子；测试与独立工具不注册，响应保持精简

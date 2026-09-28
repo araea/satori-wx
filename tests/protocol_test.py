@@ -161,6 +161,11 @@ class ProtocolTests(unittest.TestCase):
         self.publish({'type': 'login-updated', 'login': self.login(features=[])})
         self.wait_sequence(self.base + 1)
         self.assertEqual(self.http('message.create', PARAMS['message.create'])[0], 404)
+        # Availability is decided before a method's own parameter rules: an unsupported
+        # method answers 404 even when the parameters are missing or malformed, instead of
+        # a misleading 400 that suggests the call would work with better arguments.
+        self.assertEqual(self.http('message.create', {})[0], 404)
+        self.assertEqual(self.http('message.list', {'channel_id': 'c', 'limit': 0})[0], 404)
     def test_login_removal(self):
         self.publish({'type': 'login-removed', 'login': self.login(status=0)})
         self.wait_sequence(self.base + 1)
