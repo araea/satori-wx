@@ -2,10 +2,7 @@
 
 文本能发，图片发不出去，而且在当前约束下走不通。死路清单见下文。
 
-微信 8.0.78 / versionCode 671108664，base.apk 在 `~/tmp/satori-wx/base.apk`。
-工具见 `tools/dex*.py`（`dexmethodsig.py` / `dexinvokes.py` / `dexmethodstrings.py` 最常用；
-`dexfindclass.py`、`dexrefs.py` 有误报，别单独信）。
-**结论性事实要落到「某个类的某个字段/方法」上，并且能和 App 自己的调用点对上。**
+微信 8.0.78 / versionCode 671108664。工具见 `tools/dex*.py`（`dexmethodsig.py` / `dexinvokes.py` / `dexmethodstrings.py` 最常用；`dexfindclass.py`、`dexrefs.py` 有误报，别单独信）。**结论性事实要落到「某个类的某个字段 / 方法」上，并且能和 App 自己的调用点对上。**
 
 ## 已经落地的
 
@@ -17,8 +14,7 @@
 
 ## 一个反复踩的坑：`v51.r1` 的字段名不是语义
 
-`v51.r1` 是发送参数构建器，字段是 `a..q` 的短名。曾经按「`r1.h()` 设路径、`r1.e()` 设目标」
-记过一版，**是错的**。正确的对应关系要从 App 自己的代码反推：
+`v51.r1` 是发送参数构建器，字段是 `a..q` 的短名。曾按「`r1.h()` 设路径、`r1.e()` 设目标」记过一版，**是错的**。正确对应关系要从 App 自己的代码反推：
 
 ```java
 // qs5.v5.hj(String talkerCsv, String path, String msgSource)  App 的「把一句话发给多个会话」
@@ -35,22 +31,18 @@ a19.a().a();                   // 构建并提交
 
 判定依据（两条互相独立）：
 
-- `dy1.g.k()` 的第 2 分支 `new r0(f468469g, f468468f, f468464b)` 对上 `r0(long,int,String)`，而
-  那个构造器里是 `ex0.k0.yi(str, localId)`，第三个参数是 **talker**。`f468464b` 就是 `h()` 写的
-  字段，所以 `h()` 是 talker。
-- `b41.d2.C(String)` 的字节码里出现 `endsWith("@chatroom")`、`y3.J4/v4/G3`，返回 1/11/36：
-  入参是会话名而不是路径。
+- `dy1.g.k()` 的第 2 分支 `new r0(f468469g, f468468f, f468464b)` 对上 `r0(long,int,String)`，而那个构造器里是 `ex0.k0.yi(str, localId)`，第三个参数是 **talker**。`f468464b` 就是 `h()` 写的字段，所以 `h()` 是 talker。
+- `b41.d2.C(String)` 的字节码里出现 `endsWith("@chatroom")`、`y3.J4/v4/G3`，返回 1/11/36：入参是会话名而不是路径。
 
 `r1.i(int)` 写的是 `f468467e`，不是 `f468471i`；`f468471i` 是「用哪个 provider 分支」的选择器。
 
-另外：`qs5.v5.hj` **不是**发图片的，是「同一句话发给多个会话」（`d2.C` 判会话类型、
-`com.tencent.mm.ui.g1.a(正文)` 取的是粘贴相似度之类的 msgsource）。
+另外：`qs5.v5.hj` **不是**发图片的，是「同一句话发给多个会话」（`d2.C` 判会话类型、`com.tencent.mm.ui.g1.a(正文)` 取的是粘贴相似度之类的 msgsource）。
 
 ## 图片：试过，撤回了
 
 ### 试的那条路（App 的转发路径）
 
-App 的 `qs5.v5.fj`/`gj`（`MsgRetransmitUI` 那套）这样发媒体：
+App 的 `qs5.v5.fj` / `gj`（`MsgRetransmitUI` 那套）这样发媒体：
 
 ```java
 String path = qb.b(src, callback);
@@ -71,14 +63,11 @@ v51.n1 n = b.a(); n.a();
 (long localId, int flags, String talker)                                             <- 重发
 ```
 
-两个 String 重载构造体一样：`e9.u1(talker)`、`e9.e1(md5(talker))`、`e9.setType(type)`、
-`e9.b1(content)`，末尾入库并返回 `f`（本地 id）。`obj` 只在 `(flags & 1) != 0 && obj instanceof
-HashMap` 时用于拼 `<msgsource>`，与图片数据无关。
+两个 String 重载构造体一样：`e9.u1(talker)`、`e9.e1(md5(talker))`、`e9.setType(type)`、`e9.b1(content)`，末尾入库并返回 `f`（本地 id）。`obj` 只在 `(flags & 1) != 0 && obj instanceof HashMap` 时用于拼 `<msgsource>`，与图片数据无关。
 
 ### 真机结果：这条路由不成立
 
-v0.9.0 用 `new v51.r0(talker, path, 42, 0, null, "")` + `doScene` 发到 filehelper，返回 200，
-logcat 有 `sent media to filehelper (local id 3710, netId 0, ...)`，但库里那行是：
+v0.9.0 用 `new v51.r0(talker, path, 42, 0, null, "")` + `doScene` 发到 filehelper，返回 200，logcat 有 `sent media to filehelper (local id 3710, netId 0, ...)`，但库里那行是：
 
 ```
 msgId | type | isSend | status | talker     | content                              | imgPath
@@ -92,9 +81,7 @@ msgId | type | isSend | status | talker               | content
 3401  | 3    | 1      | 2      | 59012484892@chatroom | <msg><img aeskey="2ff5f1..." encryver...
 ```
 
-**真发出去的图片是 `type=3` + `status=2`，`content` 是带 CDN 密钥的 `<msg><img aeskey=...>` 全文**；
-`type=42` 在整个库里只出现过这一行，就是为了这次实验写进去的。所以 42/66 是「转发一段已经有
-CDN 信息的媒体」的中间态，不是「把一个本地文件发成图片」。
+**真发出去的图片是 `type=3` + `status=2`，`content` 是带 CDN 密钥的 `<msg><img aeskey=...>` 全文**；`type=42` 在整个库里只出现过这一行，就是为了这次实验写进去的。所以 42/66 是「转发一段已经有 CDN 信息的媒体」的中间态，不是「把一个本地文件发成图片」。
 
 ### App 真正发新图的路（native 走不通）
 
@@ -110,25 +97,16 @@ kotlinx.coroutines.flow.j flow = ((ha0.w)((kt.d1) ph5.n0.c(kt.d1.class))).rj(gVa
 if (dVar != null) ((e36.t0) e36.t0.f237738d).g(new a6(this, flow, dVar));   // 只有这里会跑
 ```
 
-- `da0.g` 只是个数据类（字段：imgPath / int / fromUsername / toUsername / crossParams / uuid），
-  真正干活的是 `kt.d1` 返回的协程 flow。
+- `da0.g` 只是个数据类（字段：imgPath / int / fromUsername / toUsername / crossParams / uuid），真正干活的是 `kt.d1` 返回的协程 flow。
 - **`dVar`（类型 `s0.d`）是收集者**：传 null 就没有任何东西订阅这个 flow，上传根本不会发生。
-- `dVar` 是 Kotlin 函数类型，native 反射交不出来（要交就得定义 Java 类）。
-  模块的硬约束是纯 native、不定义 Java 类、不加载 dex（见 `README`），所以这条路封死。
+- `dVar` 是 Kotlin 函数类型，native 反射交不出来（要交就得定义 Java 类）。模块的硬约束是纯 native、不定义 Java 类、不加载 dex（见 [README](../README.md)），所以这条路封死。
 - `b41.k7` 反过来是能用的：它有 `()V` 构造器，字段 `b`(J) 就是本地消息 id，可以当回调收结果。
 
-顺带记一笔：`v51.q0`/`p0` **不是**上传步。`q0.run()` 跑的是
-`new com.tencent.mm.modelsimple.l1(5,"","","","",false,1,false).doScene(...)`，而
-`modelsimple.l1` 是 **NetSceneVerifyPswd**（`/cgi-bin/micromsg-bin/newverifypasswd`），
-`p0` 的日志串是 `verifypsw onSceneEnd ... needVerifyPswList ... verifyingPsw`：
-它是「发送需要校验支付密码时重试」的包装，名字像上传而已。
+顺带记一笔：`v51.q0` / `p0` **不是**上传步。`q0.run()` 跑的是 `new com.tencent.mm.modelsimple.l1(5,"","","","",false,1,false).doScene(...)`，而 `modelsimple.l1` 是 **NetSceneVerifyPswd**（`/cgi-bin/micromsg-bin/newverifypasswd`），`p0` 的日志串是 `verifypsw onSceneEnd ... needVerifyPswList ... verifyingPsw`：它是「发送需要校验支付密码时重试」的包装，名字像上传而已。
 
 ### 结语
 
-`message.create` 现在只发纯文本；content 里只有媒体元素时返回 400
-`{"error":"media_unsupported"}`，不假报成功，也不往库里写任何行（那行 type=42 是 v0.9.0
-实验留下的，在 filehelper 里，只有自己看得到）。
-要做图片，得先决定是否接受引入一个极小的 Java 助手 / DEX，那是设计层面的改动，不是逆向问题。
+`message.create` 现在只发纯文本；content 里只有媒体元素时返回 400 `{"error":"media_unsupported"}`，不假报成功，也不往库里写任何行（那行 type=42 是 v0.9.0 实验留下的，在 filehelper 里，只有自己看得到）。要做图片，得先决定是否接受引入一个极小的 Java 助手 / DEX，那是设计层面的改动，不是逆向问题。
 
 ## 其它入口（供参考，都没接）
 
@@ -143,8 +121,7 @@ if (dVar != null) ((e36.t0) e36.t0.f237738d).g(new a6(this, flow, dVar));   // �
 ## 其它可复用的事实
 
 - `ActivityThread.currentApplication()` 拿 Context；`getClassLoader()` 拿宿主 ClassLoader。
-- `gp0.j1.e()` 和 `b41.h9.e()` 都返回 `com.tencent.mm.modelbase.r1`（NetSceneQueue）。
+- `gp0.j1.e()` 与 `b41.h9.e()` 都返回 `com.tencent.mm.modelbase.r1`（NetSceneQueue）。
 - `ex0.k0.F0` 是 `ex0.j0` 单例，`k(String talker, long localId)` 取 `com.tencent.mm.storage.e9`（MsgInfo）。
-- `v51.n1.a()` 的实现是 `((gp0.n) z2.f59772b).f268046a.f268074b.h(scene, 0)`，与群管理写操作的
-  Cgi 派发是同一个队列。
+- `v51.n1.a()` 的实现是 `((gp0.n) z2.f59772b).f268046a.f268074b.h(scene, 0)`，与群管理写操作的 Cgi 派发是同一个队列。
 - 这些类都在可读 dex 里；**优先用可读 dex 拼路径，别去碰 `libapp.so`**。
