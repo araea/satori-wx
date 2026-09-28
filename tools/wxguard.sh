@@ -14,6 +14,7 @@
 #      「崩溃或被系统回收」才恢复；PAUSED 一律不碰微信；用户在系统里手动强停（stopped=true）
 #      默认被尊重并转入 PAUSED。
 #   4. 只冻结不死：被冻住只写 freezer cgroup 解冻（有冷却），不因为冻结就强杀重启。
+#      解冻由 cgroup.events 的 inotify 事件驱动（冻住后几毫秒内解冻），每 5 秒的轮询只是兜底。
 #   5. 重启有冷却、每小时预算、指数退避与连续崩溃保护，避免无限快速重启把账号送进风控。
 #   6. 低功耗：默认 30 秒一轮，只在小睡分片之间检查状态，状态不变不写日志。
 #
@@ -28,6 +29,7 @@
 #   wxguard once|check       只跑一轮探针，不动微信（排查用）
 #   wxguard log [N]          看最近 N 行日志
 #   wxguard run              watchdog 主循环（内部使用）
+#   wxguard thaw-watch PID   冻结事件监听（内部使用，由 run 拉起，PID 是 watchdog 的）
 #   wxguard boot             开机恢复上次状态（service.sh 调用）
 #
 # 环境变量（也可写进 $DIR/guard.conf，脚本会 source；环境变量优先）：
@@ -74,6 +76,7 @@ SLEEP=${WXGUARD_SLEEP:-/system/bin/sleep}
 CGROUP_APPS=${WXGUARD_CGROUP_APPS:-/sys/fs/cgroup/apps}
 STATE=$DIR/guard.state
 PIDFILE=$DIR/guard.pid
+WATCHPID=$DIR/guard.thaw.pid
 LOG=$DIR/guard.log
 RESTARTS=$DIR/guard.restarts
 LOCKDIR=$DIR/guard.lock
@@ -244,6 +247,85 @@ fast_thaw() {
         last_thaw=$(now)
         thaw_wx "$uid" "fast cgroup check"
     fi
+}
+
+# ---- 冻结事件驱动的即时解冻 --------------------------------------------------
+# OplusHansManager 隔几秒就按 uid 冻一次微信。上面的 fast_thaw 每 5 秒才看一眼 cgroup，
+# 一次冻结最长要卡 5–10 秒：这段时间回环端口还能握手、却没人应答，客户端看到的就是
+# 「指令发出去很久才有回复」。cgroup.events 里 frozen 一变就有 inotify 事件（真机实测冻结后
+# 6ms 内到），所以直接监听它，事件一到就解冻，微信实际停摆只有几毫秒。轮询保留作兜底。
+frozen_now() {  # frozen_now <uid>：不 fork，直接读 freezer 文件
+    local uid=$1 v d
+    read -r v 2>/dev/null < "$CGROUP_APPS/uid_$uid/cgroup.freeze" && [ "$v" = "1" ] && return 0
+    for d in "$CGROUP_APPS/uid_$uid"/pid_*; do
+        read -r v 2>/dev/null < "$d/cgroup.freeze" && [ "$v" = "1" ] && return 0
+    done
+    return 1
+}
+
+thaw_now() {  # thaw_now <uid>：只把冻着的写回 0
+    local uid=$1 v d
+    read -r v 2>/dev/null < "$CGROUP_APPS/uid_$uid/cgroup.freeze" && [ "$v" = "1" ] \
+        && printf 0 2>/dev/null > "$CGROUP_APPS/uid_$uid/cgroup.freeze"
+    for d in "$CGROUP_APPS/uid_$uid"/pid_*; do
+        read -r v 2>/dev/null < "$d/cgroup.freeze" && [ "$v" = "1" ] && printf 0 2>/dev/null > "$d/cgroup.freeze"
+    done
+    return 0
+}
+
+thaw_watch() {  # thaw_watch <watchdog-pid>：watchdog 一走它也走
+    local parent=$1 uid files f n=0 last_log=$SECONDS win=$SECONDS burst=0
+    while kill -0 "$parent" 2>/dev/null; do
+        uid=$(wx_uid)
+        files=""
+        if [ -n "$uid" ]; then
+            for f in "$CGROUP_APPS/uid_$uid/cgroup.events" "$CGROUP_APPS/uid_$uid"/pid_*/cgroup.events; do
+                [ -r "$f" ] && files="$files $f:c"
+            done
+        fi
+        if [ -z "$files" ]; then "$SLEEP" 5 2>/dev/null; continue; fi
+        # 60 秒换一轮：微信重启后会长出新的 pid_* cgroup，要重新列一遍。
+        timeout 60 inotifyd - $files 2>/dev/null | while read -r _; do
+            frozen_now "$uid" || continue
+            thaw_now "$uid"
+            n=$((n + 1)); burst=$((burst + 1))
+            # Hans 若立刻又冻回来就别互相空转：10 秒内超过 30 次就每次停 1 秒。
+            if [ $((SECONDS - win)) -ge 10 ]; then win=$SECONDS; burst=1; fi
+            [ "$burst" -gt 30 ] && "$SLEEP" 1 2>/dev/null
+            if [ $((SECONDS - last_log)) -ge 30 ]; then
+                log "thaw: 事件驱动解冻 ${n} 次"
+                last_log=$SECONDS; n=0
+            fi
+            kill -0 "$parent" 2>/dev/null || break
+        done
+        kill -0 "$parent" 2>/dev/null || break
+        "$SLEEP" 1 2>/dev/null
+    done
+}
+
+thaw_watch_running() {
+    local w
+    w=$(cat "$WATCHPID" 2>/dev/null)
+    [ -n "$w" ] && kill -0 "$w" 2>/dev/null
+}
+
+stop_thaw_watch() {
+    local w
+    w=$(cat "$WATCHPID" 2>/dev/null)
+    [ -n "$w" ] || return 0
+    # 它是自己会话的组长，但 timeout 会把 inotifyd 挪进自己的进程组：按命令行把 inotifyd 也收掉。
+    kill -TERM -- "-$w" 2>/dev/null
+    pkill -P "$w" 2>/dev/null
+    kill "$w" 2>/dev/null
+    pkill -f "^inotifyd - $CGROUP_APPS/uid_" 2>/dev/null
+    rm -f "$WATCHPID" 2>/dev/null
+}
+
+start_thaw_watch() {  # start_thaw_watch <watchdog-pid>
+    stop_thaw_watch
+    setsid /system/bin/sh "$SELF" thaw-watch "$1" </dev/null >>"$LOG" 2>&1 &
+    echo $! > "$WATCHPID"
+    chmod 0600 "$WATCHPID" 2>/dev/null
 }
 
 # ---- 服务探针 -------------------------------------------------------------
@@ -420,17 +502,19 @@ run() {
     echo $$ > "$PIDFILE"
     chmod 0600 "$PIDFILE" 2>/dev/null
     unlock
-    trap 'rm -f "$PIDFILE" 2>/dev/null; log "watchdog: 收到停止信号，退出"; exit 0' TERM INT HUP
+    trap 'stop_thaw_watch; rm -f "$PIDFILE" 2>/dev/null; log "watchdog: 收到停止信号，退出"; exit 0' TERM INT HUP
     log "watchdog start pid=$$ interval=${INTERVAL}s gap=${MIN_GAP}s max=${MAX_RESTARTS}/h crash=${CRASH_LIMIT}/${CRASH_WINDOW}s version=$VERSION"
 
     unresponsive=0
     offline=0
     last_thaw=0
+    start_thaw_watch $$
     while :; do
         [ "$(cur_mode)" = "ARMED" ] || { log "watchdog: MODE=$(cur_mode)，退出"; break; }
         tick
         nap "$INTERVAL" || break
     done
+    stop_thaw_watch
     rm -f "$PIDFILE" 2>/dev/null
     log "watchdog stop pid=$$"
 }
@@ -574,6 +658,7 @@ print_status_json() {
         "$mode" "$VERSION" "$running" "${p:-0}" "$since" "$(sanitize "$reason")"
     printf '"wx_alive":%s,"wx_pid":%s,"wx_frozen":%s,"online":%s,' \
         "$([ -n "$qpid" ] && echo true || echo false)" "${qpid:-0}" "$frozen" "$online"
+    printf '"thaw_watch":%s,' "$(thaw_watch_running && echo true || echo false)"
     printf '"restarts_1h":%s,"consec_fail":%s,"backoff_s":%s,"last_restart":%s,"last_online":%s,' \
         "$restarts" "$(num CONSEC_FAIL)" "$backoff" "$lr" "$lo"
     printf '"log":"%s"}\n' "$(sanitize "$LOG")"
@@ -596,6 +681,7 @@ print_status() {
     echo "  原因      $(state_get REASON)  ·  自 epoch $(num SINCE)"
     echo "  累计      ARMED $(num ARMS) 次 / PAUSED $(num PAUSES) 次"
     echo "  微信        pid=${qpid:-none}  冻结=$frozen  在线=$online"
+    echo "  冻结监听  $(thaw_watch_running && echo 运行中 || echo 未运行)"
     echo "  重启      最近1h=$restarts 次  连续失败=$(num CONSEC_FAIL)  当前退避=${backoff}s  上次=$lr"
     echo "  日志      $LOG"
 }
@@ -703,6 +789,7 @@ main() {
         toggle)         cmd_toggle ;;
         boot)           cmd_boot ;;
         run)            run ;;
+        thaw-watch)     thaw_watch "${2:-0}" ;;
         once|check)     cmd_check ;;
         apply)          apply_config ;;
         status)

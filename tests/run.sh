@@ -68,3 +68,9 @@ clang++ -std=c++20 -O1 -g -fno-exceptions -fno-rtti -nostdinc++ -nostdlib++ \
 SATORI_TMPROOT="$R/build/tests/tmp" "$R/build/tests/backend-test"
 python3 "$R/tests/account_e2e_test.py" "$R/build/tests/server"
 python3 "$R/tests/webhook_test.py" "$R/build/tests/server"
+# Root-only: wxguard's event-driven thaw against a throwaway cgroup (skips itself without root).
+if command -v su >/dev/null 2>&1 && su -c 'test -w /sys/fs/cgroup/apps/cgroup.procs' >/dev/null 2>&1; then
+    su -c "timeout 120 sh '$R/tests/wxguard_thaw_test.sh'"
+else
+    echo "wxguard thaw test: SKIP (no root)"
+fi
