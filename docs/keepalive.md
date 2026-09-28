@@ -73,7 +73,7 @@
 **全新安装默认 ARMED**（`WXGUARD_FRESH_MODE`，写进 `guard.conf` 可改成 `PAUSED`）。这条是
 2026-09-28 真机排查的结论：ColorOS 的 `OplusHansManager` 会按 uid 反复冻结/解冻微信
 （`freeze uid: 10419 ... scene: |StrictMode-3|LcdOn`，间隔几秒到几十秒），被冻期间回环端口
-仍然三次握手成功、但没有任何响应——客户端不是收到错误，而是挂住到超时。旧默认
+仍然三次握手成功、但没有任何响应。客户端不是收到错误，而是挂住到超时。旧默认
 （`fresh-install` → `PAUSED`）会让刚装好的模块看起来在线、实际不可用，所以改成默认保活。
 
 ```sh

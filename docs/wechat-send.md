@@ -14,7 +14,7 @@ v0.5.0 的交接文档（`HANDOFF.md` §7）判定「高层发送 API 在编译�
   不可读的只是更上层的 UI/业务入口。
 - 顺着 `j1`（= `com.tencent.mm.network.j1`，实现 `com.tencent.mm.network.s`）找到
   `com.tencent.mm.network.a3`：里面有 **`static boolean b(j1, m1)`**，实现就是
-  `m1Var.doScene(j1Var, new y2())`——一个现成的、带回调的派发入口。
+  `m1Var.doScene(j1Var, new y2())`，是一个现成的、带回调的派发入口。
 - 消息场景类 `v51.r0`（`NetSceneSendMsg`）与其 6 参构造器、`doScene`、回调
   `com.tencent.mm.network.y2` 也都在 dex 里。
 
@@ -113,7 +113,7 @@ com.tencent.mm.network.y2.<init>()   微信自己在 a3.b 里用的空回调（�
 
 - 类/方法名随微信版本变化（当前针对 8.0.78/3180）。任一步解析失败 → 该次发送报错并记录
   detail，不影响协议层与只读后端。
-- 只有纯文本（长整型构造器，`type=1`）。图片试过并撤回——App 发新图要跑 Kotlin 协程，
+- 只有纯文本（长整型构造器，`type=1`）。图片试过并撤回。App 发新图要跑 Kotlin 协程，
   收尾回调 native 交不出来，见 [发送各类消息](wechat-send-types.md)。语音/视频/文件未做。
 - 发送失败时微信库里可能残留一条 SENDING 消息（构造器先入库），这是微信自己的重发语义。
 - 不做实现端限速或并发上限：请求原样交给微信自己的场景队列。

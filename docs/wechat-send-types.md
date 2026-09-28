@@ -1,7 +1,6 @@
 # 微信发送各类消息的逆向记录（2026-09-28）
 
-结论先说：**文本能发，图片发不出去**，而且在当前约束下走不通。这份文档的价值主要在「死路清单」——
-下次想碰媒体发送之前先读它，别再花几轮重启去试 `type 42/66`。
+文本能发，图片发不出去，而且在当前约束下走不通。死路清单见下文。
 
 微信 8.0.78 / versionCode 671108664，base.apk 在 `~/tmp/satori-wx/base.apk`。
 工具见 `tools/dex*.py`（`dexmethodsig.py` / `dexinvokes.py` / `dexmethodstrings.py` 最常用；
@@ -22,7 +21,7 @@
 记过一版，**是错的**。正确的对应关系要从 App 自己的代码反推：
 
 ```java
-// qs5.v5.hj(String talkerCsv, String path, String msgSource) —— App 的「把一句话发给多个会话」
+// qs5.v5.hj(String talkerCsv, String path, String msgSource)  App 的「把一句话发给多个会话」
 v51.r1 a19 = v51.s1.a(str4);   // str4 来自 talkerCsv.split(",")
 a19.h(str4);                   // 目标 talker
 a19.e(str);                    // 正文
@@ -37,15 +36,15 @@ a19.a().a();                   // 构建并提交
 判定依据（两条互相独立）：
 
 - `dy1.g.k()` 的第 2 分支 `new r0(f468469g, f468468f, f468464b)` 对上 `r0(long,int,String)`，而
-  那个构造器里是 `ex0.k0.yi(str, localId)`——第三个参数是 **talker**。`f468464b` 就是 `h()` 写的
+  那个构造器里是 `ex0.k0.yi(str, localId)`，第三个参数是 **talker**。`f468464b` 就是 `h()` 写的
   字段，所以 `h()` 是 talker。
-- `b41.d2.C(String)` 的字节码里出现 `endsWith("@chatroom")`、`y3.J4/v4/G3`，返回 1/11/36——
+- `b41.d2.C(String)` 的字节码里出现 `endsWith("@chatroom")`、`y3.J4/v4/G3`，返回 1/11/36：
   入参是会话名而不是路径。
 
 `r1.i(int)` 写的是 `f468467e`，不是 `f468471i`；`f468471i` 是「用哪个 provider 分支」的选择器。
 
 另外：`qs5.v5.hj` **不是**发图片的，是「同一句话发给多个会话」（`d2.C` 判会话类型、
-`com.tencent.mm.ui.g1.a(正文)` 取的是粘贴相似度之类的 msgsource）。别被「hj/图片」的猜测带走。
+`com.tencent.mm.ui.g1.a(正文)` 取的是粘贴相似度之类的 msgsource）。
 
 ## 图片：试过，撤回了（v0.9.0 → v0.9.2）
 
@@ -115,13 +114,13 @@ if (dVar != null) ((e36.t0) e36.t0.f237738d).g(new a6(this, flow, dVar));   // �
   真正干活的是 `kt.d1` 返回的协程 flow。
 - **`dVar`（类型 `s0.d`）是收集者**：传 null 就没有任何东西订阅这个 flow，上传根本不会发生。
 - `dVar` 是 Kotlin 函数类型，native 反射交不出来（要交就得定义 Java 类）。
-  模块的硬约束是纯 native、不定义 Java 类、不加载 dex（`README` 里就是卖点），所以这条路封死。
+  模块的硬约束是纯 native、不定义 Java 类、不加载 dex（见 `README`），所以这条路封死。
 - `b41.k7` 反过来是能用的：它有 `()V` 构造器，字段 `b`(J) 就是本地消息 id，可以当回调收结果。
 
 顺带记一笔：`v51.q0`/`p0` **不是**上传步。`q0.run()` 跑的是
 `new com.tencent.mm.modelsimple.l1(5,"","","","",false,1,false).doScene(...)`，而
 `modelsimple.l1` 是 **NetSceneVerifyPswd**（`/cgi-bin/micromsg-bin/newverifypasswd`），
-`p0` 的日志串是 `verifypsw onSceneEnd ... needVerifyPswList ... verifyingPsw`——
+`p0` 的日志串是 `verifypsw onSceneEnd ... needVerifyPswList ... verifyingPsw`：
 它是「发送需要校验支付密码时重试」的包装，名字像上传而已。
 
 ### 结语
@@ -129,7 +128,7 @@ if (dVar != null) ((e36.t0) e36.t0.f237738d).g(new a6(this, flow, dVar));   // �
 `message.create` 现在只发纯文本；content 里只有媒体元素时返回 400
 `{"error":"media_unsupported"}`，不假报成功，也不往库里写任何行（那行 type=42 是 v0.9.0
 实验留下的，在 filehelper 里，只有自己看得到）。
-要做图片，得先决定是否接受引入一个极小的 Java 助手 / DEX ——那是设计层面的改动，不是逆向问题。
+要做图片，得先决定是否接受引入一个极小的 Java 助手 / DEX，那是设计层面的改动，不是逆向问题。
 
 ## 其它入口（供参考，都没接）
 

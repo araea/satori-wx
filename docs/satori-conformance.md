@@ -26,7 +26,7 @@
 | guild.member.get / list | 读 `chatroom` 的 memberlist + displayname（`、` 分隔）+ roomowner；`next` 是成员偏移；displayname 与 memberlist 数量不一致时忽略群昵称、回落到 rcontact |
 | guild.role.list / guild.member.role.list | 合成角色：`owner`（群主）/ `admin`（管理员）/ `member`（成员）；管理员位读 `chatroom.roomdata` 的成员标志（`flag & 2048`），没有 roomdata 缓存时按普通成员算；非成员返回空列表；未知群返回 404 |
 | user.channel.create | 返回该 wxid 的私聊频道（`type=1`） |
-| 微信无法表达（`internal/capabilities.unsupported`） | `message.update`、`channel.create`、`channel.mute`、`guild.member.mute`、`reaction.create/delete/clear/list`、`guild.role.create/update/delete` —— 微信不能编辑消息、群内没有子频道、没有服务端禁言、无表态、无自定义角色 |
+| 微信无法表达（`internal/capabilities.unsupported`） | `message.update`、`channel.create`、`channel.mute`、`guild.member.mute`、`reaction.create/delete/clear/list`、`guild.role.create/update/delete`。微信不能编辑消息、群内没有子频道、没有服务端禁言、无表态、无自定义角色 |
 | 未实现的写操作 | 群改名、好友删除/审批、入群审批：卡点见 [群管理写操作](wechat-room.md)。只有真实实现的方法才进 features，否则返回 404 |
 | 分页 | params 的 next/direction/limit/order 与后端返回的 data/prev/next 原样传递 |
 | upload.create | multipart/form-data，有界二进制零拷贝解析，字段名与返回 URL 映射由后端实现 |
@@ -80,7 +80,7 @@ tempstore 测试覆盖 `internal:` 链接的解析（外链、别的平台、`_t
 名字、手工放进去的文件、输出缓冲太小），这条曾经因为 `sizeof` 用在指针上而全数失败。
 backend 测试把真实的 `wx_backend.cpp` 接进来说话（store/群管理/保活用桩），覆盖 send 开关、
 文本拍平后交给发送器、只带图片的 content 得到 400 `media_unsupported`、图配文仍走文本、
-空白内容被拒——这个文件此前完全没有覆盖，两次出错都出在它身上。
+空白内容被拒。这个文件此前完全没有覆盖，两次出错都出在它身上。
 账号端到端测试用夹具偏好文件驱动真实适配层，验证 meta / login.get / READY 的一致快照、
 离线状态与账号切换；WebHook 测试用本地接收端验证 `Satori-Opcode`、`Authorization` 与
 信号体，以及登记上限/注销；详情见 [只读账号身份说明](wechat-account.md)。

@@ -45,8 +45,8 @@
 
 ### 1. 密钥捕获：只替换 RegisterNatives 里的一个函数指针
 
-微信自己调用 `RegisterNatives` 时会把 `nativeSetKey` 的 `fnPtr` 传进来。我们只在
-**注册的那一刻**把这一项的 `fnPtr` 换成我们的透传包装：记录一次密钥，然后**原样转发**给
+微信自己调用 `RegisterNatives` 时会把 `nativeSetKey` 的 `fnPtr` 传进来。本模块只在
+**注册的那一刻**把这一项的 `fnPtr` 换成透传包装：记录一次密钥，然后**原样转发**给
 微信的实现。要点：
 
 - 不改微信代码段、不写 `mprotect`、无 trampoline、不碰 ArtMethod、不做 inline hook。

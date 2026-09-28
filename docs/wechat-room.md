@@ -37,7 +37,7 @@
 角色：微信没有自定义角色，`guild.role.list` 合成 `owner`(群主) / `admin`(管理员) / `member`(成员)。
 只有 `admin` 可被 `guild.member.role.set/unset` 变更；`owner`/`member` 固定。
 
-**读侧（v0.9.0 起）认管理员位**：位在 `chatroom.roomdata` 这个 protobuf 里——
+**读侧（v0.9.0 起）认管理员位**：位在 `chatroom.roomdata` 这个 protobuf 里。
 `ChatRoomData{ repeated ChatRoomMember member = 1 }`、`ChatRoomMember{ string userName = 1; ...; int32 flag = 3 }`，
 `flag & 2048` 即管理员（App 侧同样是判这个位）。`wx_store.cpp` 里有个只读的小 protobuf 遍历器
 （`RoomAdmin`），按 wxid 查这个位；没有 roomdata 缓存时（`roomdata` 为 NULL）按普通成员算，不猜。
