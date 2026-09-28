@@ -29,6 +29,10 @@ struct Store {
     char account_dir[1100];  // <app>/MicroMsg/<hash>: where WeChat keeps this account's media
     char app_dir[1100];      // <app>: the app's private data directory
     long long skipped;       // rows the poller could not turn into an event (too large)
+    // Authors of the last few hundred announced messages, so a later recall can name who wrote
+    // the message (the recalled row itself no longer says).
+    struct { long long id; char user[80]; } authors[512];
+    unsigned author_next;
     pthread_mutex_t mutex;
 };
 
@@ -268,11 +272,11 @@ cJSON *StoreFriendList(Store *store, const char *next, int limit) {
     char sql[640];
     if (cursor > 0)
         snprintf(sql, sizeof(sql), "SELECT username, alias, conRemark, nickname, rowid FROM rcontact "
-                 "WHERE type = 3 AND deleteFlag = 0 AND username NOT LIKE '%%@chatroom' AND username NOT LIKE 'gh_%%' "
+                 "WHERE (type & 3) = 3 AND deleteFlag = 0 AND username NOT LIKE '%%@chatroom' AND username NOT LIKE 'gh_%%' "
                  "AND username != '%s' AND rowid > %lld ORDER BY rowid LIMIT %d", store->self_id, cursor, limit + 1);
     else
         snprintf(sql, sizeof(sql), "SELECT username, alias, conRemark, nickname, rowid FROM rcontact "
-                 "WHERE type = 3 AND deleteFlag = 0 AND username NOT LIKE '%%@chatroom' AND username NOT LIKE 'gh_%%' "
+                 "WHERE (type & 3) = 3 AND deleteFlag = 0 AND username NOT LIKE '%%@chatroom' AND username NOT LIKE 'gh_%%' "
                  "AND username != '%s' ORDER BY rowid LIMIT %d", store->self_id, limit + 1);
     cJSON *result = ContactList(store, sql, 1, limit);
     pthread_mutex_unlock(&store->mutex);
@@ -966,12 +970,20 @@ long long StorePoll(Store *store, long long since, int login_sn, bool (*emit)(vo
             if (decoded.deliver) {
                 Parts parts;
                 cJSON *message = BuildMessage(store, rows[i], decoded, &parts);
+                const char *author = cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(parts.user, "id"));
+                char author_copy[80] = {};
+                if (author) snprintf(author_copy, sizeof(author_copy), "%s", author);
                 char *text = message ? MessageEventJson(login_sn, "message-created", message, parts, static_cast<double>(rows[i].create_time)) : nullptr;
                 FreeParts(parts);
                 if (text && strlen(text) >= kEventSize) { free(text); text = nullptr; ++store->skipped; }
                 if (text) {
                     const bool accepted = emit(context, text);
                     free(text);
+                    if (accepted && author_copy[0]) {
+                        auto &slot = store->authors[store->author_next++ % 512];
+                        slot.id = rows[i].id;
+                        snprintf(slot.user, sizeof(slot.user), "%s", author_copy);
+                    }
                     // The bus is full: keep this row for the next pass rather than lose it.
                     if (!accepted) stalled = true;
                 }
@@ -1225,5 +1237,116 @@ bool StoreMediaFile(Store *store, const char *kind, long long msg_id, char *path
         return allowed && RegularFile(file) && accept(file, TypeByExtension(file));
     }
     return false;
+}
+} // namespace satori
+
+// ==== change feeds ============================================================================
+namespace satori {
+namespace {
+struct StampSink { RoomStamp *out; int count, max; };
+bool StampRow(Wcdb *db, void *stmt, void *context) {
+    auto *sink = static_cast<StampSink *>(context);
+    if (sink->count >= sink->max) return false;
+    RoomStamp &stamp = sink->out[sink->count++];
+    const char *name = WcdbText(db, stmt, 0);
+    snprintf(stamp.name, sizeof(stamp.name), "%s", name ? name : "");
+    stamp.modify_time = WcdbInt(db, stmt, 1);
+    stamp.member_count = WcdbInt(db, stmt, 2);
+    stamp.list_size = WcdbInt(db, stmt, 3);
+    return true;
+}
+struct StringSink { char *text; bool ok; };
+bool MembersRow(Wcdb *db, void *stmt, void *context) {
+    auto *sink = static_cast<StringSink *>(context);
+    const char *members = WcdbText(db, stmt, 0);
+    sink->text = strdup(members ? members : "");
+    sink->ok = sink->text != nullptr;
+    return false;
+}
+struct RevokedSink { RevokedRow *out; int count, max; };
+bool RevokedCallback(Wcdb *db, void *stmt, void *context) {
+    auto *sink = static_cast<RevokedSink *>(context);
+    if (sink->count >= sink->max) return false;
+    RevokedRow &row = sink->out[sink->count++];
+    row.id = WcdbInt(db, stmt, 0);
+    const char *talker = WcdbText(db, stmt, 1);
+    snprintf(row.talker, sizeof(row.talker), "%s", talker ? talker : "");
+    row.create_time = WcdbInt(db, stmt, 2);
+    row.is_send = static_cast<int>(WcdbInt(db, stmt, 3));
+    return true;
+}
+struct IdSink { TextBuf *buffer; };
+bool FriendIdRow(Wcdb *db, void *stmt, void *context) {
+    auto *sink = static_cast<IdSink *>(context);
+    const char *id = WcdbText(db, stmt, 0);
+    if (id && *id) { sink->buffer->Append(id); sink->buffer->Append('\n'); }
+    return true;
+}
+} // namespace
+
+int StoreRoomStamps(Store *store, RoomStamp *out, int max) {
+    if (!store || !store->db || !out) return -1;
+    StampSink sink{out, 0, max};
+    pthread_mutex_lock(&store->mutex);
+    const bool ok = WcdbQuery(store->db, "SELECT chatroomname, modifytime, memberCount, length(memberlist) FROM chatroom", StampRow, &sink);
+    pthread_mutex_unlock(&store->mutex);
+    return ok ? sink.count : -1;
+}
+
+char *StoreRoomMembers(Store *store, const char *room) {
+    if (!store || !store->db || !SafeSql(room)) return nullptr;
+    char sql[200];
+    snprintf(sql, sizeof(sql), "SELECT memberlist FROM chatroom WHERE chatroomname = '%s' LIMIT 1", room);
+    StringSink sink{nullptr, false};
+    pthread_mutex_lock(&store->mutex);
+    const bool ok = WcdbQuery(store->db, sql, MembersRow, &sink);
+    pthread_mutex_unlock(&store->mutex);
+    if (!ok || !sink.ok) { free(sink.text); return nullptr; }
+    return sink.text;
+}
+
+char *StoreFriendIds(Store *store) {
+    if (!store || !store->db) return nullptr;
+    TextBuf buffer;
+    IdSink sink{&buffer};
+    pthread_mutex_lock(&store->mutex);
+    const bool ok = WcdbQuery(store->db,
+        "SELECT username FROM rcontact WHERE (type & 3) = 3 AND deleteFlag = 0 AND username NOT LIKE '%@chatroom' "
+        "AND username NOT LIKE 'gh\\_%' ESCAPE '\\'", FriendIdRow, &sink);
+    pthread_mutex_unlock(&store->mutex);
+    if (!ok) return nullptr;
+    return buffer.Take();
+}
+
+int StoreRevoked(Store *store, long long since_ms, RevokedRow *out, int max) {
+    if (!store || !store->db || !out) return -1;
+    char sql[300];
+    snprintf(sql, sizeof(sql),
+             "SELECT msgId, talker, createTime, isSend FROM message WHERE (type IN (268445456, 285222674) OR (type & 65535) = 10002) "
+             "AND createTime > %lld ORDER BY msgId LIMIT %d", since_ms, max);
+    RevokedSink sink{out, 0, max};
+    pthread_mutex_lock(&store->mutex);
+    const bool ok = WcdbQuery(store->db, sql, RevokedCallback, &sink);
+    pthread_mutex_unlock(&store->mutex);
+    return ok ? sink.count : -1;
+}
+
+bool StoreAuthorOf(Store *store, long long msg_id, char *out, size_t capacity) {
+    if (!store || !out || !capacity) return false;
+    out[0] = 0;
+    for (const auto &slot : store->authors) {
+        if (slot.id == msg_id && slot.user[0]) { snprintf(out, capacity, "%s", slot.user); return true; }
+    }
+    return false;
+}
+
+cJSON *StoreUserObject(Store *store, const char *id) { return MemberUser(store, id); }
+
+cJSON *StoreGuildObject(Store *store, const char *id) {
+    cJSON *guild = OneContact(store, id, 0);
+    if (guild) return guild;
+    guild = cJSON_CreateObject();
+    if (guild) cJSON_AddStringToObject(guild, "id", id ? id : "");
+    return guild;
 }
 } // namespace satori

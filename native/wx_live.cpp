@@ -1,4 +1,5 @@
 #include "wx_live.h"
+#include "wx_events.h"
 #include "wx_store.h"
 #include "wx_account.h"
 #include <dirent.h>
@@ -154,8 +155,18 @@ void *Loop(void *argument) {
     Log(live->app_data, "polling from watermark=%lld", live->watermark);
     const timespec grace{5, 0};
     nanosleep(&grace, nullptr);
+    // Recalls, group roster changes and friendships have no row of their own to poll; the scanner
+    // snapshots them now (announcing nothing for what already exists) and diffs on every pass.
+    Scanner *scanner = CreateScanner(live->store, live->login_sn);
+    long long last_scan = 0;
     long long logged = -1;
     for (;;) {
+        if (scanner) {
+            timespec now{};
+            clock_gettime(CLOCK_REALTIME, &now);
+            const long long now_ms = static_cast<long long>(now.tv_sec) * 1000 + now.tv_nsec / 1000000;
+            if (now_ms - last_scan >= 3000) { ScannerStep(scanner, Emit, live, now_ms); last_scan = now_ms; }
+        }
         bool more = false;
         live->watermark = StorePoll(live->store, live->watermark, live->login_sn, Emit, live, &more);
         if (live->emitted != logged) {

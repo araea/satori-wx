@@ -58,4 +58,31 @@ cJSON *StoreGuildMemberGet(Store *store, const char *guild_id, const char *user_
 // guild.member.role.set/unset as soon as WeChat refreshes that row.
 cJSON *StoreGuildRoleList(Store *store, const char *guild_id);
 cJSON *StoreMemberRoleList(Store *store, const char *guild_id, const char *user_id);
+
+// ---- change feeds ---------------------------------------------------------------------------
+// What the event scanner (wx_events) reads to notice things that are not new rows: recalled
+// messages, group membership, friendships. Each returns -1 / null on a read error, which the
+// caller must treat as "unknown", never as "nothing changed" or "everything is gone".
+struct RoomStamp {
+    char name[80];
+    long long modify_time, member_count, list_size;  // cheap fingerprint: differs whenever the roster may have
+};
+int StoreRoomStamps(Store *store, RoomStamp *out, int max);
+// The room's member ids, ';'-separated, in a malloc'd string ("" for an empty roster).
+char *StoreRoomMembers(Store *store, const char *room);
+// Every friend id, '\n'-separated, malloc'd.
+char *StoreFriendIds(Store *store);
+struct RevokedRow {
+    long long id;
+    char talker[80];
+    long long create_time;  // of the original message
+    int is_send;
+};
+// Recalled messages (WeChat rewrites the original row in place) created after `since_ms`.
+int StoreRevoked(Store *store, long long since_ms, RevokedRow *out, int max);
+// Who wrote a message the poller announced earlier in this process (recent ones only).
+bool StoreAuthorOf(Store *store, long long msg_id, char *out, size_t capacity);
+// Satori User / Guild objects for event payloads; a bare {"id"} when the contact is unknown.
+cJSON *StoreUserObject(Store *store, const char *id);
+cJSON *StoreGuildObject(Store *store, const char *id);
 } // namespace satori
