@@ -1,22 +1,17 @@
 # 知言应用
 
-知言模块的原生管理界面（`com.satori.wx`）：看服务通了没有、断在哪一环、下一步做什么；
-管理发送开关、端口与令牌；一键重新启动微信让配置生效。同时是微信常驻通知上「唤醒锁」按钮的落点
-（`keepalive.WakeToggleReceiver` 把切换转给模块的 `POST /v1/internal/wakelock`）。
-设计规范见 [docs/app-design.md](../docs/app-design.md)。
+知言模块的原生管理界面（`com.satori.wx`）：查看服务是否连通、断在哪一环、下一步做什么；管理发送开关、端口与令牌；一键重新启动微信让配置生效。同时是微信常驻通知上「唤醒锁」按钮的落点（`keepalive.WakeToggleReceiver` 把切换转给模块的 `POST /v1/internal/wakelock`）。设计规范见 [docs/app-design.md](../docs/app-design.md)。
 
 零依赖：只用 Android 框架 API，不引入 androidx / Material Components；视图直接构造，不解析 XML 布局。
 
 ## 使用前提
 
 - 已安装并启用知言模块（`satori_wx`），且重启过手机。
-- **在 KernelSU / Magisk 里允许「知言」使用 Root。** 配置文件在 `/data/adb/modules/satori_wx/`，读写都要 Root；
-  没有授权时首页停在「需要 Root 授权」，授权后点「重试」。
+- 在 KernelSU / Magisk 里允许「知言」使用 Root。配置文件在 `/data/adb/modules/satori_wx/`，读写都要 Root；没有授权时首页停在「需要 Root 授权」，授权后点「重试」。
 
 ## 构建与测试（arm64 Termux）
 
-需要 `openjdk-17`、`aapt`、`zipalign`、`apksigner`、`clang`、Python 3（`materialyoucolor` 与 `Pillow` 只在改色板或看截图时需要），
-以及 `libs/r8.jar`、`libs/json.jar`（被 gitignore，下载命令见 `build.sh` 顶部）。
+需要 `openjdk-17`、`aapt`、`zipalign`、`apksigner`、`clang`、Python 3（`materialyoucolor` 与 `Pillow` 只在改色板或看截图时需要），以及 `libs/r8.jar`、`libs/json.jar`（被 gitignore，下载命令见 `build.sh` 顶部）。
 
 ```sh
 ./build.sh                 # → build/Zhiyan.apk（先自检令牌与图标生成物是否过期）
@@ -27,9 +22,13 @@ python3 tools/make-tokens.py   # 改种子色后重新生成 res/values*/tokens.
 python3 tools/make-icons.py    # 增删图标后重新生成 res/drawable/ms_*.xml 与启动图标
 ```
 
-装机：`su -c "cp build/Zhiyan.apk /data/local/tmp/ && pm install -r /data/local/tmp/Zhiyan.apk"`。
+装机：
 
-**签名密钥 `keystore/zhiyan.keystore` 不要删**（被 gitignore，只在缺失时生成）：换了密钥，已安装的应用只能卸载重装。
+```sh
+su -c "cp build/Zhiyan.apk /data/local/tmp/ && pm install -r /data/local/tmp/Zhiyan.apk"
+```
+
+签名密钥 `keystore/zhiyan.keystore` 不要删（被 gitignore，只在缺失时生成）：换了密钥，已安装的应用只能卸载重装。
 
 ## 结构
 

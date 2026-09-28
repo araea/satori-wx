@@ -79,7 +79,7 @@
 - `new v51.r0(talker, content, 1, 0, 0, "")`（NetSceneSendMsg）构造器自己入库；
 - `scene.doScene(dispatcher, new com.tencent.mm.network.y2())` 交给微信 mars。
 
-不 hook、不改代码、不加载 dex、不发原始封包。实现端默认关闭、不限速（白名单已取消），
+不 hook、不改代码、不加载 dex、不发原始封包。实现端默认关闭、不限速，
 返回「已派发」而非投递确认。完整逆向与验证状态见 [wechat-send.md](wechat-send.md)。
 
 ## 分步计划
@@ -91,11 +91,5 @@
 | M3.2 | 用确定后的密钥开只读连接（或读副本）接成 `message-created` 事件 | 真机收到真实消息事件，WebHook/WS 都能看到 |
 | M3.3 | 读 `rcontact`/`chatroom`，实现 user/friend/guild/channel/message.list/get | 已完成：另含 `guild.member.get/list`、`guild.role.list`、`guild.member.role.list`、`user.channel.create` |
 | M3.4 | 反射微信发送 API，实现 `message.create` 等写操作 | 真机发出真实消息，并做失败回滚 |
-M3.1 先在可选 probe（独立模块）里验证，真机确认可行且无副作用后，v0.6.7 已把同一个小包装
-并进主模块 `native/wx_key.cpp`，可选 probe 已删除。
 
-## 与已上线版本的关系
-
-- v0.5.0 服务端（纯 native、无 hook）保持不变；第 1 步先在可选 probe 里做，现已并入主模块。
-- 主模块引入密钥捕获后，仍应保持"只在取到密钥时启用消息层、失败即降级为空 features"，
-  不让消息后端影响协议层稳定性。
+密钥捕获（原可选 probe，独立模块）已并入主模块 `native/wx_key.cpp`。

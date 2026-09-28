@@ -1,4 +1,4 @@
-# 微信消息发送路径（v0.6.0）
+# 微信消息发送路径
 
 结论：**发送不需要 hook、不需要改写代码、不需要内嵌 DEX**。微信自己的
 `NetSceneSendMsg` 构造器和网络派发器都在**可读的 DEX**里，可以用宿主 ClassLoader
@@ -6,8 +6,7 @@
 
 ## 一、为什么之前的结论是「找不到」
 
-v0.5.0 的交接文档（`HANDOFF.md` §7）判定「高层发送 API 在编译化 `libapp.so` 里，
-只到 mars 派发层，找不到入口」。这次改从**运行时调用栈里出现过的类**反推：
+早期判断「高层发送 API 在编译化 `libapp.so` 里，只到 mars 派发层，找不到入口」。这次改从**运行时调用栈里出现过的类**反推：
 
 - 抓到的发送栈是 `StnManager.OnJniStartTask ← StnManager.startTask ← t2.v ← j1.e ← w1.b ← Handler`；
   `t2`、`j1`、`w1` 都在普通 dex 里（`classes11.dex`），说明**派发链条本身可读**，
@@ -60,8 +59,7 @@ com.tencent.mm.network.y2.<init>()   微信自己在 a3.b 里用的空回调（�
   `com.tencent.mm.modelbase.r1` → 缓存 `GetMethodID` / `GetFieldID`（jmethodID 跨线程稳定）。
 - 调用线程 attach 到 JVM 并 `Looper.prepare()`；`m1.dispatch` 里有无 Looper 两条分支，
   prepare 之后「无参 `new Handler()`」的错误路径不会抛。
-- **默认关闭**：配置 `send=on` 才进 features；开启后不限目标、不限速（`send_allow` 白名单已取消，
-  旧键仍被接受但忽略）。客户端要求发就立即交给微信派发。
+- **默认关闭**：配置 `send=on` 才进 features；开启后不限目标、不限速。客户端要求发就立即交给微信派发。
 - 返回的是「场景已被接受派发」（`netId >= 0`），**不是投递确认**；`message.create`
   返回的消息 id 是本地 id，形状由实现端按 Satori Message 构造，不回读数据库。
 - 全程不 hook、不改 ArtMethod、不加载 dex、不写微信代码段。
@@ -107,7 +105,7 @@ com.tencent.mm.network.y2.<init>()   微信自己在 a3.b 里用的空回调（�
   `message` 表留下一条 SENDING 行（`3244`–`3256`）。v0.6.1 首次成功发送时 `doScene` 把待发
   SENDING 消息一并派发，于是这些行也被发到 `filehelper`（只发给自己，无社交影响）。
   v0.6.1 已把派发器检查移到构造场景之前，不再产生这种孤儿行。
-- 发送是风控最敏感动作，线上必须保持默认关闭；白名单已取消，风控责任在调用方。
+- 发送是风控最敏感动作，线上必须保持默认关闭；风控责任在调用方。
 
 ## 五、已知边界
 
