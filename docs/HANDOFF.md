@@ -37,7 +37,7 @@
 ```sh
 cd /data/data/com.termux/files/home/dev/araea/satori-wx
 ./build.sh          # 服务端 ZIP + satori-wx-check + satori-wx-account + satori-wx-wcdb
-./tests/run.sh      # 22 socket + 11 协议 + account + wcdb + store + capabilities + keepalive + content + webhook
+./tests/run.sh      # 22 socket + 11 协议 + account + wcdb + store + capabilities + keepalive + content + tempstore + backend + webhook
 
 su -c 'ksud module install build/satori-wx-server-v0.9.1.zip'   # 装机（暂存，重启才生效）
 su -c 'setsid sh -c "sleep 60; /system/bin/reboot" </dev/null >/dev/null 2>&1 &'

@@ -78,6 +78,9 @@ store 测试用夹具库覆盖群成员与角色：`roomdata` 里 `flag=2048` �
 没有 `roomdata` 缓存时读成 `member`，群主优先。
 tempstore 测试覆盖 `internal:` 链接的解析（外链、别的平台、`_tmp` 之外、路径穿越、未知
 名字、手工放进去的文件、输出缓冲太小），这条曾经因为 `sizeof` 用在指针上而全数失败。
+backend 测试把真实的 `wx_backend.cpp` 接进来说话（store/群管理/保活用桩），覆盖 send 开关、
+文本拍平后交给发送器、只带图片的 content 得到 400 `media_unsupported`、图配文仍走文本、
+空白内容被拒——这个文件此前完全没有覆盖，两次出错都出在它身上。
 账号端到端测试用夹具偏好文件驱动真实适配层，验证 meta / login.get / READY 的一致快照、
 离线状态与账号切换；WebHook 测试用本地接收端验证 `Satori-Opcode`、`Authorization` 与
 信号体，以及登记上限/注销；详情见 [只读账号身份说明](wechat-account.md)。
