@@ -19,7 +19,7 @@
 
 | | 数量 | 方法 |
 | --- | --- | --- |
-| ✅ 已实现、真机验证 | **20** | 读侧 13：`message.get/list`、`user.get`、`friend.list`、`guild.get/list`、`guild.member.get/list`、`guild.role.list`、`guild.member.role.list`、`channel.get/list`、`user.channel.create`；资源 1：`upload.create`；写侧 6（`send=on`）：`message.create`（文本 + 图片）、`message.delete`、`channel.delete`(退群)、`guild.member.kick`、`guild.member.role.set/unset`；`login.get` |
+| ✅ 已实现、真机验证 | **21** | 读侧 13：`message.get/list`、`user.get`、`friend.list`、`guild.get/list`、`guild.member.get/list`、`guild.role.list`、`guild.member.role.list`、`channel.get/list`、`user.channel.create`；资源 1：`upload.create`；写侧 6（`send=on`）：`message.create`（文本 + 图片）、`message.delete`、`channel.delete`(退群)、`guild.member.kick`、`guild.member.role.set/unset`；`login.get` |
 | ❌ 微信无此概念 | **11** | `message.update`（不能编辑已发消息）、`channel.create`（群内没有子频道）、`channel.mute` / `guild.member.mute`（没有服务端禁言）、`reaction.create/delete/clear/list`（没有表态）、`guild.role.create/update/delete`（没有自定义角色）——列在 `internal/capabilities.unsupported` |
 | ⬜ 待逆向的写操作 | **5** | `channel.update`(群改名)、`friend.delete`、`friend.approve`、`guild.approve`、`guild.member.approve`——卡点见 [群管理写操作](wechat-room.md) |
 
