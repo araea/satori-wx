@@ -76,13 +76,15 @@ com.tencent.mm.network.y2.<init>()   微信自己在 a3.b 里用的空回调（�
   "ready": true,            // JavaVM 已交给发送器（可以尝试发送）
   "resolved": true,         // 微信发送类已在宿主 ClassLoader 上解析成功
   "dispatcher": true,       // 上次探测时微信网络派发器可达
-  "sent": 1, "failed": 0, "rejected": 0,
+  "sent": 1, "failed": 0, "rejected": 0, "recalled": 0, "media": 1,
   "last_age_ms": 12345,     // 距上次尝试的毫秒；从未尝试则没有该字段
   "last_ok": true, "last_target": "filehelper",
   "last_net_id": 0, "last_local_id": 3257,
   "last_error": "..."       // 仅上次失败时有
 }
 ```
+
+`recalled` 是撤回场景被接受的条数，`media` 是图片场景被接受的条数（都计入 `sent`）。
 
 `resolved` / `dispatcher` 由**预热线程**维护：登录后它主动解析一次类并探一次派发器
 （不发送任何消息），所以这两个字段不需要先发一条消息才有值；若解析失败会每 10 秒重试。
@@ -111,6 +113,7 @@ com.tencent.mm.network.y2.<init>()   微信自己在 a3.b 里用的空回调（�
 
 - 类/方法名随微信版本变化（当前针对 8.0.78/3180）。任一步解析失败 → 该次发送报错并记录
   detail，不影响协议层与只读后端。
-- 只有纯文本（`type=1`）；富文本/图片/引用等未做。
+- 纯文本走长整型构造器（`type=1`）；图片走媒体重载（`type` 42 / 动图 66），见
+  [发送各类消息](wechat-send-types.md)。语音/视频/文件未做。
 - 发送失败时微信库里可能残留一条 SENDING 消息（构造器先入库），这是微信自己的重发语义。
 - 不做实现端限速或并发上限：请求原样交给微信自己的场景队列。

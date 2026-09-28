@@ -1,4 +1,4 @@
-# 微信群管理写操作（反射，v0.8.0）
+# 微信群管理写操作（反射，v0.9.0）
 
 和发送/撤回一样：只反射调用微信自己的请求构造类与网络队列，不 hook、不改代码、不加载 dex。
 写操作与发送共用 `send=on` 开关；成功＝「场景已交给微信派发」，**不是服务端已生效**。
@@ -35,24 +35,30 @@
 `qn.b/e` 构造器内部会 `y8.b1(list, ";")` 做一次规整。
 
 角色：微信没有自定义角色，`guild.role.list` 合成 `owner`(群主) / `admin`(管理员) / `member`(成员)。
-只有 `admin` 可被 `guild.member.role.set/unset` 变更；`owner`/`member` 固定。**读侧的
-`guild.member.role.list` 目前仍只反映 owner/member**：管理员位在 `chatroom` 成员结构的标志位
-（`com.tencent.mm.storage.z2.E0()` 检查 `so.b.f424935f & 2048`），当前 store 没解析它，
-所以设/撤管理员后读侧不会立刻体现——写操作本身是真发的。
+只有 `admin` 可被 `guild.member.role.set/unset` 变更；`owner`/`member` 固定。
+
+**读侧（v0.9.0 起）认管理员位**：位在 `chatroom.roomdata` 这个 protobuf 里——
+`ChatRoomData{ repeated ChatRoomMember member = 1 }`、`ChatRoomMember{ string userName = 1; ...; int32 flag = 3 }`，
+`flag & 2048` 即管理员（App 侧同样是判这个位）。`wx_store.cpp` 里有个只读的小 protobuf 遍历器
+（`RoomAdmin`），按 wxid 查这个位；没有 roomdata 缓存时（`roomdata` 为 NULL）按普通成员算，不猜。
+写操作本身仍是真发的；读侧反映的是微信刷新过 `chatroom` 行之后的状态。
+
+真机上确认过：`21378418394@chatroom` 里 `flag=2049` 的正是两位「心理部负责人」，`38992867588@chatroom`
+里 `flag=2049` 的也是群管理员。
 
 ## 没做的写操作与原因
 
 | 方法 | 结论 |
 | --- | --- |
-| `channel.create` | 微信没有「群内子频道」，Satori 语义无法映射 |
+| `channel.create` | 微信没有「群内子频道」，Satori 语义无法映射。**列入 `unsupported`** |
+| `channel.mute` / `guild.member.mute` | 微信没有服务端全员/单人禁言（只有客户端「消息免打扰」）。**列入 `unsupported`** |
 | `channel.update` | 群改名在可读 dex 里找不到 cgi；可能编译进 `libapp.so` |
-| `channel.mute` / `guild.member.mute` | 微信没有服务端全员/单人禁言（只有客户端「消息免打扰」） |
-| `friend.approve` / `friend.delete` | 好友申请审批走 `com.tencent.mm.pluginsdk.model.p3`（`verifyuser`）并依赖申请消息里的 ticket；好友删除没有独立 cgi（本地删+同步） |
+| `friend.delete` | 可读 dex 里没有 `delcontact` 这个 cgi（只有 `delcontactlabel`，是标签场景），本地删+同步 |
+| `friend.approve` | 好友申请审批走 `com.tencent.mm.pluginsdk.model.p3`（`verifyuser`），依赖申请消息里的 ticket |
 | `guild.approve` / `guild.member.approve` | 入群审批用 `qn.d`（`approveaddchatroommember`，`(long,String,String,String,List)`），参数语义未确认 |
-| `upload.create` 之外的媒体发送 | 见 `docs/wechat-send-types.md` |
 
-这些方法不在 `features` 里，客户端得到 404；`internal/capabilities.unsupported` 只列微信真的
-没有概念的能力。
+`channel.create` / `channel.mute` / `guild.member.mute` 是微信真的没有的能力，所以进
+`internal/capabilities.unsupported`（客户端据此禁用按钮）；其余仍只是尚未实现，客户端得到 404。
 
 ## 安全边界
 

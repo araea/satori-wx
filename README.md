@@ -1,17 +1,18 @@
 # 知言（satori-wx）
 
-微信 `com.tencent.mm` 的 Zygisk 模块。v0.8.1 在 **Satori v1 服务端**
+微信 `com.tencent.mm` 的 Zygisk 模块。v0.9.0 在 **Satori v1 服务端**
 （C++ + POSIX socket，无 DEX、Java 助手、APK、ArtMethod 偏移或 hook 引擎）之上，
 加入**只读的微信账号身份 / 消息库适配层**，内置 **`upload.create` 与 `/v1/proxy` 资源路由**，
-以及一个**默认关闭的反射写操作集**（发送/撤回 + 群管理）。
+以及一个**默认关闭的反射写操作集**（文本与图片发送、撤回、群管理）。
 
 账号身份来自微信自己持久化的 SharedPreferences（同 uid 直接读文件，不 hook、不改写、
 不访问数据库）。消息读取用微信自己的 `libWCDB.so` 只读打开 `EnMicroMsg.db`；
 数据库密钥由模块自身在 `RegisterNatives` 边界捕获（见 `native/wx_key.cpp`），
 不再需要单独的探针模块。
 **发送与群管理都是可选项**：`send=on` 后，实现端用**宿主 ClassLoader 反射调用微信自己的
-`v51.r0`（NetSceneSendMsg）与网络派发器**，由微信完成入库、加密、发送；群管理同样反射
-微信自己的 NetScene（踢人/退群 `delchatroommember`、设/撤管理员 `add/delchatroomadmin`）。
+`v51.r0`（NetSceneSendMsg）与网络派发器**，由微信完成入库、加密、发送；图片走同一个类的媒体
+重载（本地文件路径 + type 42/66）；群管理同样反射微信自己的 NetScene（踢人/退群
+`delchatroommember`、设/撤管理员 `add/delchatroomadmin`）。
 不发任何原始包、不 hook、不加载 dex。默认 `send=off`；开启后不限目标（旧的 `send_allow`
 白名单已取消）。已登录时 `READY` / `/v1/meta` 会带真实 `logins`；账号快照的 `features` 只声明
 后端真正实现的方法（见下表）；未实现的方法返回 404，不会伪造成功。
@@ -29,7 +30,7 @@
 
 产物：
 
-- `build/satori-wx-server-v0.8.1.zip`，模块 ID `satori_wx`。
+- `build/satori-wx-server-v0.9.0.zip`，模块 ID `satori_wx`。
 - `build/module-server/`，服务端模块目录。
 - `build/satori-wx-account`，读取某个微信数据目录并打印推导出的登录事件（诊断用，不联网）。
 - `build/satori-wx-wcdb`，只读 SQLCipher/SQLite 客户端，用微信自己的 libWCDB 读导出数据库（诊断用）。
@@ -81,10 +82,10 @@ Satori 客户端填写：
 | `POST /v1/internal/status` | 实验版版本、native 状态、`send` 与 `keepalive`（常驻通知、CPU/Wi-Fi 唤醒锁、自动持有、在连客户端、进程 adj/wchan）状态块；项目自定义诊断接口 |
 | `POST /v1/internal/wakelock` | 切换模块在微信进程内持有的 CPU / Wi-Fi 唤醒锁（`{"on":true|false}` 或 `{"toggle":true}`）；常驻通知上的按钮通过知言应用转到这个接口 |
 | `POST /v1/login.get` | 返回已登记账号快照；未登录或身份不匹配时返回 403 |
-| `POST /v1/{resource}.{method}` | 37 个标准方法的参数校验及 native 后端分发；已实现读侧 `message.get/list`、`user.get`、`friend.list`、`guild.get/list`、`guild.member.get/list`、`guild.role.list`、`guild.member.role.list`、`channel.get/list`、`user.channel.create`、`upload.create`；`send=on` 时另实现 `message.create/delete`、`channel.delete`（退群）、`guild.member.kick`、`guild.member.role.set/unset`（反射，见下与 [群管理](docs/wechat-room.md)）；其余返回 404 |
-| `POST /v1/upload.create` | 标准 multipart 上传，落盘后返回 `internal:wechat/<user>/_tmp/<name>`（5 分钟有效），经 `/v1/proxy` 回读 |
+| `POST /v1/{resource}.{method}` | 37 个标准方法的参数校验及 native 后端分发；已实现读侧 `message.get/list`、`user.get`、`friend.list`、`guild.get/list`、`guild.member.get/list`、`guild.role.list`、`guild.member.role.list`、`channel.get/list`、`user.channel.create`、`upload.create`；`send=on` 时另实现 `message.create`（文本 + `<img>`）、`message.delete`、`channel.delete`（退群）、`guild.member.kick`、`guild.member.role.set/unset`（反射，见下与 [群管理](docs/wechat-room.md)）；其余返回 404 |
+| `POST /v1/upload.create` | 标准 multipart 上传，落盘到微信数据目录下的 `files/satori-wx-tmp/`，返回 `internal:wechat/<user>/_tmp/<name>`（5 分钟有效），经 `/v1/proxy` 回读，也是 `message.create` 里 `<img src>` 唯一接受的链接 |
 | `GET /v1/proxy/{url}` | 标准资源代理：`internal:` 链接按登录号解析并直接回文件；未登记的 http(s) 前缀 403；非法 URL 400 |
-| `POST /v1/internal/capabilities` | 除标准方法目录外，报告 `send` 状态块与 `unsupported`（微信无法表达的方法：`message.update`、`reaction.*`、`guild.role.create/update/delete`） |
+| `POST /v1/internal/capabilities` | 除标准方法目录外，报告 `send` 状态块与 `unsupported`（微信无法表达的方法：`message.update`、`channel.create`、`channel.mute`、`guild.member.mute`、`reaction.*`、`guild.role.create/update/delete`） |
 | `GET /v1/events` | WebSocket upgrade；10 秒内 IDENTIFY；READY、登录事件与 PING/PONG |
 
 HTTP 使用 `Authorization: Bearer <token>`。缺失 token 返回 401，错误 token 返回 403。
@@ -155,6 +156,11 @@ su -c 'sh /data/adb/satori-wx/wxguard.sh status --json'
 KernelSU / Magisk 模块的「操作」按钮 = `wxguard toggle`。`wxguard` 只加 Doze 白名单、调整必要的
 AppOps、待机桶与流量白名单，不改全局 LMK / Doze 开关。
 
+**全新安装默认 ARMED**（`WXGUARD_FRESH_MODE=PAUSED` 可写进 `guard.conf` 改回）。2026-09-28 真机
+排查的结论：ColorOS 的 `OplusHansManager` 会按 uid 反复冻结/解冻微信，被冻期间回环端口仍然
+握手成功、但没有任何响应——客户端是挂住到超时，不是收到错误。旧默认（`fresh-install` → PAUSED）
+会让刚装好的模块看起来在线、实际不可用。
+
 ## 只读账号身份
 
 适配层在微信主进程内以微信自己的 uid 读取（只读、不解析数据库）:
@@ -181,22 +187,29 @@ AppOps、待机桶与流量白名单，不改全局 LMK / Doze 开关。
 
 ## 可选消息发送（反射，默认关闭）
 
-`send=on` 时，`message.create` 通过**反射调用微信自己的发送链路**
-发出纯文本：`v51.r0`（NetSceneSendMsg）构造器负责入库，`doScene` 交给微信的 mars 传输层，
+`send=on` 时，`message.create` 通过**反射调用微信自己的发送链路**发出消息：
+`v51.r0`（NetSceneSendMsg）构造器负责入库，`doScene` 交给微信的 mars 传输层，
 加密/序号/重发都是微信自己的行为。实现端不 hook、不改写代码、不加载 dex、不发原始封包。
-完整逆向结论见 [微信消息发送路径](docs/wechat-send.md)。
+完整逆向结论见 [微信消息发送路径](docs/wechat-send.md) 与
+[发送各类消息](docs/wechat-send-types.md)。
 
-- 只支持纯文本；`channel_id` 是 wxid（私聊）或 `<数字>@chatroom`（群）。
+- **文本**：`content` 先拍平（丢弃 `<quote>`/`<at>`/`<emoji>` 这类只带 id 的元素，`<br/>` 变换行）。
+- **图片**（v0.9.0）：`content` 里的 `<img src="internal:wechat/<user>/_tmp/<name>"/>` 用
+  `v51.r0` 的媒体重载发出，`src` 只接受本模块 `upload.create` 产出的链接（解析成微信 uid
+  读得到的本地路径）。文本与图片各成一条消息，一起放在返回的 `Message[]` 里；**先把所有图片
+  链接解析成功再发**，坏链接整条请求 400，不会留下半条消息。
+- `channel_id` 是 wxid（私聊）或 `<数字>@chatroom`（群）。
 - 返回的 `Message.id` 是微信本地消息 id；**成功表示「场景已交给微信派发」，不是投递确认**。
 - 没有实现端限速，也没有目标白名单：客户端要求发就立即交给微信派发；解析失败或派发返回
   负值时返回 502 并写明原因。
-- **2026-09-27 真机验证通过**（v0.6.1 向「文件传输助手」实发成功）。
+- **2026-09-27 真机验证通过**（v0.6.1 向「文件传输助手」实发文本成功）。
 - 诊断：`POST /v1/internal/status` 与 `/v1/internal/capabilities` 的响应里带 `send` 块
-  （`enabled`/`ready`/`resolved`/`dispatcher`、`sent`/`failed`/`rejected`/`recalled`
+  （`enabled`/`ready`/`resolved`/`dispatcher`、`sent`/`failed`/`rejected`/`recalled`/`media`
   计数、上次尝试的目标/结果/`netId`/本地 id）；`resolved`/`dispatcher` 由登录后的预热线程
   主动探测（不发消息），`message.create` 被策略拒绝时 502 体带 `rejected: true`。
 - 发送默认关闭（`send=off`），但开启后不做限速或白名单；`features` 与 `internal/capabilities`
   会如实反映当前是否可用。
+- 语音/视频/文件未做，接口位置记在 [发送各类消息](docs/wechat-send-types.md)。
 
 ## 资源路由：upload.create 与 /v1/proxy（v0.8.0）
 
@@ -210,7 +223,7 @@ AppOps、待机桶与流量白名单，不改全局 LMK / Doze 开关。
 
 受现有 16 KiB 请求体上限约束，上传也限于此；`internal/capabilities` 里的 `proxy`/`upload` 报告能力。
 
-## 可选群管理写操作（反射，v0.8.0）
+## 可选群管理写操作（反射，v0.8.0，读侧 v0.9.0）
 
 `send=on` 时另外实现三个群写操作，全部反射微信自己的 NetScene、经微信网络队列派发：
 
@@ -218,10 +231,12 @@ AppOps、待机桶与流量白名单，不改全局 LMK / Doze 开关。
   复用发送路径的 `doScene(派发器, y2)`；
 - `guild.member.role.set` / `guild.member.role.unset`：`qn.b` / `qn.e`（cgi `add/delchatroomadmin`），
   经 `com.tencent.mm.modelbase.z2.d(o, null, false)` 交给微信自带 Cgi 运行器；
-- `guild.role.list` 合成 `owner` / `admin` / `member`，只有 `admin` 可被设/撤。
+- `guild.role.list` 合成 `owner` / `admin` / `member`，只有 `admin` 可被设/撤；
+- **读侧认管理员位**（v0.9.0）：`guild.member.role.list` 读 `chatroom.roomdata` 里该成员的标志位
+  （`flag & 2048`），所以设/撤管理员之后读侧会跟着变；没有 `roomdata` 缓存时按普通成员算。
 
 成功＝已交给微信派发，非服务端已生效；开关关闭时不在 features，客户端得到 404。
-逆向记录与未做的方法（群改名、禁言、好友删除/审批）见 [群管理写操作](docs/wechat-room.md)。
+逆向记录与未做的方法（群改名、好友删除/审批）见 [群管理写操作](docs/wechat-room.md)。
 
 ## 数据库密钥捕获
 
@@ -243,12 +258,13 @@ AppOps、待机桶与流量白名单，不改全局 LMK / Doze 开关。
 - [只读账号身份说明](docs/wechat-account.md)。
 - [消息后端设计（native、低特征）](docs/wechat-store.md)。
 - [微信消息发送路径（反射，v0.7.0）](docs/wechat-send.md)。
-- [微信群管理写操作（反射，v0.8.0）](docs/wechat-room.md)。
+- [发送各类消息（反射，v0.9.0 图片）](docs/wechat-send-types.md)。
+- [微信群管理写操作（反射，v0.9.0）](docs/wechat-room.md)。
 - [常驻通知与保活（wxguard）](docs/keepalive.md)。
-- [v0.8.0 协议覆盖矩阵](docs/satori-conformance.md)。
+- [v0.9.0 协议覆盖矩阵](docs/satori-conformance.md)。
 - [v0.4.0 安装与重启验收记录](docs/deployment-v0.4.0.md)。
 
-下一步：还没做的写操作（群改名、禁言、好友删除与审批、入群审批）在
-[docs/wechat-room.md](docs/wechat-room.md) 里逐条写了卡点：群改名/删除好友在可读 dex 里没有
-独立 cgi，审批依赖申请消息里的 ticket。媒体发送（图片/语音/视频/文件）的接口位置见
+下一步：还没做的写操作（群改名、好友删除与审批、入群审批）在
+[docs/wechat-room.md](docs/wechat-room.md) 里逐条写了卡点：群改名与删好友在可读 dex 里没有独立
+cgi，审批依赖申请消息里的 ticket。语音/视频/文件的发送接口位置见
 [docs/wechat-send-types.md](docs/wechat-send-types.md)。

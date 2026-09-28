@@ -70,6 +70,12 @@
 `service.sh` 在开机时复制到 `/data/adb/satori-wx/wxguard.sh` 并调 `boot` 恢复上次状态。
 状态与日志放在模块目录之外，升级模块不会冲掉 `ARMED` / `PAUSED`。
 
+**全新安装默认 ARMED**（`WXGUARD_FRESH_MODE`，写进 `guard.conf` 可改成 `PAUSED`）。这条是
+2026-09-28 真机排查的结论：ColorOS 的 `OplusHansManager` 会按 uid 反复冻结/解冻微信
+（`freeze uid: 10419 ... scene: |StrictMode-3|LcdOn`，间隔几秒到几十秒），被冻期间回环端口
+仍然三次握手成功、但没有任何响应——客户端不是收到错误，而是挂住到超时。旧默认
+（`fresh-install` → `PAUSED`）会让刚装好的模块看起来在线、实际不可用，所以改成默认保活。
+
 ```sh
 su -c 'sh /data/adb/satori-wx/wxguard.sh start'      # ARMED：应用系统配置并启动 watchdog
 su -c 'sh /data/adb/satori-wx/wxguard.sh stop'       # PAUSED：暂停保护（不关微信）
@@ -97,4 +103,5 @@ su -c 'sh /data/adb/satori-wx/wxguard.sh log 50'
 待机桶与流量白名单；不碰全局 LMK / Doze 开关。
 
 配置可写进 `/data/adb/satori-wx/guard.conf`（脚本会 source，环境变量优先）；变量名以
-`WXGUARD_` 开头，见脚本头部注释。
+`WXGUARD_` 开头，见脚本头部注释。`WXGUARD_FRESH_MODE=ARMED|PAUSED` 只决定没有
+`guard.state` 时的初始模式。

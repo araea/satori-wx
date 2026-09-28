@@ -1,10 +1,10 @@
-# Satori v1 协议层验收（v0.8.0）
+# Satori v1 协议层验收（v0.9.0）
 
 本版本提供 native 协议服务端、native 后端接口、只读账号身份与消息库适配层、**内置资源路由**
 （`upload.create` 与 `/v1/proxy`），以及一个**默认关闭**的反射写操作集（消息发送/撤回 + 群管理）。
 读侧 13 个方法已实现（消息、历史、联系人/群/频道、群成员与角色、私聊频道），`upload.create` 1 个；
 `send=on` 时另实现 `message.create/delete`、`channel.delete`（退群）、`guild.member.kick`、
-`guild.member.role.set/unset` 共 6 个；`login.get` 1 个；8 个方法微信无法表达（见下），
+`guild.member.role.set/unset` 共 6 个；`login.get` 1 个；11 个方法微信无法表达（见下），
 其余为尚未实现的写操作。下表中的“完成”指协议层及带独立测试后端/账号适配层的验收，
 不代表微信支持或已适配所有 API。
 
@@ -16,17 +16,18 @@
 | 方法可用性 | 登录快照 features 控制；不支持返回 404，声明支持但无 handler 返回 501，离线返回 503 |
 | login.get / meta / READY | 同一份登录快照；登录身份由只读偏好解析得到，无账号时为空 |
 | message.create / update 的 content | 保留 Satori 标记字符串；提供 native 文本转义 helper，不把标记当 HTML 执行 |
-| message.create（可选发送） | v0.8.0：`send=on` 时反射调微信自己的 NetSceneSendMsg 发纯文本；**返回 `Message[]`（官方客户端对结果调用 `.map()`）**；默认关闭，开启后不限目标、不限速；成功＝已派发，非投递确认 |
-| message.delete（可选撤回） | v0.8.0：`send=on` 时用 `ex0.k0.F0.k(talker,localId)` 取 MsgInfo，反射调 `com.tencent.mm.modelsimple.d1`（cgi revokemsg）；只撤回本账号消息，复用同一套开关 |
-| channel.delete / guild.member.kick（可选） | v0.8.0：反射 `qn.p`（cgi delchatroommember），退群用 `[self]`，踢人用目标 wxid；`send=on` 才进 features |
-| guild.member.role.set / unset（可选） | v0.8.0：反射 `qn.b`/`qn.e`（cgi add/delchatroomadmin），经 `com.tencent.mm.modelbase.z2.d(o,null,false)` 走微信 Cgi 运行器；只变更 `admin` 角色 |
-| upload.create | v0.8.0：core 内置 SDK 默认实现，`multipart/form-data` 落盘为 `internal:wechat/<user>/_tmp/<name>`（5 分钟、随机名、0600） |
-| /v1/proxy/{url} | v0.8.0：`internal:` 链接按登录号解析并回文件；未登记 http(s) 前缀 403；非法 400；未知登录 404；带 CORS，不需 Satori 登录头 |
+| message.create（可选发送） | `send=on` 时反射调微信自己的 NetSceneSendMsg；纯文本走长整型构造器，`<img>` 元素走媒体重载（type 42 / 动图 66）；**返回 `Message[]`（官方客户端对结果调用 `.map()`）**；默认关闭，开启后不限目标、不限速；成功＝已派发，非投递确认 |
+| message.create 的资源解析 | 只认自己 `upload.create` 产出的 `internal:wechat/<user>/_tmp/<name>`；先全部解析成微信 uid 可读的本地路径再动手，任一元素解析失败整条请求 400（不留半条消息） |
+| message.delete（可选撤回） | `send=on` 时用 `ex0.k0.F0.k(talker,localId)` 取 MsgInfo，反射调 `com.tencent.mm.modelsimple.d1`（cgi revokemsg）；只撤回本账号消息，复用同一套开关 |
+| channel.delete / guild.member.kick（可选） | `send=on` 时反射 `qn.p`（cgi delchatroommember），退群用 `[self]`，踢人用目标 wxid；`send=on` 才进 features |
+| guild.member.role.set / unset（可选） | 反射 `qn.b`/`qn.e`（cgi add/delchatroomadmin），经 `com.tencent.mm.modelbase.z2.d(o,null,false)` 走微信 Cgi 运行器；只变更 `admin` 角色 |
+| upload.create | core 内置 SDK 默认实现，`multipart/form-data` 落盘为 `internal:wechat/<user>/_tmp/<name>`（5 分钟、随机名、0600），落在微信数据目录下的 `files/satori-wx-tmp/`，媒体发送直接读这个文件 |
+| /v1/proxy/{url} | `internal:` 链接按登录号解析并回文件；未登记 http(s) 前缀 403；非法 400；未知登录 404；带 CORS，不需 Satori 登录头 |
 | guild.member.get / list | 读 `chatroom` 的 memberlist + displayname（`、` 分隔）+ roomowner；`next` 是成员偏移；displayname 与 memberlist 数量不一致时忽略群昵称、回落到 rcontact |
-| guild.role.list / guild.member.role.list | 合成角色：`owner`（群主）/ `admin`（管理员）/ `member`（成员）；`guild.member.role.list` 目前只反映 owner/member（管理员位未解析）；非成员返回空列表；未知群返回 404 |
+| guild.role.list / guild.member.role.list | 合成角色：`owner`（群主）/ `admin`（管理员）/ `member`（成员）；管理员位读 `chatroom.roomdata` 的成员标志（`flag & 2048`），没有 roomdata 缓存时按普通成员算；非成员返回空列表；未知群返回 404 |
 | user.channel.create | 返回该 wxid 的私聊频道（`type=1`） |
-| 微信无法表达（`internal/capabilities.unsupported`） | `message.update`、`reaction.create/delete/clear/list`、`guild.role.create/update/delete` —— 微信不能编辑消息、无表态、无自定义角色 |
-| 未实现的写操作 | 群改名、禁言、好友删除/审批、入群审批：卡点见 [群管理写操作](wechat-room.md)。只有真实实现的方法才进 features，否则返回 404 |
+| 微信无法表达（`internal/capabilities.unsupported`） | `message.update`、`channel.create`、`channel.mute`、`guild.member.mute`、`reaction.create/delete/clear/list`、`guild.role.create/update/delete` —— 微信不能编辑消息、群内没有子频道、没有服务端禁言、无表态、无自定义角色 |
+| 未实现的写操作 | 群改名、好友删除/审批、入群审批：卡点见 [群管理写操作](wechat-room.md)。只有真实实现的方法才进 features，否则返回 404 |
 | 分页 | params 的 next/direction/limit/order 与后端返回的 data/prev/next 原样传递 |
 | upload.create | multipart/form-data，有界二进制零拷贝解析，字段名与返回 URL 映射由后端实现 |
 | WebSocket | RFC 6455 握手、掩码、文本分片、控制帧交错、UTF-8、关闭、大小限制 |
@@ -71,6 +72,10 @@ HTTP 请求体 / WS 消息最大 16 KiB、HTTP 头 8 KiB、单事件 4 KiB、最
 发送门禁）、探针并发/资源/权限测试。
 协议测试遍历 37 个方法，并验证上传二进制、标记保留、分页、广播、登录状态、元信息、
 历史窗口淘汰以及超过发送缓冲容量的分段回放。
+内容测试（`tests/content_test.cpp`）覆盖标记拍平与 `<img src>` 抽取：属性顺序、两种引号、
+属性值里的 `>`、空 `src`、未闭合标签、只认 `img`、数量上限。
+store 测试用夹具库覆盖群成员与角色：`roomdata` 里 `flag=2048` 的成员读成 `admin`，
+没有 `roomdata` 缓存时读成 `member`，群主优先。
 账号端到端测试用夹具偏好文件驱动真实适配层，验证 meta / login.get / READY 的一致快照、
 离线状态与账号切换；WebHook 测试用本地接收端验证 `Satori-Opcode`、`Authorization` 与
 信号体，以及登记上限/注销；详情见 [只读账号身份说明](wechat-account.md)。
