@@ -249,6 +249,43 @@ MsgInfo = ex0.k0.F0.k(talker, localId)          // ex0.j0，按 talker+本地 ms
 
 ## 8. 真机验证
 
+### v0.9.0 的验收清单（重启后按顺序跑一遍）
+
+```sh
+cd /data/data/com.termux/files/home/dev/araea/satori-wx
+T=$(su -c 'cat /data/adb/modules/satori_wx/satori-wx.conf' | sed -n 's/^token=//p')
+H=(-H "Authorization: Bearer $T" -H 'Content-Type: application/json')
+
+# 1) 版本与 send/keepalive 块（要看到 version 0.9.0、send.media 字段、oom_score_adj）
+su -c "curl -s -X POST http://127.0.0.1:5601/v1/internal/status ${H[*]} -d '{}'"
+
+# 2) unsupported 要 11 条，含 channel.create / channel.mute / guild.member.mute
+su -c "curl -s -X POST http://127.0.0.1:5601/v1/internal/capabilities ${H[*]} -d '{}'"
+
+# 3) 管理员位：21378418394@chatroom 里 wxid_1i1atvx8t8a021 / wxid_9fpvlcb6z74r22 应是 admin
+su -c "curl -s -X POST http://127.0.0.1:5601/v1/guild.member.role.list -H 'Authorization: Bearer $T' \
+  -H 'Satori-Platform: wechat' -H 'Satori-User-ID: wxid_8zxjsghrk8vz41' -H 'Content-Type: application/json' \
+  -d '{\"guild_id\":\"21378418394@chatroom\",\"user_id\":\"wxid_1i1atvx8t8a021\"}'"
+
+# 4) 图片：先上传再发（发到 filehelper，只影响自己）
+su -c "curl -s -X POST http://127.0.0.1:5601/v1/upload.create -H 'Authorization: Bearer $T' \
+  -H 'Satori-Platform: wechat' -H 'Satori-User-ID: wxid_8zxjsghrk8vz41' \
+  -F 'file=@/path/to/pic.png'"
+# 记下返回的 internal:wechat/.../_tmp/xxx.png，填进下面
+su -c "curl -s -X POST http://127.0.0.1:5601/v1/message.create -H 'Authorization: Bearer $T' \
+  -H 'Satori-Platform: wechat' -H 'Satori-User-ID: wxid_8zxjsghrk8vz41' -H 'Content-Type: application/json' \
+  -d '{\"channel_id\":\"filehelper\",\"content\":\"<img src=\\\"internal:wechat/wxid_8zxjsghrk8vz41/_tmp/xxx.png\\\"/>\"}'"
+# 成功=200 + Message[]；失败=502 带 detail。再看 logcat 的 SatoriWx 行与微信库里是否新增行。
+
+# 5) wxguard：全新安装已默认 ARMED；本机 guard.state 里是 ARMED 才对
+su -c 'sh /data/adb/satori-wx/wxguard.sh status --json'
+```
+
+被冻住时的现场特征：`uid_*/cgroup.freeze=1`、`/proc/<pid>/wchan` 全是 `do_freezer_trap`、
+`internal/status` 请求能连上但 0 字节响应。`wxguard start` 会立刻解冻。
+
+### 常用命令
+
 ```sh
 # 服务端配置
 su -c 'cat /data/adb/modules/satori_wx/satori-wx.conf'
