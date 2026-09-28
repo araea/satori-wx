@@ -15,4 +15,8 @@ bool StartLiveStore(const char *app_data_dir, EventBus *bus, int login_sn);
 struct Store;
 Store *LiveStore();
 int LiveLoginSn();
+// Counters for /v1/internal/status: events handed to the bus, rows whose event could never fit
+// it, and scanner events dropped because the bus stayed full. `open` is false until the store is.
+struct LiveStats { bool open; long long emitted, skipped, dropped; };
+void LiveStatsGet(LiveStats *stats);
 } // namespace satori

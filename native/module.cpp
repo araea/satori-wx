@@ -51,8 +51,28 @@ void AddBackendStatus(cJSON *object, bool capabilities) {
             if (status.last_error[0]) cJSON_AddStringToObject(send, "last_error", status.last_error);
         }
     }
+    satori::LiveStats live{};
+    satori::LiveStatsGet(&live);
+    cJSON *events = cJSON_CreateObject();
+    if (events) {
+        cJSON_AddItemToObject(object, "events", events);
+        cJSON_AddBoolToObject(events, "open", live.open);
+        cJSON_AddNumberToObject(events, "emitted", static_cast<double>(live.emitted));
+        cJSON_AddNumberToObject(events, "skipped", static_cast<double>(live.skipped));
+        cJSON_AddNumberToObject(events, "dropped", static_cast<double>(live.dropped));
+    }
     satori::KeepaliveStatus(object);
     if (!capabilities) return;
+    // The events this backend can raise, so a client can tell "nothing happened" from "cannot".
+    static const char *const kEvents[] = {
+        "message-created", "message-deleted", "guild-added", "guild-removed", "guild-member-added", "guild-member-removed",
+        "friend-added", "friend-removed", "login-added", "login-updated", "login-removed",
+    };
+    cJSON *event_names = cJSON_CreateArray();
+    if (event_names) {
+        cJSON_AddItemToObject(object, "event_types", event_names);
+        for (const char *name : kEvents) cJSON_AddItemToArray(event_names, cJSON_CreateString(name));
+    }
     size_t unsupported_count = 0;
     const char *const *unsupported = satori::WeChatUnsupported(&unsupported_count);
     cJSON *removed = cJSON_CreateArray();

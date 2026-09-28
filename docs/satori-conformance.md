@@ -12,15 +12,19 @@
 | 方法可用性 | 登录快照 features 控制；不支持返回 404（在参数校验之前判定，不支持的方法缺参也回 404 而非 400），声明支持但无 handler 返回 501，离线返回 503 |
 | login.get / meta / READY | 同一份登录快照；登录身份由只读偏好解析得到，无账号时为空 |
 | message.create / update 的 content | 保留 Satori 标记字符串；提供 native 文本转义 helper，不把标记当 HTML 执行 |
-| message.create（可选发送） | `send=on` 时反射调微信自己的 NetSceneSendMsg 发纯文本；**返回 `Message[]`（官方客户端对结果调用 `.map()`）**；默认关闭，开启后不限目标、不限速；成功＝已派发，非投递确认 |
-| message.create 的媒体元素 | 只带 `<img>` 之类元素的 content 返回 400 `media_unsupported`（App 发新图要跑 Kotlin 协程，收尾回调 native 交不出来，见 [发送各类消息](wechat-send-types.md)）；不会假报成功，也不写任何行 |
+| message.create（可选发送） | `send=on` 时反射调微信自己的发送管线；内容按 `<img>` 切成有序的文本 / 图片消息，**返回 `Message[]`（官方客户端对结果调用 `.map()`）**；文本走 `NetSceneSendMsg`，群里的 `<at>` 是真提及（`atuserlist`），图片走聊天界面自己的 `rj()` 管线；默认关闭，开启后不限目标、不限速；成功＝已派发，非投递确认（图片要等库里出现行才回 200） |
+| message.create 的图片 | `src` 只认 `upload.create` 的 `internal:` 链接与 `data:image/…;base64`；所有图片先解析、核对魔数，坏一张整条 400（`media_unresolved` / `media_unsupported` / `image_too_large` / `too_many_images`）；6 秒内没入库回 502 `image_unconfirmed`，不假报成功。见 [发送各类消息](wechat-send-types.md) |
+| message.create 的其它媒体元素 | 只带 `<audio>` `<video>` `<file>` 的 content 回 400 `media_unsupported`；与文字同在时元素被丢弃、文字照发；`<quote>` 同样被丢弃（回复没做） |
 | message.delete（可选撤回） | `send=on` 时用 `ex0.k0.F0.k(talker,localId)` 取 MsgInfo，反射调 `com.tencent.mm.modelsimple.d1`（cgi revokemsg）；只撤回本账号消息，复用同一套开关 |
 | channel.delete / guild.member.kick（可选） | `send=on` 时反射 `qn.p`（cgi delchatroommember），退群用 `[self]`，踢人用目标 wxid；`send=on` 才进 features |
 | guild.member.role.set / unset（可选） | 反射 `qn.b` / `qn.e`（cgi add/delchatroomadmin），经 `com.tencent.mm.modelbase.z2.d(o,null,false)` 走微信 Cgi 运行器；只变更 `admin` 角色 |
 | upload.create | core 内置 SDK 默认实现，`multipart/form-data` 落盘为 `internal:wechat/<user>/_tmp/<name>`（5 分钟、随机名、0600），落在微信数据目录下的 `files/satori-wx-tmp/`；链接由 `/v1/proxy` 回读（发送端不消费） |
-| /v1/proxy/{url} | `internal:` 链接按登录号解析并回文件；未登记 http(s) 前缀 403；非法 400；未知登录 404；带 CORS，不需 Satori 登录头 |
+| /v1/proxy/{url} | `internal:` 链接按登录号解析并流式回文件（`Range`、`HEAD`、百分号编码）；`_tmp` 是上传，`_msg` 是收到的消息媒体（验签失败与不存在都是 404）；未登记 http(s) 前缀 403；非法 400；未知登录 404；带 CORS，不需 Satori 登录头 |
 | guild.member.get / list | 读 `chatroom` 的 memberlist + displayname（`、` 分隔）+ roomowner；`next` 是成员偏移；displayname 与 memberlist 数量不一致时忽略群昵称、回落到 rcontact |
 | guild.role.list / guild.member.role.list | 合成角色：`owner`（群主）/ `admin`（管理员）/ `member`（成员）；管理员位读 `chatroom.roomdata` 的成员标志（`flag & 2048`），没有 roomdata 缓存时按普通成员算；非成员返回空列表；未知群返回 404 |
+| message.list / message.get | 双向分页：`next` 令牌、`direction` before/after/around、`order` asc/desc，结果带 `prev` / `next`；系统提示与撤回标记不是消息；`message.get` 认本地 id 与服务端 id。见 [消息内容](wechat-content.md) |
+| 消息内容 | 图片 / 语音 / 视频 / 表情 / 链接 / 文件 / 位置 / 名片 / 回复 / @ 解码成 Satori 元素；媒体是 HMAC 签名的 `internal:` 链接，由 `/v1/proxy` 流式回包 |
+| 事件 | `message-created`（带 `guild` `member` 头像）、`message-deleted`、`guild-member-added|removed`、`guild-added|removed`、`friend-added|removed`；启动只快照，差异连续两轮才发；见 [事件](wechat-events.md) |
 | user.channel.create | 返回该 wxid 的私聊频道（`type=1`） |
 | 微信无法表达（`internal/capabilities.unsupported`） | `message.update`、`channel.create`、`channel.mute`、`guild.member.mute`、`reaction.create/delete/clear/list`、`guild.role.create/update/delete`。微信不能编辑消息、群内没有子频道、没有服务端禁言、无表态、无自定义角色 |
 | 未实现的写操作 | 群改名、好友删除 / 审批、入群审批：卡点见 [群管理写操作](wechat-room.md)。只有真实实现的方法才进 features，否则返回 404 |
@@ -38,7 +42,7 @@
 
 序号以进程启动时的 Unix 微秒为基线，在进程内递增，并限制在 JSON / JavaScript 安全整数范围。正常重启后旧进程序号落在新窗口外，会被拒绝；不宣称跨进程持久回放。显式 sn=0 仅在当前进程历史未丢弃非登录事件时允许从缓存起点恢复。
 
-HTTP 请求体 / WS 消息最大 16 KiB、HTTP 头 8 KiB、单事件 4 KiB、最多 16 个登录快照，单连接 HTTP 响应后关闭。当前 HTTP profile 不支持 chunked 请求体、TLS 或 WebSocket 压缩。这些限制是实现约束，并非 Satori 标准规定的上限。
+HTTP 请求体 / WS 消息最大 16 KiB（`upload.create` 与 `message.create` 是 16 MiB，且先验令牌再缓冲）、HTTP 头 8 KiB、单事件 128 KiB、最多 16 个登录快照，单连接 HTTP 响应后关闭。当前 HTTP profile 不支持 chunked 请求体、TLS 或 WebSocket 压缩；支持 `Expect: 100-continue`。这些限制是实现约束，并非 Satori 标准规定的上限。
 
 ## 方法目录
 
@@ -58,14 +62,19 @@ HTTP 请求体 / WS 消息最大 16 KiB、HTTP 头 8 KiB、单事件 4 KiB、最
 
 ## 测试
 
-`./tests/run.sh`：22 项 HTTP / WebSocket socket 测试、10 项协议测试、账号解析 / 状态机 / Hub 集成测试、账号端到端适配测试、能力 / 配置测试（features 开关、`send` 解析、旧 `send_allow` 仍被接受、发送门禁）、探针并发 / 资源 / 权限测试。
+`./tests/run.sh`：22 项 HTTP / WebSocket socket 测试、18 项协议测试（含大上传、流式回包、`Range`、`Expect`、停滞读者、128 KiB 事件与回放）、账号解析 / 状态机 / Hub 集成测试、账号端到端适配测试、能力 / 配置测试、探针并发 / 资源 / 权限测试，以及下列专项。
 
 - 协议测试遍历 37 个方法，并验证上传二进制、标记保留、分页、广播、登录状态、元信息、历史窗口淘汰以及超过发送缓冲容量的分段回放。
-- 内容测试（`tests/content_test.cpp`）覆盖标记拍平与 `<img src>` 抽取：属性顺序、两种引号、属性值里的 `>`、空 `src`、未闭合标签、只认 `img`、数量上限。
-- store 测试用夹具库覆盖群成员与角色：`roomdata` 里 `flag=2048` 的成员读成 `admin`，没有 `roomdata` 缓存时读成 `member`，群主优先。
+- 内容测试（`tests/content_test.cpp`）覆盖发送侧的标记拍平：`<at>` 变成 `@名` + U+2005 与提及名单、`<a href>` 保留目标、`<img src>` 的抽取与位置（属性顺序、两种引号、属性值里的 `>`、空 `src`、未闭合标签、只认 `img`、数量上限）、base64。
+- 解码测试（`tests/message_test.cpp`）用照真机行造的样本（头、CDATA、怪类型号）覆盖每种消息类型、@ 的各种边角（名字不比对、多出的 id、手敲的 `@`）、回复、系统行与撤回标记。
+- media / XML 测试（`tests/media_test.cpp`）：MD5、SHA-256、HMAC 的已知答案（含真机语音目录的 md5）、链接签名绑定登录 / 类型 / id、换 token 作废旧链接、XML 扫描器只认直接子元素。
+- store 测试用真实列布局的夹具库：轮询（突发超过一批、总线满、超大事件）、`message.list` 的五种翻页、回复解析（`MsgQuote` 与 svrid 回退与内联）、头像、媒体文件解析（含 wxgf 跳过、路径穿越被拒、文件路径白名单）、代理路由验签。
+- events 测试（`tests/events_test.cpp`）：撤回、群成员、自己入退群、好友增减、启动静默、两轮确认、闪变不算、重试队列保序。
+- backend 测试把真实的 `wx_backend.cpp` 接进来说话（store/群管理/保活用桩），覆盖 send 开关、文本拍平、群里 @、每一种被拒的图片请求、多图与文字混排先验后发。
 - tempstore 测试覆盖 `internal:` 链接的解析（外链、别的平台、`_tmp` 之外、路径穿越、未知名字、手工放进去的文件、输出缓冲太小），这条曾经因为 `sizeof` 用在指针上而全数失败。
-- backend 测试把真实的 `wx_backend.cpp` 接进来说话（store/群管理/保活用桩），覆盖 send 开关、文本拍平后交给发送器、只带图片的 content 得到 400 `media_unsupported`、图配文仍走文本、空白内容被拒。这个文件此前完全没有覆盖，两次出错都出在它身上。
 - 账号端到端测试用夹具偏好文件驱动真实适配层，验证 meta / login.get / READY 的一致快照、离线状态与账号切换；WebHook 测试用本地接收端验证 `Satori-Opcode`、`Authorization` 与信号体，以及登记上限 / 注销；详情见 [只读账号身份](wechat-account.md)。
+
+JNI 那部分（图片管线、@ 的 Object 重载）主机上跑不了，只在真机验，清单见 [HANDOFF](HANDOFF.md)。
 
 测试后端和事件输入管道仅编译到 `build/tests/server`，不在 Zygisk 模块内。真机检查器 `build/satori-wx-check` 只读 meta / status 和 WebSocket 信令，不发送微信消息。
 

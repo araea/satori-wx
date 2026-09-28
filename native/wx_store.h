@@ -65,7 +65,7 @@ cJSON *StoreMemberRoleList(Store *store, const char *guild_id, const char *user_
 // caller must treat as "unknown", never as "nothing changed" or "everything is gone".
 struct RoomStamp {
     char name[80];
-    long long modify_time, member_count, list_size;  // cheap fingerprint: differs whenever the roster may have
+    long long modify_time, member_count, version;  // cheap fingerprint (chatroomVersion is the server-side roster version)
 };
 int StoreRoomStamps(Store *store, RoomStamp *out, int max);
 // The room's member ids, ';'-separated, in a malloc'd string ("" for an empty roster).

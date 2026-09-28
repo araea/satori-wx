@@ -303,6 +303,59 @@ int main() {
     cJSON *empty = satori::StoreMessageList(store, "nobody@chatroom", nullptr, nullptr, 5, nullptr);
     Check(empty && cJSON_GetArraySize(Item(empty, "data")) == 0 && !Item(empty, "prev"), "an empty channel is an empty page");
     cJSON_Delete(empty);
+    // Paging is by (createTime, msgId): rows that share a timestamp, and a row that arrived late with
+    // an older timestamp (an offline sync), must each appear exactly once whichever way we walk.
+    {
+        satori::Wcdb *order_writer = satori::WcdbOpenEx(library, path, nullptr, 0, 0, 0, 0, 0);
+        const struct { int id; long long time; } rows[] = {
+            {600, 1700005000000LL}, {601, 1700005001000LL}, {602, 1700005001000LL}, {603, 1700005001000LL},
+            {604, 1700005002000LL}, {605, 1700005000500LL},  // arrived last, belongs between 600 and 601
+            {606, 1700005003000LL},
+        };
+        char sql[300];
+        for (const auto &row : rows) {
+            snprintf(sql, sizeof(sql), "INSERT INTO message(msgId,msgSvrId,type,isSend,createTime,talker,content) VALUES(%d,%d,1,0,%lld,'wxid_order','m%d')",
+                     row.id, 9000 + row.id, row.time, row.id);
+            Exec(order_writer, sql);
+        }
+        satori::WcdbClose(order_writer);
+        const char *expected[] = {"600", "605", "601", "602", "603", "604", "606"};
+        // Backwards, two at a time, following prev.
+        char collected[16][8];
+        int collected_count = 0;
+        char token[32] = "";
+        for (int guard = 0; guard < 10; ++guard) {
+            cJSON *page = satori::StoreMessageList(store, "wxid_order", *token ? token : nullptr, "before", 2, "asc");
+            if (!page) { Check(false, "history page"); break; }
+            const cJSON *data = Item(page, "data");
+            // Each page is oldest-first; pages arrive newest-first, so fill from the back.
+            for (int i = cJSON_GetArraySize(data) - 1; i >= 0 && collected_count < 16; --i)
+                snprintf(collected[collected_count++], sizeof(collected[0]), "%s", Str(cJSON_GetArrayItem(data, i), "id"));
+            const char *prev = Str(page, "prev");
+            if (!*prev) { cJSON_Delete(page); break; }
+            snprintf(token, sizeof(token), "%s", prev);
+            cJSON_Delete(page);
+        }
+        bool backwards_ok = collected_count == 7;
+        for (int i = 0; backwards_ok && i < 7; ++i) backwards_ok = !strcmp(collected[i], expected[6 - i]);
+        Check(backwards_ok, "walking back 2 at a time visits every message once, in (time, id) order");
+        // Forwards from the oldest, following next.
+        cJSON *first = satori::StoreMessageList(store, "wxid_order", "600", "after", 3, "asc");
+        Check(first && cJSON_GetArraySize(Item(first, "data")) == 3 && !strcmp(Str(cJSON_GetArrayItem(Item(first, "data"), 0), "id"), "605") &&
+                  !strcmp(Str(cJSON_GetArrayItem(Item(first, "data"), 2), "id"), "602"), "after 600: the late arrival comes next, then the tied pair in id order");
+        Check(first && !strcmp(Str(first, "next"), "602"), "next token is the newest of the page");
+        cJSON *second = satori::StoreMessageList(store, "wxid_order", Str(first, "next"), "after", 10, "asc");
+        Check(second && cJSON_GetArraySize(Item(second, "data")) == 3 && !strcmp(Str(cJSON_GetArrayItem(Item(second, "data"), 0), "id"), "603") && !Item(second, "next"),
+              "the remainder, and no next at the newest end");
+        cJSON_Delete(first);
+        cJSON_Delete(second);
+        cJSON *middle = satori::StoreMessageList(store, "wxid_order", "602", "around", 3, "asc");
+        Check(middle && cJSON_GetArraySize(Item(middle, "data")) == 3 && !strcmp(Str(cJSON_GetArrayItem(Item(middle, "data"), 0), "id"), "601") &&
+                  !strcmp(Str(cJSON_GetArrayItem(Item(middle, "data"), 1), "id"), "602") && !strcmp(Str(cJSON_GetArrayItem(Item(middle, "data"), 2), "id"), "603"),
+              "around a tied row");
+        cJSON_Delete(middle);
+        Check(satori::StoreMessageList(store, "wxid_order", "424242", "before", 5, "asc") == nullptr, "a token for a row that is gone is refused");
+    }
     // Messages carry the same resources as events, so a history page is as usable as a live one.
     cJSON *listed = satori::StoreMessageList(store, "wxid_xyz", nullptr, nullptr, 50, nullptr);
     Check(listed && cJSON_GetArraySize(Item(listed, "data")) == 4, "message.list skips the system tip");

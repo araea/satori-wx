@@ -19,6 +19,7 @@ ZygiskNext 的 `zygisk_next_api.h` 是另一套公开接口，有自己的 `zn_m
 | `native/wx_adapter.{h,cpp}` | 每 3 秒扫描一次并做身份状态机（added / updated / removed） |
 | `native/webhook.{h,cpp}` | 可选 WebHook 推送，独立线程 + 有界队列，仅 http |
 | `native/wx_key.cpp`、`native/data_slot.h` | 密钥捕获：RegisterNatives 指针替换 |
+| `native/wx_live.cpp`、`native/wx_store.cpp`、`native/wx_message.cpp`、`native/wx_events.cpp` | 只读库 → 消息 / 事件，见 [消息内容](wechat-content.md)、[事件](wechat-events.md) |
 
 ## 协议边界
 
@@ -28,7 +29,7 @@ ZygiskNext 的 `zygisk_next_api.h` 是另一套公开接口，有自己的 `zn_m
 
 请求结构和 cJSON 字符串边界都受检查；含 NUL 的输入、`\u0000`、非法 UTF-8 被拒绝。当前对任何原始 `\u0000` 字节序列保守拒绝（包括双重转义后的字面量）。请求 JSON 必须是对象。cJSON 前增加词法检查，拒绝前导零、缺小数位、裸控制字符。WebSocket 不协商扩展 / 压缩和子协议；二进制消息返回 1003，超限返回 1009。
 
-当前没有消息生产者时，登录事件生产者是唯一真实事件源，且登录事件不参与回放。非零恢复序号关闭为 4009，客户端应清空旧序号重新 IDENTIFY。
+登录事件不参与回放；消息与其它事件由 `wx_live` 生产。事件是堆上的变长字符串，单条上限 128 KiB。非零恢复序号关闭为 4009，客户端应清空旧序号重新 IDENTIFY。
 
 ## 生命周期与配置
 

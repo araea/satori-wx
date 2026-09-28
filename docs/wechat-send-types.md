@@ -1,6 +1,6 @@
 # 微信发送各类消息的逆向记录
 
-文本能发，图片发不出去，而且在当前约束下走不通。死路清单见下文。
+文本、群内 @ 与图片能发；回复（引用）、语音、视频、文件没做。图片走的是聊天界面自己的 `rj()` 管线，见下文；转发路径那条死路也记在下面。
 
 微信 8.0.78 / versionCode 671108664。工具见 `tools/dex*.py`（`dexmethodsig.py` / `dexinvokes.py` / `dexmethodstrings.py` 最常用；`dexfindclass.py`、`dexrefs.py` 有误报，别单独信）。**结论性事实要落到「某个类的某个字段 / 方法」上，并且能和 App 自己的调用点对上。**
 
@@ -9,6 +9,8 @@
 | | 类 / 方法 | 说明 |
 | --- | --- | --- |
 | 文本 | `v51.r0.<init>(String,String,int,int,long,String)` + `doScene` | 构造器自己入库，cgi `newsendmsg` |
+| 群内 @ | `v51.r0.<init>(String,String,int,int,Object,String)`，`flags=1`，`Object` 是 `HashMap{"atuserlist": "<![CDATA[wxid,wxid]]>"}` | 与聊天界面的 `com.tencent.mm.ui.g1.a`（AtSomeOneHelper）同一做法；构造器把 map 的项并进 `<msgsource>`；文本里的 `@昵称` 后接 U+2005 |
+| 图片 | `ph5.n0.c(kt.d1)`（`ha0.w`）`.rj(da0.g)` | 见下文；异步，库里出现 `type=3` 的行才算发出 |
 | 撤回 | `com.tencent.mm.modelsimple.d1.<init>(e9,String,String)` + `doScene` | cgi `revokemsg` |
 | 群管理 | `qn.p` / `qn.b` / `qn.e` | 见 [群管理写操作](wechat-room.md) |
 
@@ -38,75 +40,64 @@ a19.a().a();                   // 构建并提交
 
 另外：`qs5.v5.hj` **不是**发图片的，是「同一句话发给多个会话」（`d2.C` 判会话类型、`com.tencent.mm.ui.g1.a(正文)` 取的是粘贴相似度之类的 msgsource）。
 
-## 图片：试过，撤回了
+## 图片
 
-### 试的那条路（App 的转发路径）
+### 走不通的那条：转发路径（v0.9.0 试过，v0.9.2 撤回）
 
-App 的 `qs5.v5.fj` / `gj`（`MsgRetransmitUI` 那套）这样发媒体：
-
-```java
-String path = qb.b(src, callback);
-v51.r1 b = v51.s1.a(talker);
-b.h(talker);
-b.e(path);                                  // 本地文件路径放在「正文」位置
-b.i(y3.o4(src) ? 66 : 42);                  // 42 / 66
-b.f468468f = 0;
-b.f468471i = 4;
-v51.n1 n = b.a(); n.a();
-```
-
-对应到场景就是 `v51.r0` 的媒体重载：
-
-```
-(String talker, String content, int type, int flags, long localId, String msgSource)   <- 文本
-(String talker, String content, int type, int flags, Object obj, String msgSource)    <- 媒体重载
-(long localId, int flags, String talker)                                             <- 重发
-```
-
-两个 String 重载构造体一样：`e9.u1(talker)`、`e9.e1(md5(talker))`、`e9.setType(type)`、`e9.b1(content)`，末尾入库并返回 `f`（本地 id）。`obj` 只在 `(flags & 1) != 0 && obj instanceof HashMap` 时用于拼 `<msgsource>`，与图片数据无关。
-
-### 真机结果：这条路由不成立
-
-v0.9.0 用 `new v51.r0(talker, path, 42, 0, null, "")` + `doScene` 发到 filehelper，返回 200，logcat 有 `sent media to filehelper (local id 3710, netId 0, ...)`，但库里那行是：
+App 的 `qs5.v5.fj` / `gj`（`MsgRetransmitUI` 那套）用 `v51.r0` 的媒体重载（`(String,String,int,int,Object,String)`，类型 42 / 66，本地路径放在「正文」位置）转发媒体。v0.9.0 照这条路发到 filehelper，返回 200，库里却是：
 
 ```
 msgId | type | isSend | status | talker     | content                              | imgPath
 3710  | 42   | 1      | 5      | filehelper | /data/user/0/.../satori-wx-tmp/x.png | NULL
 ```
 
-`status=5`、`imgPath` 为空，之后**永不推进**。对照同一个会话里真发出去的图片：
+`status=5`、`imgPath` 为空，之后不再推进。对照真发出去的图片：`type=3`、`status=2`、`content` 是带 CDN 密钥的 `<msg><img aeskey=…>` 全文。`42`/`66` 是「转发一段已经有 CDN 信息的媒体」的中间态，不是「把一个本地文件发成图片」。
 
-```
-msgId | type | isSend | status | talker               | content
-3401  | 3    | 1      | 2      | 59012484892@chatroom | <msg><img aeskey="2ff5f1..." encryver...
-```
+### 走得通的那条：`rj()` 图片管线（v0.10.0）
 
-**真发出去的图片是 `type=3` + `status=2`，`content` 是带 CDN 密钥的 `<msg><img aeskey=...>` 全文**；`type=42` 在整个库里只出现过这一行，就是为了这次实验写进去的。所以 42/66 是「转发一段已经有 CDN 信息的媒体」的中间态，不是「把一个本地文件发成图片」。
-
-### App 真正发新图的路（native 走不通）
-
-`qs5.v5.b(Context, String toUser, String fileName, int, String, String, String, b41.k7, s0.d)`：
+v0.9.x 的结论是「App 发新图要跑 Kotlin 协程，收尾回调是 Kotlin 接口，native 造不出来，除非引入 Java 助手」。这个判断的依据是 `qs5.v5.b(…)` 里的 `dVar`（收集者）传 null 就没人订阅进度流。**订阅进度流与开始上传是两件事**，前者不是后者的前提：
 
 ```java
-if (!h9.b().F()) { ...; return; }                        // 存储就绪
-com.tencent.mm.pluginsdk.ui.tools.p0.a();                // 初始化
-w90.i0 i0Var = new w90.i0();                             // 发送上下文
-i0Var.f480008a = 4; i0Var.f480022o = k7Var; i0Var.f480017j = str3;
-da0.g gVar = new da0.g(str2 /*imgPath*/, i17, y1.u() /*fromUsername*/, str /*toUser*/, i0Var);
-kotlinx.coroutines.flow.j flow = ((ha0.w)((kt.d1) ph5.n0.c(kt.d1.class))).rj(gVar);
-if (dVar != null) ((e36.t0) e36.t0.f237738d).g(new a6(this, flow, dVar));   // 只有这里会跑
+// ha0.w（实现 kt.d1）
+public kotlinx.coroutines.flow.j rj(da0.g params) {
+    ...
+    qa0.g gVar = (qa0.g) fVar.a(wVar, qa0.g.class);
+    i2 b17 = r2.b(1, 0, null, 6, null);                       // 进度流，只是给 UI 看的
+    xe5.i.c(gVar.<SequenceLifecycleScope>, null, new qa0.f(params, gVar, b17, null), 1, null);   // <- 在这里 launch 整条发送协程
+    return b17;
+}
 ```
 
-- `da0.g` 只是个数据类（字段：imgPath / int / fromUsername / toUsername / crossParams / uuid），真正干活的是 `kt.d1` 返回的协程 flow。
-- **`dVar`（类型 `s0.d`）是收集者**：传 null 就没有任何东西订阅这个 flow，上传根本不会发生。
-- `dVar` 是 Kotlin 函数类型，native 反射交不出来（要交就得定义 Java 类）。模块的硬约束是纯 native、不定义 Java 类、不加载 dex（见 [README](../README.md)），所以这条路封死。
-- `b41.k7` 反过来是能用的：它有 `()V` 构造器，字段 `b`(J) 就是本地消息 id，可以当回调收结果。
+`rj` 自己把「准备（压缩 / 复制）→ 上传 → 入库 → 发送」整条协程 launch 出去，返回值只是给界面画进度。App 自己的 `qs5.v5.kj`（`sendImg`，日志标签 `msg_mgr_send_img`）就是调用 `rj(gVar)` 然后**直接丢弃返回值**。所以纯反射够了，不用定义 Java 类，不用加载 dex：
 
-顺带记一笔：`v51.q0` / `p0` **不是**上传步。`q0.run()` 跑的是 `new com.tencent.mm.modelsimple.l1(5,"","","","",false,1,false).doScene(...)`，而 `modelsimple.l1` 是 **NetSceneVerifyPswd**（`/cgi-bin/micromsg-bin/newverifypasswd`），`p0` 的日志串是 `verifypsw onSceneEnd ... needVerifyPswList ... verifyingPsw`：它是「发送需要校验支付密码时重试」的包装，名字像上传而已。
+```
+svc   = ph5.n0.c(kt.d1.class)                         // 服务注册表；运行时类是 ha0.w
+ctx   = new w90.i0();  ctx.a = 4;                     // 4 = 从聊天界面发出
+ctx.o = new b41.k7();                                 // 管线往里填结果的回调对象
+gVar  = new da0.g(imgPath, 0, selfWxid, talker, ctx); // 0 = compressType
+gVar.j = "msg_mgr_send_img";                          // 功能标签
+svc.rj(gVar);                                         // 丢弃返回的进度流
+```
 
-### 结语
+`native/wx_send.cpp` 的 `SendImage`。`com.tencent.mm.pluginsdk.ui.tools.p0.a()`（App 在同一处先调的准备）也调一次，失败不算错。所有类与成员每次调用时现查：缺任何一个只让这一次请求失败，不影响文本发送。
 
-`message.create` 现在只发纯文本；content 里只有媒体元素时返回 400 `{"error":"media_unsupported"}`，不假报成功，也不往库里写任何行（那行 type=42 是 v0.9.0 实验留下的，在 filehelper 里，只有自己看得到）。要做图片，得先决定是否接受引入一个极小的 Java 助手 / DEX，那是设计层面的改动，不是逆向问题。
+**异步意味着「返回了」不等于「发出了」。** `rj` 返回时消息行还没有。`message.create` 的做法：发之前记下库的水位，`rj` 之后最多 6 秒、每 40 毫秒查一次 `type=3 AND isSend=1 AND talker=<会话> AND msgId>水位` 的行（`StoreFindSentImage`）；查到才回 200 并带上真实的消息 id，查不到回 502 `image_unconfirmed`（图片可能仍会发出，说明白而不是假报成功）。等的时候占着服务线程，所以 6 秒是上限；实际管线在几百毫秒内入库。
+
+`message.create` 的内容按 `<img>` 切成有序的文本 / 图片消息序列：
+
+- `src` 只认两种：本模块 `upload.create` 产出的 `internal:wechat/<user>/_tmp/<name>`（5 分钟有效），和 `data:image/…;base64,…`（解码后最多 8 MiB，落进同一个临时目录）。远程 `http(s)` 明确拒绝，说明改用 `upload.create` 或 data URI：没有 HTTP 客户端，也不假装抓得到。
+- 落地的文件先核魔数：JPEG、PNG、GIF、WebP 之外一律 400 `media_unsupported`。
+- **所有图片先解析、核对完再开始发第一条**：任何一张坏了整条 400，不留下半条已发的消息。开始发之后失败，响应体的 `sent` 说明已经发出去几条。
+- 一次最多 4 张。文本段每段最多 4000 字节（`content_too_long`）。
+- `message.create` 因此把请求体上限放宽到 16 MiB，只对已验证令牌的调用者。
+- 返回的每条 `Message` 里，图片的 `content` 是指向微信落盘那份缩略图的签名链接。
+- GIF 按图片发，不会变成动图表情（表情走另一条路，没做）。
+
+**这条路在真机上还没有验证过。** 写它时能核对的只有反编译出来的调用序列与签名；重启加载新 `.so` 之后，先跑 [HANDOFF](HANDOFF.md) 里的验收清单第 4 项。失败的话看 `internal/status` 的 `send.last_error`（哪个类或成员没找到）与 `send.media` 计数。
+
+### 回复（`<quote>`）
+
+发出去的 `<quote>` 现在被当成元素丢掉，正文照发。微信的回复是一条 `appmsg`（`<type>57</type>`，`<refermsg>` 里放被引用消息的 svrid / 发送者 / 摘要）。`qs5.v5.dj(String toUser, byte[] xml, String content, …)` 是发任意 appmsg XML 的入口，`dx0.r.v(content)` 先把它解析回结构再走 `com.tencent.mm.pluginsdk.model.app.*`；`gx0.e` 里那个 `<refermsg>` 是青少年模式的，与回复无关。要做的话：造 type 57 的 XML，找到 `qs5.v5` 的单例入口（`ph5.n0.c(…)` 要哪个接口），再在真机上核对库里出现的行是 `type=822083633`、`MsgQuote` 有配对。没做。
 
 ## 其它入口（供参考，都没接）
 

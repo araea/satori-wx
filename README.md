@@ -1,6 +1,6 @@
 # 知言（satori-wx）
 
-微信的 Satori v1 实现端：通过 Zygisk 注入把微信暴露为统一接口，目前仅文本收发
+微信的 Satori v1 实现端：通过 Zygisk 注入把微信暴露为统一接口——收消息（文本、图片、语音、视频、表情、链接、回复、@）、事件（撤回、入退群、好友）、发文本 / 群内 @ / 图片
 
 [![GitHub](https://img.shields.io/badge/GitHub-araea%2Fsatori--wx-181717?logo=github&logoColor=white)](https://github.com/araea/satori-wx)
 
@@ -57,14 +57,16 @@ HTTP 使用 `Authorization: Bearer <token>`：缺失 token 返回 401，错误 t
 
 - 读侧 13：`message.get/list`、`user.get`、`friend.list`、`guild.get/list`、`guild.member.get/list`、`guild.role.list`、`guild.member.role.list`、`channel.get/list`、`user.channel.create`
 - 资源 1：`upload.create`
-- 写侧 6（`send=on`）：`message.create`（纯文本）、`message.delete`、`channel.delete`（退群）、`guild.member.kick`、`guild.member.role.set/unset`
+- 写侧 6（`send=on`）：`message.create`（文本 / @ / 图片）、`message.delete`、`channel.delete`（退群）、`guild.member.kick`、`guild.member.role.set/unset`
 - 账号 1：`login.get`
 
-其余标准方法返回 404。WebSocket 按 Satori 的 `op=3` + `body.token` 鉴权，成功后 `op=4`，`op=1` 心跳回复 `op=2`，每 10 秒发送一次 PING，连续 30 秒无响应则断开；支持掩码、文本分片、控制帧交错、TCP 分包 / 合包与关闭握手，64 条有界历史，登录事件不参与回放，窗口外序号用 4009 拒绝恢复。资源限制：8 个并发连接、8 KiB HTTP 头、16 KiB 请求体 / WS 消息、有界发送缓冲；HTTP 每次响应后关闭连接，暂不支持 TLS、chunked 请求体或真实微信消息事件。
+其余标准方法返回 404。WebSocket 按 Satori 的 `op=3` + `body.token` 鉴权，成功后 `op=4`，`op=1` 心跳回复 `op=2`，每 10 秒发送一次 PING，连续 30 秒无响应则断开；支持掩码、文本分片、控制帧交错、TCP 分包 / 合包与关闭握手，64 条有界历史，登录事件不参与回放，窗口外序号用 4009 拒绝恢复。资源限制：8 个并发连接、8 KiB HTTP 头、16 KiB 请求体 / WS 消息（`upload.create` 与 `message.create` 可到 16 MiB，先验令牌）、单条事件 128 KiB；HTTP 每次响应后关闭连接，暂不支持 TLS、chunked 请求体。
 
 ## 限制 / 风险
 
-- 发送只有纯文本。`content` 先拍平（丢弃 `<quote>` / `<at>` / `<emoji>`，`<br/>` 变换行）；拍平后为空且只含 `<img>` 等媒体元素时返回 400 `media_unsupported`。图片 / 语音 / 视频 / 文件均未实现（见[发送各类消息](docs/wechat-send-types.md)）。
+- 发送：文本、群内 `@`（`<at id name/>` / `<at type="all"/>`）、图片（`<img src>`，只认 `upload.create` 的链接与 `data:image` URI，图片发送**尚未真机验证**）。回复 `<quote>`、语音、视频、文件没做；`content` 里的这些元素被丢弃，只带它们时 `<audio>` `<video>` `<file>` 回 400 `media_unsupported`（见[发送各类消息](docs/wechat-send-types.md)）。
+- 收到的图片多半只有缩略图，原图是微信私有的 `wxgf` 容器；语音是 SILK，不转码（见[消息内容](docs/wechat-content.md)）。
+- 好友 / 入群申请事件与对应的 approve 方法没做。事件的延迟与限制见[事件](docs/wechat-events.md)。
 - 微信无此概念的方法列入 `internal/capabilities.unsupported`：`message.update`、`channel.create`、`channel.mute`、`guild.member.mute`、`reaction.*`、`guild.role.create/update/delete`。
 - 微信被系统冻结时回环端口握手成功但无响应，客户端挂起至超时；root 侧 `wxguard` 默认 ARMED 负责解冻（见[常驻通知与保活](docs/keepalive.md)）。
 - 只在 arm64 上构建与运行。
@@ -78,8 +80,10 @@ HTTP 使用 `Authorization: Bearer <token>`：缺失 token 返回 401，错误 t
 - [知言应用设计规范](docs/app-design.md)
 - [只读账号身份说明](docs/wechat-account.md)
 - [消息后端设计（native、低特征）](docs/wechat-store.md)
+- [消息内容、媒体链接与历史分页](docs/wechat-content.md)
+- [事件](docs/wechat-events.md)
 - [微信消息发送路径（反射）](docs/wechat-send.md)
-- [发送各类消息（反射，含图片为何没做）](docs/wechat-send-types.md)
+- [发送各类消息（反射，含图片管线）](docs/wechat-send-types.md)
 - [微信群管理写操作（反射）](docs/wechat-room.md)
 - [常驻通知与保活（wxguard）](docs/keepalive.md)
 - [协议覆盖矩阵](docs/satori-conformance.md)

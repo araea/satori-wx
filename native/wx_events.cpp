@@ -12,10 +12,11 @@ constexpr int kRevokedSeen = 512;
 // offline is synced later; look this far back for rewritten rows.
 constexpr long long kRevokeWindowMs = 30LL * 60 * 1000;
 constexpr int kFriendEvery = 4;  // friends are re-read every 4th pass
+constexpr unsigned kRoomAuditEvery = 20;  // every 20th pass (about a minute) all rosters are re-read
 
 struct Room {
     char name[80];
-    long long modify_time, member_count, list_size;
+    long long modify_time, member_count, version;
     char *members;   // the snapshot everything is compared with
     char *pending;   // a different roster seen once; believed only if seen again
     bool alive;
@@ -213,6 +214,7 @@ void AnnounceRosterChange(Scanner *scanner, const char *room, const char *before
 
 void ScanRooms(Scanner *scanner, long long now_ms) {
     static RoomStamp stamps[kRoomMax];
+    const bool audit = scanner->pass % kRoomAuditEvery == kRoomAuditEvery - 1;
     const int count = StoreRoomStamps(scanner->store, stamps, kRoomMax);
     if (count < 0) return;
     const char *self = StoreSelfId(scanner->store);
@@ -226,7 +228,7 @@ void ScanRooms(Scanner *scanner, long long now_ms) {
             Room &fresh = scanner->rooms[scanner->room_count++];
             fresh = Room{};
             snprintf(fresh.name, sizeof(fresh.name), "%s", stamps[i].name);
-            fresh.modify_time = stamps[i].modify_time; fresh.member_count = stamps[i].member_count; fresh.list_size = stamps[i].list_size;
+            fresh.modify_time = stamps[i].modify_time; fresh.member_count = stamps[i].member_count; fresh.version = stamps[i].version;
             fresh.members = members;
             fresh.alive = true;
             // A room that appears after the baseline and lists us is one we just joined.
@@ -234,8 +236,10 @@ void ScanRooms(Scanner *scanner, long long now_ms) {
             continue;
         }
         room->alive = true;
-        const bool unchanged = room->modify_time == stamps[i].modify_time && room->member_count == stamps[i].member_count &&
-                               room->list_size == stamps[i].list_size;
+        // Every so often re-read a roster whatever its fingerprint says, in case a change never
+        // touched the columns the fingerprint is made of.
+        const bool unchanged = !audit && room->modify_time == stamps[i].modify_time && room->member_count == stamps[i].member_count &&
+                               room->version == stamps[i].version;
         if (unchanged) { free(room->pending); room->pending = nullptr; continue; }
         char *members = StoreRoomMembers(scanner->store, stamps[i].name);
         if (!members) continue;
@@ -243,13 +247,13 @@ void ScanRooms(Scanner *scanner, long long now_ms) {
             // Only metadata (a nickname, the notice) changed; keep the fresh order and stamp.
             free(room->members); room->members = members;
             free(room->pending); room->pending = nullptr;
-            room->modify_time = stamps[i].modify_time; room->member_count = stamps[i].member_count; room->list_size = stamps[i].list_size;
+            room->modify_time = stamps[i].modify_time; room->member_count = stamps[i].member_count; room->version = stamps[i].version;
         } else if (room->pending && SameSet(room->pending, members, ';')) {
             // Seen twice in a row: the roster really changed.
             AnnounceRosterChange(scanner, stamps[i].name, room->members, members, now_ms);
             free(room->members); free(room->pending);
             room->members = members; room->pending = nullptr;
-            room->modify_time = stamps[i].modify_time; room->member_count = stamps[i].member_count; room->list_size = stamps[i].list_size;
+            room->modify_time = stamps[i].modify_time; room->member_count = stamps[i].member_count; room->version = stamps[i].version;
         } else {
             free(room->pending);
             room->pending = members;

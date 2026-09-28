@@ -63,13 +63,13 @@ int main() {
     if (!db) return 1;
     Exec(db, "CREATE TABLE message(msgId INTEGER PRIMARY KEY, msgSvrId INTEGER, type INT, status INT, isSend INT, isShowTimer INTEGER, "
              "createTime INTEGER, talker TEXT, content TEXT, imgPath TEXT, reserved TEXT, lvbuffer BLOB)");
-    Exec(db, "CREATE TABLE chatroom(chatroomname TEXT PRIMARY KEY, memberlist TEXT, displayname TEXT, roomowner TEXT, memberCount INTEGER, roomdata BLOB, modifytime INTEGER)");
+    Exec(db, "CREATE TABLE chatroom(chatroomname TEXT PRIMARY KEY, memberlist TEXT, displayname TEXT, roomowner TEXT, memberCount INTEGER, roomdata BLOB, modifytime INTEGER, chatroomVersion INTEGER)");
     Exec(db, "CREATE TABLE rcontact(username TEXT PRIMARY KEY, alias TEXT, conRemark TEXT, nickname TEXT, type INTEGER, deleteFlag INTEGER)");
     Exec(db, "CREATE TABLE MsgQuote(msgId INTEGER, msgSvrId INTEGER, quotedMsgId INTEGER, quotedMsgSvrId INTEGER, status INTEGER, quotedMsgTalker TEXT)");
     Exec(db, "INSERT INTO rcontact VALUES('self_wxid','','','我',3,0), ('wxid_a','','','甲',3,0), ('wxid_b','','','乙',3,0), ('wxid_c','','','丙',3,0), "
              "('wxid_stranger','','','路人',4,0), ('wxid_starred','','','星标',67,0), ('gh_news','','','公众号',3,0), ('123@chatroom','','','群名',2,0)");
-    Exec(db, "INSERT INTO chatroom VALUES('123@chatroom','self_wxid;wxid_a;wxid_b','','wxid_a',3,NULL,1000)");
-    Exec(db, "INSERT INTO chatroom VALUES('456@chatroom','wxid_a;wxid_b','','wxid_a',2,NULL,1000)");
+    Exec(db, "INSERT INTO chatroom VALUES('123@chatroom','self_wxid;wxid_a;wxid_b','','wxid_a',3,NULL,1000,0)");
+    Exec(db, "INSERT INTO chatroom VALUES('456@chatroom','wxid_a;wxid_b','','wxid_a',2,NULL,1000,0)");
     // A message the poller will announce (so its author is remembered), one recalled *before*
     // the scanner starts, and a private one.
     Exec(db, "INSERT INTO message(msgId,msgSvrId,type,isSend,createTime,talker,content) VALUES(10,9010,1,0,1699999990000,'123@chatroom','wxid_a:\n收回我')");
@@ -162,7 +162,7 @@ int main() {
     }
     sink.Clear();
     // Joining a group: a room row that appears with us in it.
-    Exec(db, "INSERT INTO chatroom VALUES('789@chatroom','self_wxid;wxid_a','','wxid_a',2,NULL,5000)");
+    Exec(db, "INSERT INTO chatroom VALUES('789@chatroom','self_wxid;wxid_a','','wxid_a',2,NULL,5000,0)");
     Pass(scanner, &sink);
     Check(sink.count == 1, "a new room that lists us");
     if (sink.count == 1) {
@@ -172,7 +172,7 @@ int main() {
     }
     sink.Clear();
     // A room we were never in appearing (or vanishing) is nobody's business.
-    Exec(db, "INSERT INTO chatroom VALUES('999@chatroom','wxid_a;wxid_b','','wxid_a',2,NULL,5000)");
+    Exec(db, "INSERT INTO chatroom VALUES('999@chatroom','wxid_a;wxid_b','','wxid_a',2,NULL,5000,0)");
     Pass(scanner, &sink, 2);
     Exec(db, "DELETE FROM chatroom WHERE chatroomname = '456@chatroom'");
     Pass(scanner, &sink, 2);

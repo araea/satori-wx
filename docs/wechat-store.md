@@ -50,6 +50,8 @@
 
 ### 3. 事件与业务方法
 
+（v0.10.0 起的做法见 [消息内容](wechat-content.md) 与 [事件](wechat-events.md)；下面是最初的设计。）
+
 - 接收：按 `message.rowid` / `createTime` 维护水位，轮询新行（或观察 `-wal` mtime），转成 `message-created` 投递到现有 native 总线。**不 hook 消息路径**，因此没有包解析、没有网络改写。
 - 数据：`rcontact`（用户 / 群）、`chatroom`（群成员）、`message` 等表都能从同一只读连接读取，用于 `user.get`、`friend.list`、`guild.*`、`channel.*`、`message.list/get`。
 - 群 ID 直接用 `<数字>@chatroom`，作为 `guild_id` / `channel_id`。

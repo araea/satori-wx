@@ -30,12 +30,15 @@ struct Live {
 
 // Shared with the RPC backend; set once the store is opened.
 Store *g_live_store = nullptr;
+volatile long long g_live_emitted = 0;
+Scanner *g_live_scanner = nullptr;
 int g_live_login_sn = 0;
 
 bool Emit(void *context, const char *event) {
     auto *live = static_cast<Live *>(context);
-    ++live->emitted;
-    return Publish(live->bus, event);
+    const bool published = Publish(live->bus, event);
+    if (published) { ++live->emitted; g_live_emitted = live->emitted; }
+    return published;
 }
 
 // File diagnostics: logcat is unreliable for an injected module tag, so status goes to
@@ -158,6 +161,7 @@ void *Loop(void *argument) {
     // Recalls, group roster changes and friendships have no row of their own to poll; the scanner
     // snapshots them now (announcing nothing for what already exists) and diffs on every pass.
     Scanner *scanner = CreateScanner(live->store, live->login_sn);
+    g_live_scanner = scanner;
     long long last_scan = 0;
     long long logged = -1;
     for (;;) {
@@ -195,5 +199,12 @@ bool StartLiveStore(const char *app_data_dir, EventBus *bus, int login_sn) {
 }
 
 Store *LiveStore() { return g_live_store; }
+void LiveStatsGet(LiveStats *stats) {
+    if (!stats) return;
+    stats->open = g_live_store != nullptr;
+    stats->emitted = g_live_emitted;
+    stats->skipped = StoreSkipped(g_live_store);
+    stats->dropped = ScannerDropped(g_live_scanner);
+}
 int LiveLoginSn() { return g_live_login_sn; }
 } // namespace satori

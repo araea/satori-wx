@@ -731,16 +731,26 @@ bool LocalIdRow(Wcdb *db, void *stmt, void *context) {
 }
 bool FindQuotedId(Store *store, long long reply_id, const char *server_id, char *out, size_t capacity) {
     out[0] = 0;
-    QuoteIds ids{0, 0};
+    long long local = 0;
     char sql[200];
     pthread_mutex_lock(&store->mutex);
-    snprintf(sql, sizeof(sql), "SELECT quotedMsgId, quotedMsgSvrId FROM MsgQuote WHERE msgId = %lld LIMIT 1", reply_id);
-    WcdbQuery(store->db, sql, QuoteRow, &ids);
-    long long server = ids.server > 0 ? ids.server : (server_id && *server_id ? atoll(server_id) : 0);
-    long long local = ids.local;
-    if (local <= 0 && server > 0) {
+    // The reply's own XML names the quoted server id, and message.msgSvrId is indexed.
+    long long server = server_id && *server_id ? atoll(server_id) : 0;
+    if (server > 0) {
         snprintf(sql, sizeof(sql), "SELECT msgId FROM message WHERE msgSvrId = %lld LIMIT 1", server);
         WcdbQuery(store->db, sql, LocalIdRow, &local);
+    }
+    if (local <= 0) {
+        // WeChat's own pairing table (unindexed on msgId, but small); the row may land a moment
+        // after the message itself, which is why it is the fallback rather than the first choice.
+        QuoteIds ids{0, 0};
+        snprintf(sql, sizeof(sql), "SELECT quotedMsgId, quotedMsgSvrId FROM MsgQuote WHERE msgId = %lld LIMIT 1", reply_id);
+        WcdbQuery(store->db, sql, QuoteRow, &ids);
+        local = ids.local;
+        if (local <= 0 && ids.server > 0) {
+            snprintf(sql, sizeof(sql), "SELECT msgId FROM message WHERE msgSvrId = %lld LIMIT 1", ids.server);
+            WcdbQuery(store->db, sql, LocalIdRow, &local);
+        }
     }
     pthread_mutex_unlock(&store->mutex);
     if (local <= 0) return false;
@@ -881,9 +891,16 @@ bool AllDigits(const char *text) {
 // Rows of a channel that can be chat messages at all; the decoder makes the final call.
 constexpr char kNotSystem[] = "(type & 65535) NOT IN (10000, 10002)";
 
+// A position in a channel's history. Pages are ordered by (createTime, msgId), which is what
+// the (talker, createTime) index serves without a sort; a token is just the msgId, and its time
+// is looked up. (Ordering by rowid alone would make SQLite collect and sort every row of a busy
+// chat for each page.)
+struct HistoryPos { long long time = 0, id = 0; };
+
 struct Page {
     cJSON *messages[kListMax + 1];
-    long long rowids[kListMax + 1];
+    long long ids[kListMax + 1];
+    long long times[kListMax + 1];
     int count = 0;
 };
 
@@ -892,45 +909,75 @@ void FreePage(Page &page) {
     page.count = 0;
 }
 
+bool TimeRow(Wcdb *db, void *stmt, void *context) {
+    *static_cast<long long *>(context) = WcdbInt(db, stmt, 0);
+    return false;
+}
+// The position of message `id`; false when the row is gone (a stale token).
+bool CursorOf(Store *store, long long id, HistoryPos *out) {
+    char sql[120];
+    snprintf(sql, sizeof(sql), "SELECT createTime FROM message WHERE msgId = %lld", id);
+    long long time = -1;
+    pthread_mutex_lock(&store->mutex);
+    const bool ok = WcdbQuery(store->db, sql, TimeRow, &time);
+    pthread_mutex_unlock(&store->mutex);
+    if (!ok || time < 0) return false;
+    out->time = time;
+    out->id = id;
+    return true;
+}
+
 // Walks away from `bound` and gathers up to `want` deliverable messages (system rows and
-// bookkeeping do not count, so a page is never short just because a tip sat in the way).
-bool CollectPage(Store *store, const char *channel, bool ascending, bool bounded, long long bound, int want, Page *page) {
-    long long cursor = bound;
-    bool has_bound = bounded;
+// bookkeeping do not count, so a page is never short just because a tip sat in the way). The
+// bound itself is excluded.
+bool CollectPage(Store *store, const char *channel, bool ascending, bool bounded, HistoryPos bound, int want, Page *page) {
     Row rows[kBatch];
     while (page->count < want) {
-        char sql[700];
+        char sql[800];
         char condition[64] = "";
-        if (has_bound) snprintf(condition, sizeof(condition), " AND rowid %s %lld", ascending ? ">" : "<", cursor);
-        snprintf(sql, sizeof(sql), "SELECT %s FROM message WHERE talker = '%s' AND %s%s ORDER BY rowid %s LIMIT %d",
-                 kRowColumns, channel, kNotSystem, condition, ascending ? "ASC" : "DESC", kBatch);
+        if (bounded) snprintf(condition, sizeof(condition), " AND createTime %s %lld", ascending ? ">=" : "<=", bound.time);
+        snprintf(sql, sizeof(sql),
+                 "SELECT %s FROM message WHERE talker = '%s' AND %s%s ORDER BY createTime %s, msgId %s LIMIT %d",
+                 kRowColumns, channel, kNotSystem, condition, ascending ? "ASC" : "DESC", ascending ? "ASC" : "DESC", kBatch);
         int count = 0;
         const bool ok = FetchRows(store, sql, rows, kBatch, &count);
+        HistoryPos last = bound;
         for (int i = 0; i < count; ++i) {
-            if (page->count < want) {
+            const Row &row = rows[i];
+            last.time = row.create_time;
+            last.id = row.id;
+            // Rows that share the bound's timestamp are on the far side of it by id.
+            const bool tied = bounded && row.create_time == bound.time && (ascending ? row.id <= bound.id : row.id >= bound.id);
+            if (!tied && page->count < want) {
                 Decoded decoded;
-                DecodeMessage(View(rows[i]), store->self_id, &decoded);
+                DecodeMessage(View(row), store->self_id, &decoded);
                 if (decoded.deliver) {
-                    cJSON *message = BuildMessage(store, rows[i], decoded, nullptr);
-                    if (message) { page->messages[page->count] = message; page->rowids[page->count] = rows[i].rowid; ++page->count; }
+                    cJSON *message = BuildMessage(store, row, decoded, nullptr);
+                    if (message) {
+                        page->messages[page->count] = message;
+                        page->ids[page->count] = row.id;
+                        page->times[page->count] = row.create_time;
+                        ++page->count;
+                    }
                 }
             }
-            cursor = rows[i].rowid;
-            FreeRow(rows[i]);
         }
+        for (int i = 0; i < count; ++i) FreeRow(rows[i]);
         if (!ok) return false;
-        has_bound = true;
         if (count < kBatch) break;
+        bounded = true;
+        bound = last;
     }
     return true;
 }
 
 bool ExistsRow(Wcdb *, void *, void *context) { *static_cast<bool *>(context) = true; return false; }
-// Whether the channel has a chat row beyond `rowid` in the given direction.
-bool HasBeyond(Store *store, const char *channel, long long rowid, bool after) {
-    char sql[400];
-    snprintf(sql, sizeof(sql), "SELECT 1 FROM message WHERE talker = '%s' AND %s AND rowid %s %lld LIMIT 1",
-             channel, kNotSystem, after ? ">" : "<", rowid);
+// Whether the channel has a chat row beyond `at` (before it, or after it) in the same order.
+bool HasBeyond(Store *store, const char *channel, HistoryPos at, bool after) {
+    char sql[500];
+    snprintf(sql, sizeof(sql),
+             "SELECT 1 FROM message WHERE talker = '%s' AND %s AND createTime %s %lld AND (createTime %s %lld OR msgId %s %lld) LIMIT 1",
+             channel, kNotSystem, after ? ">=" : "<=", at.time, after ? ">" : "<", at.time, after ? ">" : "<", at.id);
     bool found = false;
     pthread_mutex_lock(&store->mutex);
     WcdbQuery(store->db, sql, ExistsRow, &found);
@@ -941,7 +988,8 @@ bool HasBeyond(Store *store, const char *channel, long long rowid, bool after) {
 void ReversePage(Page &page) {
     for (int i = 0, j = page.count - 1; i < j; ++i, --j) {
         cJSON *message = page.messages[i]; page.messages[i] = page.messages[j]; page.messages[j] = message;
-        const long long rowid = page.rowids[i]; page.rowids[i] = page.rowids[j]; page.rowids[j] = rowid;
+        const long long id = page.ids[i]; page.ids[i] = page.ids[j]; page.ids[j] = id;
+        const long long time = page.times[i]; page.times[i] = page.times[j]; page.times[j] = time;
     }
 }
 } // namespace
@@ -999,13 +1047,17 @@ long long StorePoll(Store *store, long long since, int login_sn, bool (*emit)(vo
 cJSON *StoreMessageGet(Store *store, const char *channel_id, const char *message_id) {
     if (!store || !store->db || !SafeSql(channel_id) || !AllDigits(message_id)) return nullptr;
     const long long wanted = atoll(message_id);
+    // The local id first (primary key), then WeChat's server id (indexed with the talker): two
+    // cheap lookups rather than one OR that would scan the channel.
     char sql[600];
-    snprintf(sql, sizeof(sql),
-             "SELECT %s FROM message WHERE talker = '%s' AND (msgId = %lld OR msgSvrId = %lld) ORDER BY msgId = %lld DESC LIMIT 1",
-             kRowColumns, channel_id, wanted, wanted, wanted);
     Row rows[1];
     int count = 0;
-    if (!FetchRows(store, sql, rows, 1, &count) || count < 1) return nullptr;
+    snprintf(sql, sizeof(sql), "SELECT %s FROM message WHERE msgId = %lld AND talker = '%s'", kRowColumns, wanted, channel_id);
+    if (!FetchRows(store, sql, rows, 1, &count)) return nullptr;
+    if (count < 1) {
+        snprintf(sql, sizeof(sql), "SELECT %s FROM message WHERE talker = '%s' AND msgSvrId = %lld LIMIT 1", kRowColumns, channel_id, wanted);
+        if (!FetchRows(store, sql, rows, 1, &count) || count < 1) return nullptr;
+    }
     Decoded decoded;
     DecodeMessage(View(rows[0]), store->self_id, &decoded);
     cJSON *message = decoded.deliver ? BuildMessage(store, rows[0], decoded, nullptr) : nullptr;
@@ -1019,7 +1071,8 @@ cJSON *StoreMessageList(Store *store, const char *channel_id, const char *next, 
     if (limit > kListMax) limit = kListMax;
     const bool has_cursor = next && *next;
     if (has_cursor && !AllDigits(next)) return nullptr;
-    const long long cursor = has_cursor ? atoll(next) : 0;
+    HistoryPos cursor;
+    if (has_cursor && !CursorOf(store, atoll(next), &cursor)) return nullptr;  // a token for a row that no longer exists
     // Without a cursor the only sensible direction is "before the newest".
     const bool after = has_cursor && direction && !strcmp(direction, "after");
     const bool around = has_cursor && direction && !strcmp(direction, "around");
@@ -1028,9 +1081,10 @@ cJSON *StoreMessageList(Store *store, const char *channel_id, const char *next, 
     Page older, newer;
     bool ok = true;
     if (around) {
-        // The anchor itself is the first (newest) row of the "older" walk from cursor + 1.
+        // The anchor itself is the first (newest) row of the "older" walk from just past it.
+        HistoryPos past{cursor.time, cursor.id + 1};
         const int before = limit / 2 + 1 > limit ? limit : limit / 2 + 1;
-        ok = CollectPage(store, channel_id, false, true, cursor + 1, before, &older);
+        ok = CollectPage(store, channel_id, false, true, past, before, &older);
         ok = ok && CollectPage(store, channel_id, true, true, cursor, limit - older.count, &newer);
     } else if (after) {
         ok = CollectPage(store, channel_id, true, true, cursor, limit, &newer);
@@ -1042,12 +1096,15 @@ cJSON *StoreMessageList(Store *store, const char *channel_id, const char *next, 
 
     // At most `limit` in total by construction, so everything fits.
     Page all;
-    for (int i = 0; i < older.count; ++i) { all.messages[all.count] = older.messages[i]; all.rowids[all.count++] = older.rowids[i]; }
-    for (int i = 0; i < newer.count; ++i) { all.messages[all.count] = newer.messages[i]; all.rowids[all.count++] = newer.rowids[i]; }
+    for (int i = 0; i < older.count; ++i) { all.messages[all.count] = older.messages[i]; all.ids[all.count] = older.ids[i]; all.times[all.count++] = older.times[i]; }
+    for (int i = 0; i < newer.count; ++i) { all.messages[all.count] = newer.messages[i]; all.ids[all.count] = newer.ids[i]; all.times[all.count++] = newer.times[i]; }
     older.count = newer.count = 0;
 
-    long long oldest = 0, newest = 0;
-    if (all.count) { oldest = all.rowids[0]; newest = all.rowids[all.count - 1]; }
+    HistoryPos oldest, newest;
+    if (all.count) {
+        oldest = HistoryPos{all.times[0], all.ids[0]};
+        newest = HistoryPos{all.times[all.count - 1], all.ids[all.count - 1]};
+    }
     if (descending) ReversePage(all);
     cJSON *result = cJSON_CreateObject();
     cJSON *data = cJSON_CreateArray();
@@ -1056,8 +1113,8 @@ cJSON *StoreMessageList(Store *store, const char *channel_id, const char *next, 
     for (int i = 0; i < all.count; ++i) cJSON_AddItemToArray(data, all.messages[i]);
     if (all.count) {
         char token[32];
-        if (HasBeyond(store, channel_id, oldest, false)) { snprintf(token, sizeof(token), "%lld", oldest); cJSON_AddStringToObject(result, "prev", token); }
-        if (HasBeyond(store, channel_id, newest, true)) { snprintf(token, sizeof(token), "%lld", newest); cJSON_AddStringToObject(result, "next", token); }
+        if (HasBeyond(store, channel_id, oldest, false)) { snprintf(token, sizeof(token), "%lld", oldest.id); cJSON_AddStringToObject(result, "prev", token); }
+        if (HasBeyond(store, channel_id, newest, true)) { snprintf(token, sizeof(token), "%lld", newest.id); cJSON_AddStringToObject(result, "next", token); }
     }
     return result;
 }
@@ -1252,7 +1309,7 @@ bool StampRow(Wcdb *db, void *stmt, void *context) {
     snprintf(stamp.name, sizeof(stamp.name), "%s", name ? name : "");
     stamp.modify_time = WcdbInt(db, stmt, 1);
     stamp.member_count = WcdbInt(db, stmt, 2);
-    stamp.list_size = WcdbInt(db, stmt, 3);
+    stamp.version = WcdbInt(db, stmt, 3);
     return true;
 }
 struct StringSink { char *text; bool ok; };
@@ -1288,7 +1345,7 @@ int StoreRoomStamps(Store *store, RoomStamp *out, int max) {
     if (!store || !store->db || !out) return -1;
     StampSink sink{out, 0, max};
     pthread_mutex_lock(&store->mutex);
-    const bool ok = WcdbQuery(store->db, "SELECT chatroomname, modifytime, memberCount, length(memberlist) FROM chatroom", StampRow, &sink);
+    const bool ok = WcdbQuery(store->db, "SELECT chatroomname, modifytime, memberCount, chatroomVersion FROM chatroom", StampRow, &sink);
     pthread_mutex_unlock(&store->mutex);
     return ok ? sink.count : -1;
 }
@@ -1323,11 +1380,19 @@ int StoreRevoked(Store *store, long long since_ms, RevokedRow *out, int max) {
     char sql[300];
     snprintf(sql, sizeof(sql),
              "SELECT msgId, talker, createTime, isSend FROM message WHERE (type IN (268445456, 285222674) OR (type & 65535) = 10002) "
-             "AND createTime > %lld ORDER BY msgId LIMIT %d", since_ms, max);
+             "AND createTime > %lld LIMIT %d", since_ms, max);
     RevokedSink sink{out, 0, max};
     pthread_mutex_lock(&store->mutex);
     const bool ok = WcdbQuery(store->db, sql, RevokedCallback, &sink);
     pthread_mutex_unlock(&store->mutex);
+    // No ORDER BY in the query: sorting by msgId would make SQLite scan the whole table instead
+    // of using the createTime index. The handful of rows are put in id order here.
+    for (int i = 1; i < sink.count; ++i) {
+        RevokedRow row = out[i];
+        int j = i - 1;
+        for (; j >= 0 && out[j].id > row.id; --j) out[j + 1] = out[j];
+        out[j + 1] = row;
+    }
     return ok ? sink.count : -1;
 }
 
