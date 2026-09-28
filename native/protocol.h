@@ -5,7 +5,9 @@
 
 namespace satori {
 struct Multipart;
-constexpr size_t kEventSize = 4096;
+// Upper bound (exclusive) for one serialized event or signal. Events live on the heap, so this
+// only caps a single message; long WeChat texts and rich elements fit comfortably.
+constexpr size_t kEventSize = 131072;
 constexpr unsigned kHistory = 64;
 struct Method { const char *name; const char *fields; bool upload; };
 extern const Method kMethods[];
@@ -32,7 +34,8 @@ void DestroyBus(EventBus *bus);
 int BusFd(EventBus *bus);
 // Safe on a native producer thread. False means backpressure/oversize, never silent success.
 bool Publish(EventBus *bus, const char *event_json, bool meta = false);
-bool Take(EventBus *bus, char out[kEventSize], bool *meta);
+// Pops the oldest queued event as a malloc'd string the caller frees, or null when empty.
+char *Take(EventBus *bus, bool *meta);
 void DrainWake(EventBus *bus);
 
 struct Hub;

@@ -16,24 +16,41 @@
 #include <string.h>
 #include <strings.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <time.h>
 #include <unistd.h>
 
 namespace satori {
 namespace {
 constexpr size_t kHeader = 8192, kMessage = 16384, kInput = kHeader + kMessage;
+// Only `upload.create` may carry a larger body, and only from an authenticated caller: the
+// token is checked from the headers alone, before a single body byte is buffered.
+constexpr size_t kUploadMax = 16u << 20;
+// A client that lets this much data back up unread is a stalled consumer, not a busy one.
+constexpr size_t kOutputMax = 4u << 20;
+// Stop replaying history into a connection while this much is still waiting to be written.
+constexpr size_t kOutputSoft = 256u << 10;
+constexpr size_t kChunk = 64u << 10;
 constexpr int kClients = 8;
-constexpr int64_t kRequestMs = 10000, kHeartbeatMs = 30000;
+constexpr int64_t kRequestMs = 10000, kHeartbeatMs = 30000, kStreamMs = 20000;
 // Registered by the module; null in tests and standalone tools.
 StatusProvider g_status_provider = nullptr;
 WakelockProvider g_wakelock_provider = nullptr;
+MediaResolver g_media_resolver = nullptr;
+// Buffers are heap-allocated per connection and freed on Drop: eight fixed 60 KiB structs sat
+// resident for the life of WeChat, and none of them could hold a real upload or a real image.
 struct Client {
     int fd;
-    bool ws, identified, closing, fragmented;
+    bool ws, identified, closing, fragmented, continued;
     int64_t deadline;
     uint64_t cursor, replay_until;
     size_t used, pending, sent, fragments;
-    char input[kInput + 1], output[kMessage + 1024], message[kMessage + 1];
+    size_t input_capacity, output_capacity;
+    char *input, *output, *message;
+    // A response body streamed from a file (proxy media): read a chunk whenever the socket
+    // has drained, so a multi-megabyte video never has to fit in memory.
+    int file_fd;
+    uint64_t file_left;
 };
 int64_t Now() {
     timespec ts{};
@@ -63,14 +80,34 @@ void Drop(Client &c) {
         // the Wi-Fi lock on every status poll. c.ws stays set, so this cannot double-count.
         if (c.ws && g_client_count > 0) g_client_count = g_client_count - 1;
     }
-    c.fd = -1;
+    if (c.file_fd >= 0) close(c.file_fd);
+    free(c.input); free(c.output); free(c.message);
+    c.fd = -1; c.file_fd = -1; c.file_left = 0;
+    c.input = c.output = c.message = nullptr;
+    c.input_capacity = c.output_capacity = c.used = c.pending = c.sent = c.fragments = 0;
 }
-bool Queue(Client &c, const void *data, size_t size) {
+// Makes room for `extra` more output bytes (compacting first). False when the connection is
+// gone or the backlog would pass kOutputMax.
+bool Reserve(Client &c, size_t extra) {
+    if (c.fd < 0) return false;
     if (c.sent) {
         memmove(c.output, c.output + c.sent, c.pending - c.sent);
         c.pending -= c.sent; c.sent = 0;
     }
-    if (size > sizeof(c.output) - c.pending) { Drop(c); return false; }
+    if (extra > kOutputMax - c.pending) return false;
+    const size_t need = c.pending + extra;
+    if (need > c.output_capacity) {
+        size_t capacity = c.output_capacity ? c.output_capacity : 4096;
+        while (capacity < need) capacity *= 2;
+        if (capacity > kOutputMax) capacity = kOutputMax;
+        char *grown = static_cast<char *>(realloc(c.output, capacity));
+        if (!grown) return false;
+        c.output = grown; c.output_capacity = capacity;
+    }
+    return true;
+}
+bool Queue(Client &c, const void *data, size_t size) {
+    if (!Reserve(c, size)) { Drop(c); return false; }
     memcpy(c.output + c.pending, data, size); c.pending += size;
     return true;
 }
@@ -85,9 +122,15 @@ void Reply(Client &c, int code, const char *reason, const char *body, const char
     c.closing = true;
 }
 void Frame(Client &c, unsigned opcode, const void *payload, size_t size) {
-    unsigned char header[4] = {static_cast<unsigned char>(0x80 | opcode), static_cast<unsigned char>(size), 0, 0};
+    unsigned char header[10] = {static_cast<unsigned char>(0x80 | opcode), static_cast<unsigned char>(size)};
     size_t n = 2;
-    if (size >= 126) { header[1] = 126; header[2] = size >> 8; header[3] = size & 255; n = 4; }
+    if (size >= 65536) {
+        header[1] = 127;
+        for (int i = 0; i < 8; ++i) header[2 + i] = static_cast<unsigned char>(static_cast<uint64_t>(size) >> (56 - 8 * i));
+        n = 10;
+    } else if (size >= 126) {
+        header[1] = 126; header[2] = size >> 8; header[3] = size & 255; n = 4;
+    }
     if (Queue(c, header, n)) Queue(c, payload, size);
 }
 void Close(Client &c, unsigned code) {
@@ -105,12 +148,112 @@ void Raw(Client &c, int code, const char *reason, const char *content_type, cons
 void RawJson(Client &c, int code, const char *reason, const char *body) {
     Raw(c, code, reason, "application/json", body, strlen(body), true);
 }
+// Reads the next chunk of a streamed body into the (drained) output buffer.
+bool FillFromFile(Client &c) {
+    const size_t want = c.file_left < kChunk ? static_cast<size_t>(c.file_left) : kChunk;
+    if (!Reserve(c, want)) return false;
+    ssize_t n;
+    do { n = read(c.file_fd, c.output + c.pending, want); } while (n < 0 && errno == EINTR);
+    if (n <= 0) return false;  // The file shrank under us: better to cut the connection than lie.
+    c.pending += static_cast<size_t>(n);
+    c.file_left -= static_cast<uint64_t>(n);
+    if (!c.file_left) { close(c.file_fd); c.file_fd = -1; }
+    return true;
+}
+// Parses a single `bytes=a-b` / `bytes=a-` / `bytes=-n` range against `size`. Returns 0 when
+// there is no (usable) Range header, 1 for a satisfiable range, -1 when it lies outside the
+// file. Multiple ranges are ignored: the whole file is a valid answer to any of them.
+int ParseRange(const char *header, uint64_t size, uint64_t *first, uint64_t *last) {
+    if (!header || strncasecmp(header, "bytes=", 6)) return 0;
+    const char *p = header + 6;
+    if (strchr(p, ',')) return 0;
+    auto number = [&](uint64_t *out) {
+        if (*p < '0' || *p > '9') return false;
+        uint64_t value = 0;
+        while (*p >= '0' && *p <= '9') {
+            if (value > (UINT64_MAX - 9) / 10) return false;
+            value = value * 10 + static_cast<uint64_t>(*p++ - '0');
+        }
+        *out = value; return true;
+    };
+    uint64_t a = 0, b = 0;
+    if (*p == '-') {
+        ++p;
+        if (!number(&b) || *p || b == 0) return 0;
+        if (size == 0) return -1;
+        *first = b >= size ? 0 : size - b; *last = size - 1;
+        return 1;
+    }
+    if (!number(&a) || *p++ != '-') return 0;
+    if (*p) { if (!number(&b) || *p || b < a) return 0; } else b = size ? size - 1 : 0;
+    if (a >= size) return -1;
+    *first = a; *last = b >= size ? size - 1 : b;
+    return 1;
+}
+// Answers with the header now and streams the body from `fd` as the socket drains. Takes
+// ownership of `fd`. `range` is the raw Range header value (or empty).
+void StreamFile(Client &c, int fd, const char *content_type, const char *range, bool head) {
+    struct stat info {};
+    if (fstat(fd, &info) || !S_ISREG(info.st_mode)) {
+        close(fd); RawJson(c, 404, "Not Found", "{\"error\":\"not_found\"}"); return;
+    }
+    const uint64_t size = static_cast<uint64_t>(info.st_size);
+    uint64_t first = 0, last = size ? size - 1 : 0;
+    const int ranged = ParseRange(range, size, &first, &last);
+    if (ranged < 0) {
+        close(fd);
+        char header[256];
+        const int n = snprintf(header, sizeof(header), "HTTP/1.1 416 Range Not Satisfiable\r\nContent-Range: bytes */%llu\r\n"
+                               "Content-Length: 0\r\nConnection: close\r\nAccess-Control-Allow-Origin: *\r\n\r\n",
+                               static_cast<unsigned long long>(size));
+        Queue(c, header, n); c.closing = true; return;
+    }
+    const uint64_t length = size ? last - first + 1 : 0;
+    char header[512];
+    int n = snprintf(header, sizeof(header), "HTTP/1.1 %s\r\nContent-Type: %s\r\nContent-Length: %llu\r\n"
+                     "Accept-Ranges: bytes\r\nX-Content-Type-Options: nosniff\r\nConnection: close\r\n"
+                     "Cache-Control: no-store\r\nAccess-Control-Allow-Origin: *\r\n",
+                     ranged ? "206 Partial Content" : "200 OK", content_type,
+                     static_cast<unsigned long long>(length));
+    if (ranged) n += snprintf(header + n, sizeof(header) - static_cast<size_t>(n), "Content-Range: bytes %llu-%llu/%llu\r\n",
+                              static_cast<unsigned long long>(first), static_cast<unsigned long long>(last),
+                              static_cast<unsigned long long>(size));
+    n += snprintf(header + n, sizeof(header) - static_cast<size_t>(n), "\r\n");
+    if (n <= 0 || static_cast<size_t>(n) >= sizeof(header) || !Queue(c, header, static_cast<size_t>(n))) { close(fd); return; }
+    c.closing = true;
+    if (head || !length || (first && lseek(fd, static_cast<off_t>(first), SEEK_SET) < 0)) { close(fd); return; }
+    c.file_fd = fd; c.file_left = length;
+    c.deadline = Now() + kStreamMs;
+}
+// Decodes %XX in place; false on a malformed escape or an embedded NUL.
+bool PercentDecode(const char *in, char *out, size_t capacity) {
+    size_t used = 0;
+    for (; *in; ++in) {
+        unsigned char ch = static_cast<unsigned char>(*in);
+        if (ch == '%') {
+            auto hex = [](char h) { return h >= '0' && h <= '9' ? h - '0' : h >= 'a' && h <= 'f' ? h - 'a' + 10 : h >= 'A' && h <= 'F' ? h - 'A' + 10 : -1; };
+            const int high = in[1] ? hex(in[1]) : -1, low = high >= 0 && in[2] ? hex(in[2]) : -1;
+            if (high < 0 || low < 0) return false;
+            ch = static_cast<unsigned char>(high * 16 + low); in += 2;
+            if (!ch) return false;
+        }
+        if (used + 1 >= capacity) return false;
+        out[used++] = static_cast<char>(ch);
+    }
+    out[used] = 0;
+    return true;
+}
 // `/v1/proxy/{url}` per Satori's resource route: external links must match an advertised
 // proxy_urls prefix (none here, so they are 403), while `internal:{platform}/{user}/{path}`
-// links are served by the owning login. The only internal route we own is `_tmp`, the target
-// of the built-in upload.create. This route deliberately needs no Authorization header so a
-// plain <img src> can use it.
-void Proxy(Client &c, Hub *hub, const char *url) {
+// links are served by the owning login. Two internal routes exist: `_tmp` (the target of the
+// built-in upload.create) and whatever the registered media resolver accepts (received
+// message media, signed by this process). This route deliberately needs no Authorization
+// header so a plain <img src> can use it. Clients differ on whether they percent-encode the
+// link, so it is decoded first.
+void Proxy(Client &c, Hub *hub, const char *raw_url, const char *range, bool head) {
+    char url_buf[2048];
+    if (!PercentDecode(raw_url, url_buf, sizeof(url_buf))) { RawJson(c, 400, "Bad Request", "{\"error\":\"invalid_url\"}"); return; }
+    const char *url = url_buf;
     if (!strncmp(url, "internal:", 9)) {
         const char *platform = url + 9, *slash = strchr(platform, '/');
         if (!slash || slash == platform) { RawJson(c, 400, "Bad Request", "{\"error\":\"invalid_internal_url\"}"); return; }
@@ -126,13 +269,16 @@ void Proxy(Client &c, Hub *hub, const char *url) {
         if (!strncmp(path, "_tmp/", 5)) {
             const TempFile *file = TempStoreGet(path + 5);
             if (!file) { RawJson(c, 404, "Not Found", "{\"error\":\"not_found\"}"); return; }
-            char buffer[kMessage + 1];
             const int fd = open(file->path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
             if (fd < 0) { RawJson(c, 404, "Not Found", "{\"error\":\"not_found\"}"); return; }
-            ssize_t got = read(fd, buffer, kMessage);
-            close(fd);
-            if (got < 0) { RawJson(c, 500, "Internal Server Error", "{}"); return; }
-            Raw(c, 200, "OK", file->content_type, buffer, static_cast<size_t>(got), true);
+            StreamFile(c, fd, file->content_type, range, head);
+            return;
+        }
+        MediaFile media;
+        if (g_media_resolver && g_media_resolver(user_buf, path, &media)) {
+            const int fd = open(media.path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+            if (fd < 0) { RawJson(c, 404, "Not Found", "{\"error\":\"not_found\"}"); return; }
+            StreamFile(c, fd, media.content_type, range, head);
             return;
         }
         RawJson(c, 404, "Not Found", "{\"error\":\"unknown_internal_route\"}");
@@ -265,6 +411,8 @@ void WebSocket(Client &c, const Config &config, Hub *hub) {
                 Signal(c, c.message, c.fragments, config, hub); c.fragments = 0;
             }
         }
+        // A Drop inside Frame/Signal frees the buffers, so nothing below may touch them.
+        if (c.fd < 0 || !c.input) return;
         const size_t consumed = header + 4 + size;
         memmove(c.input, c.input + consumed, c.used - consumed); c.used -= consumed;
     }
@@ -331,14 +479,40 @@ void Http(Client &c, const Config &config, Hub *hub, const Backend *backend, Web
         return const_cast<char *>("");
     };
     if (!*header("Host") || *header("Transfer-Encoding")) { bad(); return; }
-    if (*header("Expect")) { Reply(c, 417, "Expectation Failed", "{}"); return; }
+    const char *expect = header("Expect");
+    const bool wants_continue = !strcasecmp(expect, "100-continue");
+    if (*expect && !wants_continue) { Reply(c, 417, "Expectation Failed", "{}"); return; }
     size_t body_size = 0;
     for (const char *p = header("Content-Length"); *p; ++p) {
         if (*p < '0' || *p > '9') { bad(); return; }
         body_size = body_size * 10 + (*p - '0');
-        if (body_size > kMessage) { Reply(c, 413, "Content Too Large", "{}"); return; }
+        if (body_size > kUploadMax) { Reply(c, 413, "Content Too Large", "{}"); return; }
     }
-    if (c.used < length + body_size) return;
+    // Everything but the upload route keeps the small JSON limit. A large upload is only
+    // buffered for a caller that has already proven it holds the token.
+    if (body_size > kMessage) {
+        if (strcmp(path, "/v1/upload.create")) { Reply(c, 413, "Content Too Large", "{}"); return; }
+        const char *auth = header("Authorization");
+        if (!*auth) { Reply(c, 401, "Unauthorized", "{\"error\":\"missing_token\"}"); return; }
+        if (strncasecmp(auth, "Bearer ", 7) || !EqualToken(config.token, auth + 7)) {
+            Reply(c, 403, "Forbidden", "{\"error\":\"invalid_token\"}"); return;
+        }
+        const size_t need = length + body_size + 1;
+        if (need > c.input_capacity) {
+            char *grown = static_cast<char *>(realloc(c.input, need));
+            if (!grown) { Reply(c, 503, "Service Unavailable", "{\"error\":\"out_of_memory\"}"); return; }
+            c.input = grown; c.input_capacity = need;
+        }
+    }
+    if (c.used < length + body_size) {
+        // curl and some SDKs hold the body back until the server says to go ahead.
+        if (wants_continue && !c.continued) {
+            static const char interim[] = "HTTP/1.1 100 Continue\r\n\r\n";
+            c.continued = true;
+            Queue(c, interim, sizeof(interim) - 1);
+        }
+        return;
+    }
     if (!strcmp(path, "/v1/events")) {
         if (strcmp(method, "GET")) { Reply(c, 405, "Method Not Allowed", "{}", "GET"); return; }
         if (body_size || strcasecmp(header("Upgrade"), "websocket") ||
@@ -347,14 +521,18 @@ void Http(Client &c, const Config &config, Hub *hub, const Backend *backend, Web
         char accept[29], response[256]; WebSocketAccept(header("Sec-WebSocket-Key"), accept);
         const int n = snprintf(response, sizeof(response), "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\n"
                                "Connection: Upgrade\r\nSec-WebSocket-Accept: %s\r\n\r\n", accept);
-        Queue(c, response, n); c.ws = true; g_client_count = g_client_count + 1; c.deadline = Now() + kRequestMs;
+        c.message = static_cast<char *>(malloc(kMessage + 1));
+        if (!c.message) { Reply(c, 503, "Service Unavailable", "{\"error\":\"out_of_memory\"}"); return; }
+        if (!Queue(c, response, n)) return;
+        c.ws = true; g_client_count = g_client_count + 1; c.deadline = Now() + kRequestMs;
         memmove(c.input, c.input + length, c.used - length); c.used -= length;
         return;
     }
     if (!strncmp(path, "/v1/proxy/", 10)) {
-        if (strcmp(method, "GET")) { Reply(c, 405, "Method Not Allowed", "{}", "GET"); return; }
+        const bool head = !strcmp(method, "HEAD");
+        if (strcmp(method, "GET") && !head) { Reply(c, 405, "Method Not Allowed", "{}", "GET, HEAD"); return; }
         if (body_size) { Reply(c, 400, "Bad Request", "{\"error\":\"invalid_request\"}"); return; }
-        Proxy(c, hub, path + 10);
+        Proxy(c, hub, path + 10, header("Range"), head);
         return;
     }
     const char *auth = header("Authorization");
@@ -493,6 +671,7 @@ void Http(Client &c, const Config &config, Hub *hub, const Backend *backend, Web
 void SetStatusProvider(StatusProvider provider) { g_status_provider = provider; }
 void SetWakelockProvider(WakelockProvider provider) { g_wakelock_provider = provider; }
 void SetTempDir(const char *dir) { TempStoreSetDir(dir); }
+void SetMediaResolver(MediaResolver resolver) { g_media_resolver = resolver; }
 
 bool ReadConfig(int fd, Config *config) {
     char data[1025]; size_t used = 0;
@@ -558,13 +737,16 @@ void Run(int listener, const Config &config, EventBus *bus, const Backend *backe
     if (!hooks) { DestroyHub(hub); close(listener); return; }
     auto *clients = static_cast<Client *>(calloc(kClients, sizeof(Client)));
     if (!clients) { DestroyHub(hub); close(listener); return; }
-    for (int i = 0; i < kClients; ++i) clients[i].fd = -1;
+    for (int i = 0; i < kClients; ++i) { clients[i].fd = -1; clients[i].file_fd = -1; }
     for (;;) {
         // Drain a bounded native producer queue before polling clients.
         DrainWake(bus);
-        char event[kEventSize]; bool meta;
-        for (int budget = 0; budget < 32 && Take(bus, event, &meta); ++budget) {
+        bool meta = false;
+        for (int budget = 0; budget < 32; ++budget) {
+            char *event = Take(bus, &meta);
+            if (!event) break;
             char *signal = Apply(hub, event, meta);
+            free(event);
             if (!signal) continue;
             // Message events use per-client history cursors, preserving order and applying backpressure.
             const bool immediate = meta;
@@ -597,8 +779,11 @@ void Run(int listener, const Config &config, EventBus *bus, const Backend *backe
                     uint64_t next = c.cursor;
                     const char *event = NextEvent(hub, &next, c.replay_until);
                     if (!event) { c.cursor = next; break; }
-                    if (strlen(event) + 4 > sizeof(c.output) - (c.pending - c.sent)) break;
+                    // Hold history back while a slow reader still has a backlog, but always let
+                    // one event through so a single large message can never wedge the stream.
+                    if (c.pending - c.sent > kOutputSoft) break;
                     Frame(c, 1, event, strlen(event)); c.cursor = next;
+                    if (c.fd < 0) break;
                 }
             }
             const size_t before = c.used;
@@ -609,7 +794,7 @@ void Run(int listener, const Config &config, EventBus *bus, const Backend *backe
                 if (c.used && c.used < before) wait = 0;
                 if (timeout < 0 || wait < timeout) timeout = wait;
             }
-            fds[i + 1] = {c.fd, static_cast<short>((c.closing ? 0 : POLLIN) | (c.pending > c.sent ? POLLOUT : 0)), 0};
+            fds[i + 1] = {c.fd, static_cast<short>((c.closing ? 0 : POLLIN) | (c.pending > c.sent || c.file_left ? POLLOUT : 0)), 0};
         }
         const int ready = poll(fds, kClients + 2, timeout);
         if (ready < 0) { if (errno == EINTR) continue; break; }
@@ -622,7 +807,11 @@ void Run(int listener, const Config &config, EventBus *bus, const Backend *backe
                 Client *slot = nullptr;
                 for (int i = 0; i < kClients; ++i) if (clients[i].fd < 0) { slot = &clients[i]; break; }
                 if (!slot) { close(fd); continue; }
-                memset(slot, 0, sizeof(*slot)); slot->fd = fd; slot->deadline = Now() + kRequestMs;
+                memset(slot, 0, sizeof(*slot));
+                slot->input = static_cast<char *>(malloc(kInput + 1));
+                if (!slot->input) { close(fd); continue; }
+                slot->input_capacity = kInput + 1;
+                slot->fd = fd; slot->file_fd = -1; slot->deadline = Now() + kRequestMs;
             }
         }
         for (int i = 0; i < kClients; ++i) {
@@ -630,18 +819,22 @@ void Run(int listener, const Config &config, EventBus *bus, const Backend *backe
             if (c.fd < 0 || fds[i + 1].fd != c.fd) continue;
             if (events & (POLLERR | POLLNVAL)) { Drop(c); continue; }
             if (!c.closing && (events & POLLIN)) {
-                const ssize_t n = recv(c.fd, c.input + c.used, kInput - c.used, 0);
+                const ssize_t n = recv(c.fd, c.input + c.used, c.input_capacity - 1 - c.used, 0);
                 if (n > 0) {
                     c.used += n;
                     if (c.ws) WebSocket(c, config, hub); else Http(c, config, hub, backend, hooks);
-                    if (c.used == kInput && !c.closing) { if (c.ws) Close(c, 1009); else Reply(c, 413, "Content Too Large", "{}"); }
+                    if (c.fd >= 0 && c.used == c.input_capacity - 1 && !c.closing) { if (c.ws) Close(c, 1009); else Reply(c, 413, "Content Too Large", "{}"); }
                 } else if (!n || (errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR)) { Drop(c); continue; }
             }
-            if (c.fd >= 0 && c.pending > c.sent && (events & POLLOUT)) {
-                const ssize_t n = send(c.fd, c.output + c.sent, c.pending - c.sent, MSG_NOSIGNAL);
-                if (n > 0) c.sent += n;
-                else if (n < 0 && errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR) { Drop(c); continue; }
-                if (c.sent == c.pending) { c.sent = c.pending = 0; if (c.closing) Drop(c); }
+            if (c.fd >= 0 && (c.pending > c.sent || c.file_left) && (events & POLLOUT)) {
+                // A streamed body is pulled from its file only once the socket has drained.
+                if (c.pending == c.sent && c.file_left && !FillFromFile(c)) { Drop(c); continue; }
+                if (c.pending > c.sent) {
+                    const ssize_t n = send(c.fd, c.output + c.sent, c.pending - c.sent, MSG_NOSIGNAL);
+                    if (n > 0) { c.sent += n; if (c.file_left) c.deadline = Now() + kStreamMs; }
+                    else if (n < 0 && errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR) { Drop(c); continue; }
+                }
+                if (c.sent == c.pending && !c.file_left) { c.sent = c.pending = 0; if (c.closing) Drop(c); }
             }
             if (c.fd >= 0 && (events & POLLHUP) && !(events & POLLIN)) Drop(c);
         }

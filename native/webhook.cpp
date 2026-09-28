@@ -1,4 +1,5 @@
 #include "webhook.h"
+#include "protocol.h"
 #include <errno.h>
 #include <fcntl.h>
 #include <netdb.h>
@@ -16,7 +17,6 @@ namespace satori {
 namespace {
 constexpr size_t kMaxHooks = 4;
 constexpr size_t kQueueDepth = 64;
-constexpr size_t kBodyMax = 4096;
 constexpr int kConnectTimeoutMs = 3000;
 constexpr int kIoTimeoutSeconds = 3;
 
@@ -26,10 +26,11 @@ struct Hook {
     char path[512];
     char token[129];
 };
+// Bodies are heap copies (an event can be up to kEventSize); the queue only bounds their count.
 struct Entry {
     int opcode;
     size_t size;
-    char body[kBodyMax];
+    char *body;
 };
 } // namespace
 
@@ -191,6 +192,7 @@ void *DeliverLoop(void *argument) {
         const size_t count = hooks->count;
         memcpy(targets, hooks->hooks, count * sizeof(Hook));
         Entry entry = hooks->queue[hooks->head];
+        hooks->queue[hooks->head].body = nullptr;
         hooks->head = (hooks->head + 1) % kQueueDepth;
         --hooks->used;
         pthread_mutex_unlock(&hooks->mutex);
@@ -205,6 +207,7 @@ void *DeliverLoop(void *argument) {
                 pthread_mutex_unlock(&hooks->mutex);
             }
         }
+        free(entry.body);
     }
     return nullptr;
 }
@@ -294,18 +297,20 @@ size_t WebHookCount(WebHooks *hooks) {
 void PushWebHook(WebHooks *hooks, int opcode, const char *body) {
     if (!hooks || !body) return;
     const size_t size = strlen(body);
-    if (size >= kBodyMax) return;
+    if (size >= kEventSize) return;
     pthread_mutex_lock(&hooks->mutex);
     if (!hooks->count || hooks->used == kQueueDepth) {
         if (hooks->count) ++hooks->dropped;
         pthread_mutex_unlock(&hooks->mutex);
         return;
     }
+    char *copy = static_cast<char *>(malloc(size + 1));
+    if (!copy) { ++hooks->dropped; pthread_mutex_unlock(&hooks->mutex); return; }
+    memcpy(copy, body, size + 1);
     Entry &entry = hooks->queue[(hooks->head + hooks->used) % kQueueDepth];
     entry.opcode = opcode;
     entry.size = size;
-    memcpy(entry.body, body, size);
-    entry.body[size] = 0;
+    entry.body = copy;
     ++hooks->used;
     pthread_cond_signal(&hooks->cond);
     pthread_mutex_unlock(&hooks->mutex);

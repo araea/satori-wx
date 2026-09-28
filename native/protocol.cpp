@@ -304,7 +304,7 @@ struct EventBus {
     pthread_mutex_t mutex;
     int fd;
     unsigned head, count;
-    struct { bool meta; char json[kEventSize]; } entries[32];
+    struct { bool meta; char *json; } entries[32];
 };
 EventBus *CreateBus() {
     auto *bus = static_cast<EventBus *>(calloc(1, sizeof(EventBus)));
@@ -316,15 +316,22 @@ EventBus *CreateBus() {
 }
 void DestroyBus(EventBus *bus) {
     if (!bus) return;
+    for (unsigned i = 0; i < bus->count; ++i) free(bus->entries[(bus->head + i) % 32].json);
     close(bus->fd); pthread_mutex_destroy(&bus->mutex); free(bus);
 }
 int BusFd(EventBus *bus) { return bus ? bus->fd : -1; }
 bool Publish(EventBus *bus, const char *json, bool meta) {
-    if (!bus || !json || strlen(json) >= kEventSize) return false;
+    if (!bus || !json) return false;
+    const size_t size = strlen(json);
+    if (size >= kEventSize) return false;
+    // Copy before taking the lock so a slow allocator never stalls the consumer.
+    char *copy = static_cast<char *>(malloc(size + 1));
+    if (!copy) return false;
+    memcpy(copy, json, size + 1);
     pthread_mutex_lock(&bus->mutex);
-    if (bus->count == 32) { pthread_mutex_unlock(&bus->mutex); return false; }
+    if (bus->count == 32) { pthread_mutex_unlock(&bus->mutex); free(copy); return false; }
     auto &entry = bus->entries[(bus->head + bus->count++) % 32];
-    entry.meta = meta; strcpy(entry.json, json);
+    entry.meta = meta; entry.json = copy;
     pthread_mutex_unlock(&bus->mutex);
     uint64_t one = 1;
     while (write(bus->fd, &one, sizeof(one)) < 0 && errno == EINTR) {}
@@ -335,23 +342,23 @@ void DrainWake(EventBus *bus) {
     uint64_t value;
     while (read(bus->fd, &value, sizeof(value)) < 0 && errno == EINTR) {}
 }
-bool Take(EventBus *bus, char out[kEventSize], bool *meta) {
-    if (!bus) return false;
+char *Take(EventBus *bus, bool *meta) {
+    if (!bus) return nullptr;
+    char *json = nullptr;
     pthread_mutex_lock(&bus->mutex);
-    const bool found = bus->count != 0;
-    if (found) {
-        const auto &entry = bus->entries[bus->head];
-        strcpy(out, entry.json); *meta = entry.meta;
+    if (bus->count != 0) {
+        auto &entry = bus->entries[bus->head];
+        json = entry.json; *meta = entry.meta; entry.json = nullptr;
         bus->head = (bus->head + 1) % 32; --bus->count;
     }
     pthread_mutex_unlock(&bus->mutex);
-    return found;
+    return json;
 }
 struct Hub {
     cJSON *meta;
     uint64_t epoch, latest, floor, lost_through;
     unsigned head, count;
-    struct { uint64_t sn; bool login_event; char json[kEventSize]; } history[kHistory];
+    struct { uint64_t sn; bool login_event; char *json; } history[kHistory];
 };
 Hub *CreateHub() {
     auto *hub = static_cast<Hub *>(calloc(1, sizeof(Hub)));
@@ -364,7 +371,11 @@ Hub *CreateHub() {
     hub->latest = hub->floor = hub->lost_through = hub->epoch;
     return hub;
 }
-void DestroyHub(Hub *hub) { if (hub) { cJSON_Delete(hub->meta); free(hub); } }
+void DestroyHub(Hub *hub) {
+    if (!hub) return;
+    for (unsigned i = 0; i < hub->count; ++i) free(hub->history[(hub->head + i) % kHistory].json);
+    cJSON_Delete(hub->meta); free(hub);
+}
 const cJSON *Meta(Hub *hub) { return hub->meta; }
 const cJSON *FindLogin(Hub *hub, const char *platform, const char *user) {
     for (const cJSON *p = Item(hub->meta, "logins")->child; p; p = p->next) {
@@ -469,12 +480,16 @@ char *Apply(Hub *hub, const char *json, bool meta) {
     if (!Integer(Item(body, "timestamp"))) { cJSON_Delete(body); return nullptr; }
     signal = Envelope(0, body);
     if (!signal || strlen(signal) >= kEventSize) { free(signal); cJSON_Delete(body); return nullptr; }
+    // The history keeps its own copy of the signal. Allocate it before anything is committed so
+    // an allocation failure leaves the hub exactly as it was.
+    char *stored = strdup(signal);
+    if (!stored) { free(signal); cJSON_Delete(body); return nullptr; }
     if (login_event) {
         // Commit the new snapshot only after allocation and size validation succeed.
         cJSON *next_meta = cJSON_Duplicate(hub->meta, true);
         cJSON *copy = removed ? nullptr : cJSON_Duplicate(login, true);
         if (!next_meta || (!removed && !copy)) {
-            cJSON_Delete(next_meta); cJSON_Delete(copy); free(signal); cJSON_Delete(body); return nullptr;
+            cJSON_Delete(next_meta); cJSON_Delete(copy); free(stored); free(signal); cJSON_Delete(body); return nullptr;
         }
         cJSON *next_logins = cJSON_GetObjectItemCaseSensitive(next_meta, "logins");
         bool ok = true;
@@ -485,7 +500,7 @@ char *Apply(Hub *hub, const char *json, bool meta) {
         char *snapshot = cJSON_PrintUnformatted(next_meta);
         ok = ok && snapshot && strlen(snapshot) < 12000;
         free(snapshot);
-        if (!ok) { cJSON_Delete(next_meta); free(signal); cJSON_Delete(body); return nullptr; }
+        if (!ok) { cJSON_Delete(next_meta); free(stored); free(signal); cJSON_Delete(body); return nullptr; }
         cJSON_Delete(hub->meta); hub->meta = next_meta;
         int online = 0;
         const cJSON *logins_now = Item(next_meta, "logins");
@@ -495,13 +510,14 @@ char *Apply(Hub *hub, const char *json, bool meta) {
     }
     ++hub->latest;
     if (hub->count == kHistory) {
-        const auto &old = hub->history[hub->head];
+        auto &old = hub->history[hub->head];
         if (!old.login_event) hub->floor = old.sn;
         hub->lost_through = old.sn;
+        free(old.json); old.json = nullptr;
         hub->head = (hub->head + 1) % kHistory; --hub->count;
     }
     auto &entry = hub->history[(hub->head + hub->count++) % kHistory];
-    entry.sn = hub->latest; entry.login_event = login_event; strcpy(entry.json, signal);
+    entry.sn = hub->latest; entry.login_event = login_event; entry.json = stored;
     cJSON_Delete(body); return signal;
 }
 } // namespace satori

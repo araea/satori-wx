@@ -26,6 +26,17 @@ void SetTempDir(const char *dir);
 // resulting user intent. When null the endpoint reports 501.
 using WakelockProvider = void (*)(int action, bool *held);
 void SetWakelockProvider(WakelockProvider provider);
+// Resolves a message-media route under `/v1/proxy/internal:<platform>/<user>/<path>` (any path
+// other than `_tmp/...`) to a local file. The resolver owns the authorization of the link: the
+// route needs no Authorization header, so it must reject anything that was not issued by this
+// process' own signer. `path` is what follows `<user>/`. Registered by the module; when null,
+// every such route answers 404.
+struct MediaFile {
+    char path[1400];
+    char content_type[64];
+};
+using MediaResolver = bool (*)(const char *user, const char *path, MediaFile *out);
+void SetMediaResolver(MediaResolver resolver);
 // fd is borrowed. Invalid/missing token prevents startup. No anonymous mode.
 bool ReadConfig(int fd, Config *config);
 int Listen(const Config &config); // Returns owned nonblocking loopback listener, or -1.

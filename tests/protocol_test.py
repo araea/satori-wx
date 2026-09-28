@@ -5,6 +5,7 @@ import json
 import os
 import pathlib
 import struct
+import socket
 import subprocess
 import sys
 import tempfile
@@ -49,7 +50,8 @@ PARAMS = {
 class ProtocolTests(unittest.TestCase):
     def setUp(self):
         read, self.write = os.pipe()
-        env = dict(os.environ, SATORI_TEST_EVENT_FD=str(read),
+        self.media = tempfile.mkdtemp(prefix='satori-media-')
+        env = dict(os.environ, SATORI_TEST_EVENT_FD=str(read), SATORI_TEST_MEDIA_DIR=self.media,
                    SATORI_TMPDIR=tempfile.mkdtemp(prefix='satori-upload-'))
         self.proc = subprocess.Popen([wire.BINARY, '--fixture'], stdin=subprocess.PIPE, stdout=subprocess.PIPE, pass_fds=(read,), env=env)
         os.close(read)
@@ -58,6 +60,7 @@ class ProtocolTests(unittest.TestCase):
         self.base = self.http('internal/status')[1]['sequence']
     def tearDown(self):
         os.close(self.write); self.proc.terminate(); self.proc.wait(timeout=3); self.proc.stdout.close()
+        import shutil; shutil.rmtree(self.media, ignore_errors=True)
     def http(self, name, body=None, headers=None):
         h = {'Satori-Platform': 'wechat', 'Satori-User-ID': 'fixture'}
         h.update(headers or {})
@@ -118,6 +121,100 @@ class ProtocolTests(unittest.TestCase):
         self.assertEqual(wire.ServerTests.raw_http('/v1/proxy/internal:wechat/fixture/_tmp/missing')[0], 404)
         self.assertEqual(wire.ServerTests.raw_http('/v1/proxy/https://example.com/a.png')[0], 403)
         self.assertEqual(wire.ServerTests.raw_http('/v1/proxy/internal:wechat/fixture/_tmp/x', method='POST')[0], 405)
+    def multipart(self, payload, name='a.bin', ctype='application/octet-stream'):
+        body = (b'--boundary\r\nContent-Disposition: form-data; name="file"; filename="' + name.encode() + b'"\r\n'
+                b'Content-Type: ' + ctype.encode() + b'\r\n\r\n' + payload + b'\r\n--boundary--\r\n')
+        return body, {'Content-Type': 'multipart/form-data; boundary="boundary"', 'Satori-Platform': 'wechat', 'Satori-User-ID': 'fixture'}
+    def test_large_upload_and_streamed_proxy(self):
+        # Far past the 16 KiB JSON limit: upload.create takes a real file, and the proxy streams
+        # it back in chunks instead of truncating at one read.
+        payload = os.urandom(3 * 1024 * 1024 + 17)
+        body, h = self.multipart(payload)
+        status, result = wire.ServerTests.http(self, '/v1/upload.create', body, headers=h)
+        self.assertEqual(status, 200, result)
+        url = result['file']
+        pstatus, headers, pbody = wire.ServerTests.raw_http('/v1/proxy/' + url)
+        self.assertEqual(pstatus, 200)
+        self.assertEqual(int(headers['content-length']), len(payload))
+        self.assertEqual(pbody, payload)
+        self.assertEqual(headers['accept-ranges'], 'bytes')
+        # Percent-encoded links (some SDKs encode the whole internal: URL) resolve the same.
+        import urllib.parse
+        self.assertEqual(wire.ServerTests.raw_http('/v1/proxy/' + urllib.parse.quote(url, safe=''))[2], payload)
+        # Byte ranges, for players that seek.
+        for spec, expected, code in [('bytes=10-19', payload[10:20], 206), ('bytes=-5', payload[-5:], 206),
+                                     ('bytes=%d-' % (len(payload) - 3), payload[-3:], 206),
+                                     ('bytes=0-99999999999', payload, 206)]:
+            with self.subTest(range=spec):
+                rstatus, rheaders, rbody = wire.ServerTests.raw_http('/v1/proxy/' + url, headers={'Range': spec})
+                self.assertEqual((rstatus, rbody), (code, expected))
+                self.assertIn('content-range', rheaders)
+        rstatus, rheaders, _ = wire.ServerTests.raw_http('/v1/proxy/' + url, headers={'Range': 'bytes=%d-' % (len(payload) + 5)})
+        self.assertEqual(rstatus, 416)
+        self.assertEqual(rheaders['content-range'], 'bytes */%d' % len(payload))
+        # HEAD announces the length and sends no body.
+        hstatus, hheaders, hbody = wire.ServerTests.raw_http('/v1/proxy/' + url, method='HEAD')
+        self.assertEqual((hstatus, int(hheaders['content-length']), hbody), (200, len(payload), b''))
+    def test_large_upload_needs_token_before_the_body(self):
+        big = b'{"pad":"' + b'a' * 20000 + b'"}'
+        # An oversized JSON body is refused outright...
+        self.assertEqual(self.http('message.get', json.loads(big))[0], 413)
+        # ...and a big upload from a caller without the token is refused from the headers alone,
+        # before any of the body is read (nothing follows the headers here).
+        for auth, code in [(None, 401), ('b' * 64, 403)]:
+            with Wire() as w:
+                head = (b'POST /v1/upload.create HTTP/1.1\r\nHost: x\r\nContent-Type: multipart/form-data; boundary=b\r\n'
+                        b'Content-Length: 5000000\r\n' + (b'Authorization: Bearer ' + auth.encode() + b'\r\n' if auth else b'') + b'\r\n')
+                w.sock.sendall(head)
+                self.assertEqual(int(w.file.readline().split()[1]), code)
+    def test_expect_continue(self):
+        body, h = self.multipart(b'expect-me')
+        with Wire() as w:
+            head = (b'POST /v1/upload.create HTTP/1.1\r\nHost: x\r\nExpect: 100-continue\r\nAuthorization: Bearer ' + TOKEN.encode() +
+                    b'\r\nSatori-Platform: wechat\r\nSatori-User-ID: fixture\r\nContent-Type: ' + h['Content-Type'].encode() +
+                    b'\r\nContent-Length: ' + str(len(body)).encode() + b'\r\n\r\n')
+            w.sock.sendall(head)
+            self.assertEqual(w.file.readline(), b'HTTP/1.1 100 Continue\r\n')
+            self.assertEqual(w.file.readline(), b'\r\n')
+            w.sock.sendall(body)
+            self.assertEqual(int(w.file.readline().split()[1]), 200)
+        with Wire() as w:  # Any other expectation is still refused.
+            w.sock.sendall(b'POST /v1/meta HTTP/1.1\r\nHost: x\r\nExpect: something\r\n\r\n')
+            self.assertEqual(int(w.file.readline().split()[1]), 417)
+    def test_media_resolver_route(self):
+        payload = bytes(range(256)) * 4096
+        with open(os.path.join(self.media, 'clip.mp4'), 'wb') as f: f.write(payload)
+        with open(os.path.join(self.media, 'denied'), 'wb') as f: f.write(b'secret')
+        status, headers, body = wire.ServerTests.raw_http('/v1/proxy/internal:wechat/fixture/_msg/clip.mp4')
+        self.assertEqual((status, body, headers['content-type']), (200, payload, 'video/mp4'))
+        # The resolver decides what is served; a refused link is indistinguishable from an unknown one.
+        self.assertEqual(wire.ServerTests.raw_http('/v1/proxy/internal:wechat/fixture/_msg/denied')[0], 404)
+        self.assertEqual(wire.ServerTests.raw_http('/v1/proxy/internal:wechat/fixture/_msg/missing')[0], 404)
+        self.assertEqual(wire.ServerTests.raw_http('/v1/proxy/internal:wechat/fixture/_other/clip.mp4')[0], 404)
+        self.assertEqual(wire.ServerTests.raw_http('/v1/proxy/internal:wechat/nobody/_msg/clip.mp4')[0], 404)
+    def test_stalled_reader_does_not_block_others(self):
+        with open(os.path.join(self.media, 'big.mp4'), 'wb') as f: f.write(os.urandom(8 * 1024 * 1024))
+        slow = socket.create_connection(('127.0.0.1', wire.PORT), timeout=3)
+        slow.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 4096)
+        try:
+            slow.sendall(b'GET /v1/proxy/internal:wechat/fixture/_msg/big.mp4 HTTP/1.1\r\nHost: x\r\n\r\n')
+            time.sleep(.3)  # never read: the server must park this stream, not spin or buffer it all
+            self.assertEqual(self.http('meta')[0], 200)
+            self.assertEqual(len(wire.ServerTests.raw_http('/v1/proxy/internal:wechat/fixture/_msg/big.mp4')[2]), 8 * 1024 * 1024)
+        finally: slow.close()
+    def test_large_response_and_large_event(self):
+        status, body = self.http('message.list', {'channel_id': 'big'})
+        self.assertEqual((status, len(body['data'])), (200, 40))  # ~160 KB of JSON in one reply
+        text = '长' * 30000  # ~90 KB of UTF-8 in a single event, past the old 4 KiB cap
+        with Wire() as w:
+            w.upgrade(); w.identify()
+            self.publish(self.event(text))
+            got = json.loads(w.receive()[1])['body']['message']['content']
+            self.assertEqual(got, text)
+            sn = self.http('internal/status')[1]['sequence']
+        with Wire() as w:  # ...and it replays in full to a client that resumes across it.
+            w.upgrade(); w.identify(sn=sn - 1)
+            self.assertEqual(json.loads(w.receive()[1])['body']['message']['content'], text)
     def test_ready_login_and_meta(self):
         with Wire() as w:
             w.upgrade(); _, ready = w.identify()

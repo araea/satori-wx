@@ -28,9 +28,27 @@ void *Input(void *) {
     }
     fclose(input); return nullptr;
 }
+// Stands in for the module's signed message-media resolver: `_msg/<name>` maps to a file in
+// $SATORI_TEST_MEDIA_DIR, and `_msg/denied` is refused, so the route contract (404 for a
+// refused link, streaming for an accepted one) is exercised without a WeChat store.
+bool Media(const char *, const char *path, satori::MediaFile *out) {
+    const char *directory = getenv("SATORI_TEST_MEDIA_DIR");
+    if (!directory || strncmp(path, "_msg/", 5) || !strcmp(path + 5, "denied") || strchr(path + 5, '/') || strstr(path + 5, "..")) return false;
+    snprintf(out->path, sizeof(out->path), "%s/%s", directory, path + 5);
+    snprintf(out->content_type, sizeof(out->content_type), "%s", "video/mp4");
+    return true;
+}
 satori::Response Call(void *, const satori::Request &r) {
     cJSON *result = nullptr;
     const char *name = r.method->name;
+    if (!strcmp(name, "message.list") && cJSON_IsString(cJSON_GetObjectItemCaseSensitive(r.params, "channel_id")) &&
+        !strcmp(cJSON_GetObjectItemCaseSensitive(r.params, "channel_id")->valuestring, "big")) {
+        // A response far larger than any fixed buffer the server used to have.
+        result = cJSON_CreateObject(); cJSON *data = cJSON_AddArrayToObject(result, "data");
+        char text[4001]; memset(text, 'x', 4000); text[4000] = 0;
+        for (int i = 0; i < 40; ++i) { cJSON *m = cJSON_CreateObject(); cJSON_AddStringToObject(m, "content", text); cJSON_AddItemToArray(data, m); }
+        return {200, result};
+    }
     if (!strcmp(name, "message.create")) {
         result = cJSON_CreateArray(); cJSON *m = cJSON_CreateObject();
         cJSON_AddStringToObject(m, "id", "fixture-message");
@@ -83,6 +101,7 @@ int main(int argc, char **) {
     sockaddr_in address{}; socklen_t size = sizeof(address);
     if (getsockname(fd, reinterpret_cast<sockaddr *>(&address), &size)) return 4;
     printf("%u\n", ntohs(address.sin_port)); fflush(stdout);
+    satori::SetMediaResolver(Media);
     const satori::Backend backend{nullptr, Call};
     satori::Run(fd, config, bus, fixture ? &backend : nullptr);
 }
