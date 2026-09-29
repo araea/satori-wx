@@ -13,7 +13,7 @@
 | login.get / meta / READY | 同一份登录快照；登录身份由只读偏好解析得到，无账号时为空 |
 | message.create / update 的 content | 保留 Satori 标记字符串；提供 native 文本转义 helper，不把标记当 HTML 执行 |
 | message.create（发送） | 反射调微信自己的发送管线；内容按 `<img>` 切成有序的文本 / 图片消息，**返回 `Message[]`（官方客户端对结果调用 `.map()`）**；文本走 `NetSceneSendMsg`，群里的 `<at>` 是真提及（`atuserlist`），图片走聊天界面自己的 `rj()` 管线；不限目标、不限速；成功＝已派发，非投递确认（图片要等库里出现行才回 200） |
-| message.create 的图片 | `src` 只认 `upload.create` 的 `internal:` 链接与 `data:image/…;base64`；所有图片先解析、核对魔数，坏一张整条 400（`media_unresolved` / `media_unsupported` / `image_too_large` / `too_many_images`）；6 秒内没入库回 502 `image_unconfirmed`，不假报成功。见 [发送各类消息](wechat-send-types.md) |
+| message.create 的图片 | `src` 只认 `upload.create` 的 `internal:` 链接、`data:image/…;base64` 与 `base64://`；所有图片先解析、核对魔数，坏一张整条 400（`media_unresolved` / `media_unsupported` / `image_too_large` / `too_many_images`）；6 秒内没入库回 502 `image_unconfirmed`，不假报成功。见 [发送各类消息](wechat-send-types.md) |
 | message.create 的其它媒体元素 | 只带 `<audio>` `<video>` `<file>` 的 content 回 400 `media_unsupported`；与文字同在时元素被丢弃、文字照发；`<quote>` 同样被丢弃（回复没做） |
 | message.delete（撤回） | 用 `ex0.k0.F0.k(talker,localId)` 取 MsgInfo，反射调 `com.tencent.mm.modelsimple.d1`（cgi revokemsg）；只撤回本账号消息 |
 | channel.delete / guild.member.kick | 反射 `qn.p`（cgi delchatroommember），退群用 `[self]`，踢人用目标 wxid |

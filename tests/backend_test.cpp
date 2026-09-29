@@ -155,6 +155,19 @@ int main() {
         cJSON_Delete(wrong_type.body);
     }
     {
+        // The base64:// scheme (the same one satori-qq takes) without a mime: the format is
+        // sniffed from the magic bytes.
+        const Outcome outcome = Create("<img src=\"base64://iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/q842iQAAAABJRU5ErkJggg==\"/>");
+        Check(outcome.status == 502 && !strcmp(Code(outcome), "send_failed"), "a base64:// picture is decoded and reaches the sender");
+        cJSON_Delete(outcome.body);
+        const Outcome not_image = Create("<img src=\"base64://aGVsbG8gd29ybGQ=\"/>");
+        Check(not_image.status == 400 && !strcmp(Code(not_image), "media_unsupported"), "a base64:// blob that is not a picture");
+        cJSON_Delete(not_image.body);
+        const Outcome garbage = Create("<img src=\"base64://!!!!\"/>");
+        Check(garbage.status == 400 && !strcmp(Code(garbage), "media_unresolved"), "undecodable base64://");
+        cJSON_Delete(garbage.body);
+    }
+    {
         // Text and picture mixed: the request is validated as a whole. A bad picture stops the
         // text before it from going out, which shows in the error code (400, not 502).
         const Outcome outcome = Create("先说这个<img src=\"https://example.invalid/a.png\"/>再说那个");

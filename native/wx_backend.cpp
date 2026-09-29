@@ -116,7 +116,7 @@ bool MentionName(void *context, const char *id, char *name, size_t capacity) {
 // resolved to a local file, and checked to really be a picture, before the first message goes
 // out: a bad link fails the whole request instead of leaving half of it sent.
 constexpr size_t kSegments = 2 * kImages + 1;
-constexpr size_t kImageMax = 8u << 20;             // decoded bytes accepted from a data: URI
+constexpr size_t kImageMax = 8u << 20;             // decoded bytes accepted from an inline source
 constexpr int kImageConfirmMs = 6000;              // how long to wait for WeChat to insert the picture's row
 
 struct Segment {
@@ -142,8 +142,40 @@ bool FileIsImage(const char *path) {
     return LooksLikeImage(head, got);
 }
 
-// A data:image/...;base64,... source -> a temp file (the same store upload.create uses, so it
-// expires by itself). Returns the file's path, or a failure code for the client.
+// A decoded picture -> a temp file (the same store upload.create uses, so it expires by
+// itself). mime may be empty, in which case the extension comes from the magic bytes.
+const char *StoreDecodedImage(const unsigned char *bytes, size_t size, const char *mime, char *path, size_t capacity) {
+    if (size > kImageMax) return "image_too_large";
+    if (!LooksLikeImage(bytes, size)) return "media_unsupported";
+    const char *extension = mime && !strncasecmp(mime, "image/png", 9) ? "picture.png"
+                          : mime && !strncasecmp(mime, "image/gif", 9) ? "picture.gif"
+                          : mime && !strncasecmp(mime, "image/webp", 10) ? "picture.webp"
+                          : size >= 4 && bytes[0] == 0x89 && bytes[1] == 'P' ? "picture.png"
+                          : size >= 4 && !memcmp(bytes, "GIF8", 4) ? "picture.gif"
+                          : size >= 12 && !memcmp(bytes, "RIFF", 4) ? "picture.webp" : "picture.jpg";
+    char name[160];
+    if (!TempStorePut(extension, "application/octet-stream", reinterpret_cast<const char *>(bytes), size, name, sizeof(name))) {
+        return "media_unresolved";
+    }
+    const TempFile *file = TempStoreGet(name);
+    if (!file || strlen(file->path) >= capacity) return "media_unresolved";
+    memcpy(path, file->path, strlen(file->path) + 1);
+    return nullptr;
+}
+
+// A base64 payload -> a temp file. mime may be empty.
+const char *DecodeBase64Image(const char *b64, size_t length, const char *mime, char *path, size_t capacity) {
+    if (length / 4 * 3 > kImageMax + 3) return "image_too_large";
+    auto *bytes = static_cast<unsigned char *>(malloc(length / 4 * 3 + 4));
+    if (!bytes) return "media_unresolved";
+    const long size = Base64Decode(b64, length, bytes, length / 4 * 3 + 4);
+    const char *failure = size <= 0 ? "media_unresolved"
+                        : StoreDecodedImage(bytes, static_cast<size_t>(size), mime, path, capacity);
+    free(bytes);
+    return failure;
+}
+
+// A data:image/...;base64,... source -> a temp file.
 const char *DecodeDataUri(const char *src, char *path, size_t capacity) {
     const char *comma = strchr(src, ',');
     if (!comma) return "media_unresolved";
@@ -154,33 +186,12 @@ const char *DecodeDataUri(const char *src, char *path, size_t capacity) {
     header[header_size] = 0;
     if (!strcasestr(header, ";base64")) return "media_unresolved";
     if (strncasecmp(header, "data:image/", 11)) return "media_unsupported";
-    const size_t encoded = strlen(comma + 1);
-    if (encoded / 4 * 3 > kImageMax + 3) return "image_too_large";
-    auto *bytes = static_cast<unsigned char *>(malloc(encoded / 4 * 3 + 4));
-    if (!bytes) return "media_unresolved";
-    const long size = Base64Decode(comma + 1, encoded, bytes, encoded / 4 * 3 + 4);
-    const char *failure = nullptr;
-    if (size <= 0) failure = "media_unresolved";
-    else if (static_cast<size_t>(size) > kImageMax) failure = "image_too_large";
-    else if (!LooksLikeImage(bytes, static_cast<size_t>(size))) failure = "media_unsupported";
-    if (!failure) {
-        const char *extension = !strncasecmp(src + 5, "image/png", 9) ? "picture.png" : !strncasecmp(src + 5, "image/gif", 9) ? "picture.gif" :
-                                !strncasecmp(src + 5, "image/webp", 10) ? "picture.webp" : "picture.jpg";
-        char name[160];
-        if (!TempStorePut(extension, "application/octet-stream", reinterpret_cast<const char *>(bytes), static_cast<size_t>(size), name, sizeof(name))) {
-            failure = "media_unresolved";
-        } else {
-            const TempFile *file = TempStoreGet(name);
-            if (!file || strlen(file->path) >= capacity) failure = "media_unresolved";
-            else memcpy(path, file->path, strlen(file->path) + 1);
-        }
-    }
-    free(bytes);
-    return failure;
+    return DecodeBase64Image(comma + 1, strlen(comma + 1), src + 5, path, capacity);
 }
 
 // Resolves one <img src> to a local file. Only sources this adapter can honour are accepted:
-// its own upload.create links, and pictures carried inline as data: URIs. WeChat has no public
+// its own upload.create links, pictures carried inline as data: URIs, and the community
+// base64:// scheme (no mime, the format is sniffed from the magic bytes). WeChat has no public
 // URL for a picture and this build has no HTTP client, so a remote URL is refused with a message
 // that says what to do instead.
 const char *ResolveImage(const char *src, char *path, size_t capacity, const char **detail) {
@@ -194,6 +205,12 @@ const char *ResolveImage(const char *src, char *path, size_t capacity, const cha
         const char *failure = DecodeDataUri(src, path, capacity);
         if (failure) {
             *detail = !strcmp(failure, "image_too_large") ? "inline pictures are limited to 8 MiB" : "expected data:image/...;base64,...";
+            return failure;
+        }
+    } else if (!strncasecmp(src, "base64://", 9)) {
+        const char *failure = DecodeBase64Image(src + 9, strlen(src + 9), "", path, capacity);
+        if (failure) {
+            *detail = !strcmp(failure, "image_too_large") ? "inline pictures are limited to 8 MiB" : "expected base64://<base64-encoded picture>";
             return failure;
         }
     } else {

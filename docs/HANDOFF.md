@@ -1,6 +1,6 @@
 # 开发者指引
 
-仓库位于 `/data/data/com.termux/files/home/dev/araea/satori-wx`（GitHub 私有 `araea/satori-wx`，`gh` 要 `env -u GH_TOKEN`）。先读本文，再按需翻 [`README.md`](../README.md) 与本文列出的其他文档。
+仓库位于 `/data/data/com.termux/files/home/dev/araea/satori-wx`（GitHub 公开仓 `araea/satori-wx`，注意 docs 与测试夹具里有真实 wxid/uin/nick；`gh` 要 `env -u GH_TOKEN`）。先读本文，再按需翻 [`README.md`](../README.md) 与本文列出的其他文档。
 
 ## 是什么
 
@@ -8,7 +8,7 @@
 
 纯 native C++：无 DEX、无 Java 助手、无 ArtMethod 改写、无 hook 引擎。连发送都是纯反射调用微信自己的代码，不加载任何额外东西。
 
-当前版本 v0.11.3：唤醒锁默认开。v0.11.2 曾把常驻通知改成单行收起态，已整体撤回（通知仍是标题加一行、展开正文带在线时长的老样子）；v0.11.3 只改一处——用户唤醒锁默认开，开机后第一个 keeper tick 就持上不定时的 CPU + Wi-Fi 锁，按钮与 `POST /v1/internal/wakelock` 关掉只管本次开机。v0.11.0 之前读侧与事件侧补齐、发送侧有了群内 @ 与图片；v0.11.0 把新消息的到达从 1–2 秒一拍的轮询改成 inotify 驱动（毫秒级），把 wxguard 的解冻从 5 秒轮询改成 cgroup 事件驱动（几毫秒），撤掉发送开关（写方法始终在 features 里；旧配置里的 `send=` 仍被接受但不起作用），并整理了常驻通知（不再重复标题、不再显示唤醒锁与发送状态）；v0.11.1 修了图片发送的确认（空壳行不算发出）。
+当前版本 v0.11.4：`message.create` 的图片 `src` 额外接受 `base64://`（社区通用 scheme，无 mime，按魔数定格式）——知微发图片就是这种，此前被当远程 URL 拒掉。v0.11.3：唤醒锁默认开。v0.11.2 曾把常驻通知改成单行收起态，已整体撤回（通知仍是标题加一行、展开正文带在线时长的老样子）；v0.11.3 只改一处——用户唤醒锁默认开，开机后第一个 keeper tick 就持上不定时的 CPU + Wi-Fi 锁，按钮与 `POST /v1/internal/wakelock` 关掉只管本次开机。v0.11.0 之前读侧与事件侧补齐、发送侧有了群内 @ 与图片；v0.11.0 把新消息的到达从 1–2 秒一拍的轮询改成 inotify 驱动（毫秒级），把 wxguard 的解冻从 5 秒轮询改成 cgroup 事件驱动（几毫秒），撤掉发送开关（写方法始终在 features 里；旧配置里的 `send=` 仍被接受但不起作用），并整理了常驻通知（不再重复标题、不再显示唤醒锁与发送状态）；v0.11.1 修了图片发送的确认（空壳行不算发出）。
 
 - 收到的消息按 Satori 元素解码（图片 / 语音 / 视频 / 表情 / 链接 / 文件 / 回复 / @），媒体是签名链接，由 `/v1/proxy` 流式回包，见 [消息内容](wechat-content.md)。
 - 事件：`message-created`（带 `guild` `member` 与头像）、`message-deleted`、`guild-member-added|removed`、`guild-added|removed`、`friend-added|removed`，见 [事件](wechat-events.md)。
@@ -130,7 +130,7 @@ token=<32-128 位字母数字-_>
 `message.create` 的 `content` 按 `<img>` 切成有序的文本 / 图片消息：
 
 - 文本段先拍平：保留转义文本、`<br/>` 变换行、`<a href>` 在文字后带上目标，丢掉 `<quote>`、`<emoji>` 等元素；群里的 `<at id name/>` 变成 `@昵称` + U+2005 并把 id 交给 `atuserlist`（`<at type="all"/>` 是 `notify@all`），缺 `name` 时用群内昵称补。
-- 图片走 `ha0.w.rj()`（聊天界面自己的图片管线）：异步，库里出现 `type=3` 的新行才回 200 并带真实消息 id，6 秒内没有回 502 `image_unconfirmed`（行插入但 content 空壳 = 管线卡死，退化图如 1x1 会这样）。真机已验证。`src` 只认 `upload.create` 的 `internal:` 链接与 `data:image/…;base64`，远程 URL 拒绝；所有图片先解析、核对魔数，坏一张整条 400，不发半条。
+- 图片走 `ha0.w.rj()`（聊天界面自己的图片管线）：异步，库里出现 `type=3` 的新行才回 200 并带真实消息 id，6 秒内没有回 502 `image_unconfirmed`（行插入但 content 空壳 = 管线卡死，退化图如 1x1 会这样）。真机已验证。`src` 只认 `upload.create` 的 `internal:` 链接、`data:image/…;base64` 与 `base64://`（社区通用 scheme，知微发的就是这种；无 mime，按魔数定格式），远程 URL 拒绝；所有图片先解析、核对魔数，坏一张整条 400，不发半条。
 - 拍平后没有文本也没有图片：只剩音视频文件元素回 400 `media_unsupported`，其余 400。
 
 `tests/content_test.cpp`、`tests/backend_test.cpp` 覆盖拍平、@、链接、`ImageSpans`、base64，以及每一种被拒的请求；真正的 JNI 调用没法在主机上跑，见下面的验收清单。逆向依据与被撤回的转发路径在 [发送各类消息](wechat-send-types.md)。

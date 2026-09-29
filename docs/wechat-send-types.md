@@ -87,7 +87,7 @@ svc.rj(gVar);                                         // 丢弃返回的进度�
 
 `message.create` 的内容按 `<img>` 切成有序的文本 / 图片消息序列：
 
-- `src` 只认两种：本模块 `upload.create` 产出的 `internal:wechat/<user>/_tmp/<name>`（5 分钟有效），和 `data:image/…;base64,…`（解码后最多 8 MiB，落进同一个临时目录）。远程 `http(s)` 明确拒绝，说明改用 `upload.create` 或 data URI：没有 HTTP 客户端，也不假装抓得到。
+- `src` 只认三种：本模块 `upload.create` 产出的 `internal:wechat/<user>/_tmp/<name>`（5 分钟有效），`data:image/…;base64,…`（解码后最多 8 MiB，落进同一个临时目录），和 `base64://`（社区通用 scheme，知微发图片就是这种；没有 mime，按魔数定格式与扩展名）。远程 `http(s)` 明确拒绝，说明改用 `upload.create` 或内联 base64：没有 HTTP 客户端，也不假装抓得到。
 - 落地的文件先核魔数：JPEG、PNG、GIF、WebP 之外一律 400 `media_unsupported`。
 - **所有图片先解析、核对完再开始发第一条**：任何一张坏了整条 400，不留下半条已发的消息。开始发之后失败，响应体的 `sent` 说明已经发出去几条。
 - 一次最多 4 张。文本段每段最多 4000 字节（`content_too_long`）。
