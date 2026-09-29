@@ -131,7 +131,7 @@ bool Stage(const char *path, char *out, size_t capacity, char *detail, size_t si
             char old[1400];
             snprintf(old, sizeof(old), "%s/%s", staging, entry->d_name);
             struct stat info{};
-            if (!lstat(old, &info) && S_ISREG(info.st_mode) && info.st_ctime < cutoff) unlink(old);
+            if (!lstat(old, &info) && S_ISREG(info.st_mode) && info.st_mtime < cutoff) unlink(old);
         }
         closedir(dir);
     }

@@ -147,6 +147,29 @@ int main() {
         Check(satori::Base64Decode("", 0, out, sizeof(out)) == 0, "empty input");
     }
 
+    // ---- MediaSpans / FirstTag ----------------------------------------------------------------------------
+    {
+        const char *content = "<quote id=\"1\"/>看<img src=\"a\"/>听<AUDIO src=\"b\"></audio>播<video src=\"c\" poster=\"d\"/>存<file title=\"x>y\" src=\"e\"/>末<image src=\"no\"/><filename/>";
+        satori::MediaSpan spans[8];
+        const size_t count = satori::MediaSpans(content, spans, 8);
+        Check(count == 4, "four media elements: img, audio, video, file (not quote, image or filename)");
+        if (count == 4) {
+            Check(spans[0].kind == 'i' && spans[1].kind == 'a' && spans[2].kind == 'v' && spans[3].kind == 'f', "kinds, in order");
+            const satori::ImageSpan file{spans[3].begin, spans[3].end};
+            char title[32], src[32];
+            Check(satori::TagAttribute(content, file, "title", title, sizeof(title)) && !strcmp(title, "x>y"), "a '>' inside a quoted attribute stays inside the tag");
+            Check(satori::TagAttribute(content, file, "src", src, sizeof(src)) && !strcmp(src, "e"), "attributes after it are still found");
+        }
+        Check(satori::MediaSpans("<audio src=\"a\"></audio>", spans, 8) == 1, "a closing tag is not a second element");
+        Check(satori::MediaSpans("<video/><video/><video/>", spans, 2) == 2, "media spans are bounded");
+        satori::ImageSpan quote;
+        Check(satori::FirstTag(content, "quote", &quote) && quote.begin == 0, "the quote element is found");
+        char id[16];
+        Check(satori::TagAttribute(content, quote, "id", id, sizeof(id)) && !strcmp(id, "1"), "and its id");
+        Check(!satori::FirstTag("<quotes id=\"1\"/></quote>", "quote", &quote), "a longer name or a closing tag is not a quote");
+        Check(satori::FirstTag("字<QUOTE id='9'>", "quote", &quote) && quote.begin == strlen("字"), "case-insensitive, after other text");
+    }
+
     if (failures) { fprintf(stderr, "%d content test(s) failed\n", failures); return 1; }
     printf("content tests: PASS\n");
     return 0;

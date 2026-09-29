@@ -1,6 +1,6 @@
 # 微信发送各类消息的逆向记录
 
-文本、群内 @ 与图片能发；回复（引用）、语音、视频、文件没做。图片走的是聊天界面自己的 `rj()` 管线，见下文；转发路径那条死路也记在下面。
+文本、群内 @、引用回复、图片、视频、文件能发（语音条没做，`<audio>` 作为文件发出）。图片走聊天界面自己的 `rj()` 管线，视频走微信的视频发送服务，文件与回复走 `AppMsgLogic`，见下文；转发路径那条死路也记在下面。
 
 微信 8.0.78 / versionCode 671108664。工具见 `tools/dex*.py`（`dexmethodsig.py` / `dexinvokes.py` / `dexmethodstrings.py` 最常用；`dexfindclass.py`、`dexrefs.py` 有误报，别单独信）。**结论性事实要落到「某个类的某个字段 / 方法」上，并且能和 App 自己的调用点对上。**
 
@@ -11,6 +11,9 @@
 | 文本 | `v51.r0.<init>(String,String,int,int,long,String)` + `doScene` | 构造器自己入库，cgi `newsendmsg` |
 | 群内 @ | `v51.r0.<init>(String,String,int,int,Object,String)`，`flags=1`，`Object` 是 `HashMap{"atuserlist": "<![CDATA[wxid,wxid]]>"}` | 与聊天界面的 `com.tencent.mm.ui.g1.a`（AtSomeOneHelper）同一做法；构造器把 map 的项并进 `<msgsource>`；文本里的 `@昵称` 后接 U+2005 |
 | 图片 | `ph5.n0.c(kt.d1)`（`ha0.w`）`.rj(da0.g)` | 见下文；异步，库里出现 `type=3` 的行才算发出 |
+| 文件 | `pluginsdk.model.app.k0.I(dx0.r, "", "", talker, 附件路径, null)` | 见下文「文件」；行同步入库，上传随后由微信自己做 |
+| 视频 | `ph5.n0.c(ab5.s)`（运行时类 `qi0.l2`）`.cj(qi0.w2, talker)` | 见下文「视频」；异步，行几乎立刻出现（status 1），上传完成后 status 2 |
+| 引用回复 | `dx0.r`（`f` 标题、`i`=57、`x2`=`MsgQuoteItem`）+ `k0.I` | 见下文「回复」；新发送管线，回 `(0, null)`，行随后出现 |
 | 撤回 | `com.tencent.mm.modelsimple.d1.<init>(e9,String,String)` + `doScene` | cgi `revokemsg` |
 | 群管理 | `qn.p` / `qn.b` / `qn.e` | 见 [群管理写操作](wechat-room.md) |
 
@@ -85,7 +88,7 @@ svc.rj(gVar);                                         // 丢弃返回的进度�
 
 **退化尺寸的图发不出去。** 微信自己的图片管线对 1x1 这类图会把行插成 `type=3 isSend=1` 但 `content` 恒为 `<msg></msg>`、`status` 恒为 5，之后不再推进——观察上是「收下了但永远在转圈」。8x8 及以上正常（真机实测 8 / 16 / 32 / 64 px 与正常图片全部 `status=2` 带 CDN XML）。这不是反射调用特有的坑，微信自己面对退化图也发不出。
 
-`message.create` 的内容按 `<img>` 切成有序的文本 / 图片消息序列：
+`message.create` 的内容按 `<img>` / `<video>` / `<audio>` / `<file>` 切成有序的文本 / 媒体消息序列（图片规则如下，视频、文件、音频见各自章节；每个媒体元素单独成条，一次最多 8 个媒体元素、其中图片最多 4 张）：
 
 - `src` 只认三种：本模块 `upload.create` 产出的 `internal:wechat/<user>/_tmp/<name>`（5 分钟有效），`data:image/…;base64,…`（解码后最多 8 MiB，落进同一个临时目录），和 `base64://`（社区通用 scheme，知微发图片就是这种；没有 mime，按魔数定格式与扩展名）。远程 `http(s)` 明确拒绝，说明改用 `upload.create` 或内联 base64：没有 HTTP 客户端，也不假装抓得到。
 - 落地的文件先核魔数：JPEG、PNG、GIF、WebP 之外一律 400 `media_unsupported`。
@@ -97,19 +100,85 @@ svc.rj(gVar);                                         // 丢弃返回的进度�
 
 **这条路已在真机验证（v0.10.0 落地，v0.11.1 验收）。** 上传与 data URI 两条路、混合文本 + 图片的顺序、落库行的 `type=3 / status=2 / CDN XML` 都核过。失败的话看 `internal/status` 的 `send.last_error`（哪个类或成员没找到）与 `send.media` 计数。
 
-### 回复（`<quote>`）
+## 文件（v0.12.0）
 
-发出去的 `<quote>` 现在被当成元素丢掉，正文照发。微信的回复是一条 `appmsg`（`<type>57</type>`，`<refermsg>` 里放被引用消息的 svrid / 发送者 / 摘要）。`qs5.v5.dj(String toUser, byte[] xml, String content, …)` 是发任意 appmsg XML 的入口，`dx0.r.v(content)` 先把它解析回结构再走 `com.tencent.mm.pluginsdk.model.app.*`；`gx0.e` 里那个 `<refermsg>` 是青少年模式的，与回复无关。要做的话：造 type 57 的 XML，找到 `qs5.v5` 的单例入口（`ph5.n0.c(…)` 要哪个接口），再在真机上核对库里出现的行是 `type=822083633`、`MsgQuote` 有配对。没做。
+聊天界面选文件发送、第三方分享、转发，最后都汇到 `AppMsgLogic`（`pluginsdk.model.app.k0`，日志标签 `MicroMsg.AppMsgLogic`）。它接收一个已经解析好的 appmsg 内容对象和一个本地附件路径：
+
+```java
+dir  = k0.k()                                   // 附件目录，带结尾的 '/'
+dest = k0.f(dir, title, ext)                    // 目录里一个不冲突的目标路径（微信自己的命名）
+link(源文件, dest)                              // 硬链接，跨文件系统才复制；这样调用方的临时文件过期不影响上传
+r    = dx0.r.v("<msg><appmsg appid=\"\" sdkver=\"0\"><title>名字.pdf</title>…<type>6</type>…"
+                 "<appattach><totallen>字节数</totallen><attachid></attachid>…<fileext>pdf</fileext>…</appattach>…</appmsg>…</msg>")
+pair = k0.I(r, "", "", talker, dest, null)      // android.util.Pair(Integer 0 = 成功, Long 本地 msgId)
+```
+
+`k0.M`（`I` 的最终落点，`qs5.v5.dj` 也是它）做三件事：`k0.a` 建 `AppAttachInfo` 并入库、往 `message` 表插行（status 1）、`k0.V` 启动上传。`dx0.r.v` 是微信自己解析 appmsg 的入口，字段（标题、`totallen`、`fileext`、类型 6）都从 XML 里来，不用去碰 `dx0.r` 那堆混淆字段。
+
+真机验证（v0.12.0 开发通道，`filehelper`）：行 `type=1090519089`（0x41000031，文件 appmsg 的行类型）、`status=2`、content 里有 `<attachid>@cdn_…`（CDN 上传完成）。中文文件名、PDF、MP3 都通过。`message.get` 读回来是 `<file src="…/_msg/file/<id>/<签名>" title="…"/>`。
+
+要点：
+
+- 微信自己的路径校验：`k0.a` 拒绝落在微信外部存储前缀下、又不在附件目录里的路径，所以一律先落进 `k0.k()` 目录。
+- 没有单独的「文件大小」限制在这一层；上传走微信的 CDN 通道，大文件只是慢。
+- 行在 `k0.I` 返回时就已经存在，`message.create` 用返回的 id 直接轮询库里的 `status`：`2` 发出、`5` 失败（回 502 `upload_failed`）、还是 `1` 就在预算用完后照样回 200（上传还在继续）。
+
+## 视频（v0.12.0）
+
+新版视频发送是一个 Kotlin 协程任务，入口是特性服务 `ab5.s`（运行时类 `qi0.l2`，日志标签 `MicroMsg.VideoMsg.VideoMsgSendFeatureService`）：
+
+```java
+svc  = ph5.n0.c(ab5.s.class)
+name = s61.c3.a(talker)                                   // 视频文件名基（时间戳 + 会话尾巴），微信自己会再加 "NS" 前缀
+cross = new qi0.t2(null,null,null,null,null,null,false,null,null,null, false /*onlySendCompress*/, false /*forceSkipCompress*/, false /*writeImportPath*/)
+w2   = new qi0.w2(name, 视频路径, 封面路径或"", false /*sendRaw*/, 播放秒数, cross, null)
+svc.cj(w2, talker)                                        // boolean：任务已启动
+```
+
+- **`w2` 的 int 参数是播放秒数，不是文件大小。**它进 `<videomsg playlength>`，为 0 时微信自己用 `MediaMetadataRetriever` 量。v0.12.0 开发早期传过文件字节数，`playlength` 就成了几千万秒，别再犯。模块自己读 MP4 的 `mvhd`（`native/mp4_probe.cpp`）算出秒数传进去，同时判断「是不是真有视频轨」。
+- 封面 `videoThumbPath` 可以是空串：微信自己抽帧生成缩略图（`cdnthumblength` 有值）。传了 JPEG 就用传的。
+- `cj` 不检查 `RepairerConfigNewSendVideo`（那是 UI 在新旧两条路之间选择用的）；旧路径 `qs5.v5.tj` 里会用 `Context` 弹进度对话框，应用 Context 会崩，所以不走它。
+- 异步：`cj` 返回时 `message` 表里已经有一行 `type=43 isSend=1`（content 是 `<msg><videomsg playlength="N"></videomsg></msg>` 的空壳，status 1）；微信压缩、上传完成后行被改写成带 `cdnvideourl` 的完整 XML，status 变 2。40 MB 的视频真机实测 20 秒到几分钟不等（取决于网络），所以 `message.create` 只等行出现（≤ 6 秒）再等 status 离开 1（≤ 8 秒，按体积给），慢的照样回 200。
+- 源文件路径要在整个压缩、上传期间可读：模块先硬链接到 `send/` 子目录（6 小时后清理），临时文件 5 分钟过期不影响。
+- 微信的视频管线能压缩就压（`newmd5` 与 `md5` 不同就是压过），压不了原样发；MP4 之外的容器（MKV / WebM / FLV）没让它试，模块直接当文件发。
+
+## 回复（`<quote>`，v0.12.0）
+
+聊天界面的「引用」发送在 `ChatFooter.V0`：
+
+```java
+r = new dx0.r();  r.f = 回复正文;  r.i = 57;
+q = new MsgQuoteItem();               // com.tencent.mm.plugin.msgquote.model.MsgQuoteItem
+q.d = 被引用消息的类型;  q.e = 被引用消息的 svrid;  q.f = 会话（fromusr）;  q.g = 发言人（chatusr）;
+q.h = 发言人昵称;  q.i = 被引用行的 msgsource;  q.m = 被引用内容;  q.n = 新消息的 msgsource（群里带 atuserlist）;
+q.p = strid;  q.q = 被引用消息的发送时间（秒）
+r.x2 = q
+k0.I(r, "", "", talker, "", null)
+```
+
+`dx0.r.u` 在 `i == 57` 时用 `p95.a` 把 `MsgQuoteItem` 序列化成 `<refermsg>`：`type` / `svrid` / `fromusr` / `chatusr` / `displayname` / `content` / `msgsource` / `strid` / `createtime`。微信自己发出去的引用回复，行类型 `822083633`。
+
+模块的做法：
+
+- 被引用的消息在库里按「本地 id 或 svrid」找（`StoreQuoteTarget`），找不到就不带引用；找到后 `fromusr` 是会话、`chatusr` 是真正的发言人（群里取 `wxid:\n` 头，自己发的取自己，私聊取对方）。
+- **被引用内容一律当文字**：`type` 写 1，文本原样，图片写 `[图片]`、语音 `[语音]`、视频 `[视频]`、表情 `[动画表情]`、文件 `[文件] 名字`、链接 `[链接] 标题`。微信客户端渲染真实类型的引用要用原消息的 XML（缩略图 CDN 信息），自己拼容易错，这种写法在收件端显示成一行文字，稳。
+- 群里带 `<at>` 的回复，`q.n` 填 `<msgsource><atuserlist><![CDATA[wxid,…]]></atuserlist></msgsource>`，`@` 是真提及。
+- **`k0.I` 对回复回 `(0, null)`**：走的是 `k0.U(s0)` 那条「新发送管线」，行随后才出现，id 不回。模块记水位，轮询 `message` 表里 `type=822083633 AND isSend=1` 的新行拿到 id。`MsgQuote` 表的行（回复 → 被引用）也是微信自己的管线写的，模块不用再插（曾经自己插过一次，多余）。
+- 真机验证：`filehelper` 里引用自己的一条消息，行 `type=822083633 status=2`，`<refermsg>` 内容齐全，`MsgQuote` 有配对行，`message.get` 读回 `<quote id="…"/>正文`。
+
+## jadx 字段名的坑
+
+jadx 输出里 `f233841f` 这类名字是它为避免同名冲突改的，注释里写着 `renamed from: f`。**JNI 里要用原名（`f`），不是 jadx 名。**没有 `renamed from` 注释的字段（如 `field_msgId`）原样可用。这次 `dx0.r.f` / `.i` / `.x2` 与 `MsgQuoteItem` 的 `d…r` 就是这样确认的。
 
 ## 其它入口（供参考，都没接）
 
 | 方法 | 用途 | 关键点 |
 | --- | --- | --- |
-| `qs5.v5.cj` / `dj(String toUser, byte[] contentXml, ...)` | AppMsg / 文件（直接给 XML） | 文件类走 app attach，attachid 要先上传 |
+| `qs5.v5.cj` / `dj(String toUser, byte[] contentXml, ...)` | AppMsg / 文件（直接给 XML） | 与 `k0.I` 同一落点（`k0.M`）；`dj` 要先有 `AppAttachInfo`，模块直接走 `k0.I` |
 | `qs5.v5.ej` / `rj` / `fj(String,String,boolean,pc5.yl)` | 视频 / 语音 / 图片的转发入口 | `fj` 就是上面那条 type 42 的路 |
-| `qs5.v5.nj` / `oj` / `pj(String,String,int,int,long,...)` | 视频（带时长与尺寸） | |
+| `qs5.v5.nj` / `oj` / `pj(String,String,int,int,long,...)` | 文本发送（`r1` 构建器），不是视频；视频在 `sj`–`vj` → `tj` | `tj` 新路径调 `ab5.s.cj`，旧路径要 Context 弹窗 |
 | `qs5.v5.bj(Context,int,List,rn3.x0)` | 批量发图（朋友圈） | |
-| `dy1.g.h()` → `s61.w0` / `s61.q1` / `s61.r1` | 文件 / AppMsg / 视频（`l51.m1` 子类 + `f468471i` 取 1/4/20） | 同样要上传，没细查 |
+| `dy1.g.h()` → `s61.w0` / `s61.q1` / `s61.r1` | 文件 / AppMsg / 视频（`l51.m1` 子类 + `f468471i` 取 1/4/20） | 没用；文件、视频改走上面的入口 |
 
 ## 其它可复用的事实
 

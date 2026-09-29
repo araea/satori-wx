@@ -7,6 +7,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <sys/time.h>
+#include <time.h>
 #include <unistd.h>
 
 namespace {
@@ -52,6 +54,43 @@ int main() {
     if (!mkdtemp(directory)) { fprintf(stderr, "mkdtemp failed\n"); return 2; }
     satori::TempStoreSetDir(directory);
     Check(satori::TempStoreAvailable(), "store directory is usable");
+
+    // Leftovers of an earlier process are swept at the first use: an hour-old upload is gone, a fresh
+    // one stays, and a staged send copy lives for six hours.
+    {
+        auto make = [&](const char *relative, long age_s) {
+            char path[1200];
+            snprintf(path, sizeof(path), "%s/%s", directory, relative);
+            FILE *f = fopen(path, "wb");
+            if (f) { fputs("x", f); fclose(f); }
+            const time_t then = time(nullptr) - age_s;
+            const timeval times[2] = {{then, 0}, {then, 0}};
+            utimes(path, times);
+        };
+        char staged[1200];
+        snprintf(staged, sizeof(staged), "%s/send", directory);
+        mkdir(staged, 0700);
+        make("orphan-old.bin", 3600);
+        make("orphan-fresh.bin", 10);
+        make("send/staged-old.mp4", 7 * 3600);
+        make("send/staged-recent.mp4", 3600);
+        char name0[128];
+        Check(satori::TempStorePut("first.bin", "application/octet-stream", "1", 1, name0, sizeof(name0)), "put after leftovers");
+        auto exists = [&](const char *relative) {
+            char path[1200];
+            snprintf(path, sizeof(path), "%s/%s", directory, relative);
+            return access(path, F_OK) == 0;
+        };
+        Check(!exists("orphan-old.bin"), "an old orphan is swept");
+        Check(exists("orphan-fresh.bin"), "a fresh file is left alone");
+        Check(!exists("send/staged-old.mp4"), "a staged copy older than six hours is swept");
+        Check(exists("send/staged-recent.mp4"), "a recent staged copy stays");
+        char cleanup[1200];
+        snprintf(cleanup, sizeof(cleanup), "%s/orphan-fresh.bin", directory); unlink(cleanup);
+        snprintf(cleanup, sizeof(cleanup), "%s/send/staged-recent.mp4", directory); unlink(cleanup);
+        snprintf(cleanup, sizeof(cleanup), "%s/%s", directory, name0); unlink(cleanup);
+        rmdir(staged);
+    }
 
     char name[128] = {};
     Check(satori::TempStorePut("pic.png", "image/png", "hello", 5, name, sizeof(name)), "put");

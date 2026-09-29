@@ -75,6 +75,25 @@ void AddBackendStatus(cJSON *object, bool capabilities) {
         cJSON_AddItemToObject(object, "event_types", event_names);
         for (const char *name : kEvents) cJSON_AddItemToArray(event_names, cJSON_CreateString(name));
     }
+    // What message.create understands, so a client can pick its elements without trial and error:
+    // each media element is its own WeChat message; a <video> that is not an MP4 or an <audio> that
+    // WeChat cannot play as a voice message goes out as a file (the returned Message says so).
+    static const char *const kElements[] = {"text", "at", "a", "br", "quote", "img", "video", "audio", "file"};
+    cJSON *elements = cJSON_CreateArray();
+    if (elements) {
+        cJSON_AddItemToObject(object, "message_elements", elements);
+        for (const char *name : kElements) cJSON_AddItemToArray(elements, cJSON_CreateString(name));
+    }
+    cJSON *limits = cJSON_CreateObject();
+    if (limits) {
+        cJSON_AddItemToObject(object, "limits", limits);
+        cJSON_AddNumberToObject(limits, "upload_bytes", static_cast<double>(1ull << 30));       // upload.create, streamed to disk
+        cJSON_AddNumberToObject(limits, "inline_media_bytes", static_cast<double>(12u << 20));  // data: / base64:// non-picture media
+        cJSON_AddNumberToObject(limits, "inline_image_bytes", static_cast<double>(8u << 20));
+        cJSON_AddNumberToObject(limits, "media_per_message", 8);
+        cJSON_AddNumberToObject(limits, "images_per_message", 4);
+        cJSON_AddNumberToObject(limits, "upload_ttl_seconds", 300);
+    }
     size_t unsupported_count = 0;
     const char *const *unsupported = satori::WeChatUnsupported(&unsupported_count);
     cJSON *removed = cJSON_CreateArray();

@@ -14,11 +14,11 @@
 | message.create / update 的 content | 保留 Satori 标记字符串；提供 native 文本转义 helper，不把标记当 HTML 执行 |
 | message.create（发送） | 反射调微信自己的发送管线；内容按 `<img>` 切成有序的文本 / 图片消息，**返回 `Message[]`（官方客户端对结果调用 `.map()`）**；文本走 `NetSceneSendMsg`，群里的 `<at>` 是真提及（`atuserlist`），图片走聊天界面自己的 `rj()` 管线；不限目标、不限速；成功＝已派发，非投递确认（图片要等库里出现行才回 200） |
 | message.create 的图片 | `src` 只认 `upload.create` 的 `internal:` 链接、`data:image/…;base64` 与 `base64://`；所有图片先解析、核对魔数，坏一张整条 400（`media_unresolved` / `media_unsupported` / `image_too_large` / `too_many_images`）；6 秒内没入库回 502 `image_unconfirmed`，不假报成功。见 [发送各类消息](wechat-send-types.md) |
-| message.create 的其它媒体元素 | 只带 `<audio>` `<video>` `<file>` 的 content 回 400 `media_unsupported`；与文字同在时元素被丢弃、文字照发；`<quote>` 同样被丢弃（回复没做） |
+| message.create 的视频 / 文件 / 音频 / 引用 | `<video>`：MP4 / MOV 且有视频轨发成视频气泡（`poster` 可选、时长取自文件），其它容器作为文件；`<file>`：文件名取 `title` → 上传名 → 按内容猜扩展名；`<audio>` 作为文件发出（回执里是 `<file>`）；`<quote id>` 是微信的引用回复（挂在第一段文字，找不到被引用消息退成普通文本）。每个媒体元素单独成条，`src` 只认 `internal:` / `data:` / `base64://`，先全部解析再发；发完等库里 status 离开「发送中」，失败回 502 `upload_failed`，慢上传照回 200。错误码：`media_unresolved` / `media_unsupported` / `media_too_large` / `too_many_media` / `video_unconfirmed` / `upload_failed` |
 | message.delete（撤回） | 用 `ex0.k0.F0.k(talker,localId)` 取 MsgInfo，反射调 `com.tencent.mm.modelsimple.d1`（cgi revokemsg）；只撤回本账号消息 |
 | channel.delete / guild.member.kick | 反射 `qn.p`（cgi delchatroommember），退群用 `[self]`，踢人用目标 wxid |
 | guild.member.role.set / unset（可选） | 反射 `qn.b` / `qn.e`（cgi add/delchatroomadmin），经 `com.tencent.mm.modelbase.z2.d(o,null,false)` 走微信 Cgi 运行器；只变更 `admin` 角色 |
-| upload.create | core 内置 SDK 默认实现，`multipart/form-data` 落盘为 `internal:wechat/<user>/_tmp/<name>`（5 分钟、随机名、0600），落在微信数据目录下的 `files/satori-wx-tmp/`；链接由 `/v1/proxy` 回读（发送端不消费） |
+| upload.create | core 内置 SDK 默认实现，`multipart/form-data` 流式落盘（超过 16 KiB 的 body 不缓冲，上限 1 GiB）为 `internal:wechat/<user>/_tmp/<name>`（5 分钟、随机名、0600），落在微信数据目录下的 `files/satori-wx-tmp/`；链接由 `/v1/proxy` 回读（发送端不消费） |
 | /v1/proxy/{url} | `internal:` 链接按登录号解析并流式回文件（`Range`、`HEAD`、百分号编码）；`_tmp` 是上传，`_msg` 是收到的消息媒体（验签失败与不存在都是 404）；未登记 http(s) 前缀 403；非法 400；未知登录 404；带 CORS，不需 Satori 登录头 |
 | guild.member.get / list | 读 `chatroom` 的 memberlist + displayname（`、` 分隔）+ roomowner；`next` 是成员偏移；displayname 与 memberlist 数量不一致时忽略群昵称、回落到 rcontact |
 | guild.role.list / guild.member.role.list | 合成角色：`owner`（群主）/ `admin`（管理员）/ `member`（成员）；管理员位读 `chatroom.roomdata` 的成员标志（`flag & 2048`），没有 roomdata 缓存时按普通成员算；非成员返回空列表；未知群返回 404 |
@@ -42,7 +42,7 @@
 
 序号以进程启动时的 Unix 微秒为基线，在进程内递增，并限制在 JSON / JavaScript 安全整数范围。正常重启后旧进程序号落在新窗口外，会被拒绝；不宣称跨进程持久回放。显式 sn=0 仅在当前进程历史未丢弃非登录事件时允许从缓存起点恢复。
 
-HTTP 请求体 / WS 消息最大 16 KiB（`upload.create` 与 `message.create` 是 16 MiB，且先验令牌再缓冲）、HTTP 头 8 KiB、单事件 128 KiB、最多 16 个登录快照，单连接 HTTP 响应后关闭。当前 HTTP profile 不支持 chunked 请求体、TLS 或 WebSocket 压缩；支持 `Expect: 100-continue`。这些限制是实现约束，并非 Satori 标准规定的上限。
+HTTP 请求体 / WS 消息最大 16 KiB（`message.create` 是 16 MiB 且先验令牌再缓冲，`upload.create` 流式收到 1 GiB、同样先验令牌与登录）、HTTP 头 8 KiB、单事件 128 KiB、最多 16 个登录快照，单连接 HTTP 响应后关闭。当前 HTTP profile 不支持 chunked 请求体、TLS 或 WebSocket 压缩；支持 `Expect: 100-continue`。这些限制是实现约束，并非 Satori 标准规定的上限。
 
 ## 方法目录
 
@@ -71,6 +71,7 @@ HTTP 请求体 / WS 消息最大 16 KiB（`upload.create` 与 `message.create` �
 - store 测试用真实列布局的夹具库：轮询（突发超过一批、总线满、超大事件）、`message.list` 的五种翻页、回复解析（`MsgQuote` 与 svrid 回退与内联）、头像、媒体文件解析（含 wxgf 跳过、路径穿越被拒、文件路径白名单）、代理路由验签。
 - events 测试（`tests/events_test.cpp`）：撤回、群成员、自己入退群、好友增减、启动静默、两轮确认、闪变不算、重试队列保序。
 - backend 测试把真实的 `wx_backend.cpp` 接进来说话（store/群管理/保活用桩），覆盖 send 开关、文本拍平、群里 @、每一种被拒的图片请求、多图与文字混排先验后发。
+- 视频 / 文件 / 引用测试（`tests/backend_test.cpp`，发送器换成记录调用的桩）：每种路由（MP4 → 视频、MKV → 文件、mp3 → 文件、有 / 无 title 的文件、内联 base64）、封面取舍、顺序、失败状态、坏一个整条不发、引用的各种边角；`tests/mp4_test.cpp` 用 ffmpeg 生成的真容器；`tests/upload_stream_test.cpp` 把同一个 body 按 15 种分块喂进流式解析器，逐字节比对落盘结果，并与缓冲解析器对拍畸形 body。
 - tempstore 测试覆盖 `internal:` 链接的解析（外链、别的平台、`_tmp` 之外、路径穿越、未知名字、手工放进去的文件、输出缓冲太小），这条曾经因为 `sizeof` 用在指针上而全数失败。
 - 账号端到端测试用夹具偏好文件驱动真实适配层，验证 meta / login.get / READY 的一致快照、离线状态与账号切换；WebHook 测试用本地接收端验证 `Satori-Opcode`、`Authorization` 与信号体，以及登记上限 / 注销；详情见 [只读账号身份](wechat-account.md)。
 

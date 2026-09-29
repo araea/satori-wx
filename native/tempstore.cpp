@@ -1,5 +1,6 @@
 #include "tempstore.h"
 #include <errno.h>
+#include <dirent.h>
 #include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -52,8 +53,36 @@ bool EnsureDir() {
     return !stat(g_dir, &info) && S_ISDIR(info.st_mode);
 }
 
+// Files a previous process (or a crash) left behind are in nobody's table, so nothing would ever
+// delete them. Every ten minutes, and once at the first use, sweep the directory: anything older
+// than a quarter of an hour cannot be a live upload (they live five minutes), and a staged send
+// copy (see SendVideo) is given six hours.
+int64_t g_last_sweep = 0;
+void SweepOld(const char *dir, time_t max_age_s) {
+    DIR *handle = opendir(dir);
+    if (!handle) return;
+    const time_t cutoff = time(nullptr) - max_age_s;
+    while (const dirent *entry = readdir(handle)) {
+        if (entry->d_name[0] == '.') continue;
+        char path[1400];
+        if (snprintf(path, sizeof(path), "%s/%s", dir, entry->d_name) >= static_cast<int>(sizeof(path))) continue;
+        struct stat info {};
+        if (lstat(path, &info) || !S_ISREG(info.st_mode)) continue;
+        if (info.st_mtime < cutoff) unlink(path);
+    }
+    closedir(handle);
+}
+void SweepIfDue(int64_t now) {
+    if (g_last_sweep && now - g_last_sweep < 10 * 60 * 1000) return;
+    g_last_sweep = now ? now : 1;
+    SweepOld(g_dir, 15 * 60);
+    char staged[1100];
+    if (snprintf(staged, sizeof(staged), "%s/send", g_dir) < static_cast<int>(sizeof(staged))) SweepOld(staged, 6 * 3600);
+}
+
 void Purge() {
     const int64_t now = NowMs();
+    SweepIfDue(now);
     for (auto &entry : g_entries) {
         if (!entry.used || entry.writing || entry.expires > now) continue;
         unlink(entry.path);
