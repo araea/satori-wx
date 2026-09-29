@@ -17,9 +17,11 @@ struct Entry {
     char name[128];
     char path[1200];
     char content_type[128];
+    char original[256];     // the client's file name, as sent
     size_t size;
     int64_t expires;
     bool used;
+    bool writing;           // reserved by a TempWriter that has not finished yet
 };
 Entry g_entries[kMaxFiles];
 char g_dir[1024];
@@ -53,7 +55,7 @@ bool EnsureDir() {
 void Purge() {
     const int64_t now = NowMs();
     for (auto &entry : g_entries) {
-        if (!entry.used || entry.expires > now) continue;
+        if (!entry.used || entry.writing || entry.expires > now) continue;
         unlink(entry.path);
         entry = {};
     }
@@ -121,40 +123,121 @@ void TempStoreSetDir(const char *dir) {
 
 bool TempStoreAvailable() { return EnsureDir(); }
 
-bool TempStorePut(const char *filename, const char *content_type, const char *data, size_t size,
-                  char *out, size_t capacity) {
-    if (!data || !out || !capacity || !EnsureDir()) return false;
+struct TempWriter {
+    Entry *slot;
+    int fd;
+    size_t size;
+};
+
+namespace {
+TempWriter g_writers[kMaxFiles];
+// Removes control characters (and anything that could break a header or a path) but keeps UTF-8.
+void CleanOriginal(const char *filename, char *out, size_t capacity) {
+    size_t used = 0;
+    const char *base = filename ? filename : "";
+    if (const char *slash = strrchr(base, '/')) base = slash + 1;
+    if (const char *slash = strrchr(base, '\\')) base = slash + 1;
+    for (const char *p = base; *p && used + 1 < capacity; ++p) {
+        const unsigned char c = static_cast<unsigned char>(*p);
+        if (c < 0x20 || c == 0x7f || c == '"') continue;
+        out[used++] = static_cast<char>(c);
+    }
+    out[used] = 0;
+}
+} // namespace
+
+TempWriter *TempStoreBegin(const char *filename, const char *content_type) {
+    if (!EnsureDir()) return nullptr;
     Purge();
     Entry *slot = nullptr;
     for (auto &entry : g_entries) if (!entry.used) { slot = &entry; break; }
-    if (!slot) return false;  // The purge should have made room; never evict live data.
+    if (!slot) return nullptr;  // The purge should have made room; never evict live data.
+    TempWriter *writer = nullptr;
+    for (auto &candidate : g_writers) if (!candidate.slot) { writer = &candidate; break; }
+    if (!writer) return nullptr;
     char safe[80], random[33];
     Sanitize(filename, safe, sizeof(safe));
     RandomHex(random, 8);
     char name[128];
     snprintf(name, sizeof(name), "%s-%s", random, safe);
-    if (!SafeName(name)) return false;
+    if (!SafeName(name)) return nullptr;
     char path[1200];
-    if (snprintf(path, sizeof(path), "%s/%s", g_dir, name) >= static_cast<int>(sizeof(path))) return false;
+    if (snprintf(path, sizeof(path), "%s/%s", g_dir, name) >= static_cast<int>(sizeof(path))) return nullptr;
     const int fd = open(path, O_CREAT | O_EXCL | O_WRONLY | O_CLOEXEC | O_NOFOLLOW, 0600);
-    if (fd < 0) return false;
-    size_t written = 0;
-    while (written < size) {
-        const ssize_t n = write(fd, data + written, size - written);
-        if (n < 0 && errno == EINTR) continue;
-        if (n <= 0) { close(fd); unlink(path); return false; }
-        written += static_cast<size_t>(n);
-    }
-    if (close(fd)) { unlink(path); return false; }
+    if (fd < 0) return nullptr;
+    *slot = {};
     strcpy(slot->name, name);
     strcpy(slot->path, path);
     const char *type = content_type && *content_type ? content_type : "application/octet-stream";
     strncpy(slot->content_type, type, sizeof(slot->content_type) - 1);
-    slot->size = size;
-    slot->expires = NowMs() + kTtlMs;
+    CleanOriginal(filename, slot->original, sizeof(slot->original));
     slot->used = true;
-    snprintf(out, capacity, "%s", name);
+    slot->writing = true;
+    slot->expires = NowMs() + kTtlMs;
+    writer->slot = slot;
+    writer->fd = fd;
+    writer->size = 0;
+    return writer;
+}
+
+bool TempStoreWrite(TempWriter *writer, const char *data, size_t size) {
+    if (!writer || !writer->slot) return false;
+    size_t written = 0;
+    while (written < size) {
+        const ssize_t n = write(writer->fd, data + written, size - written);
+        if (n < 0 && errno == EINTR) continue;
+        if (n <= 0) return false;
+        written += static_cast<size_t>(n);
+    }
+    writer->size += size;
     return true;
+}
+
+static void Release(TempWriter *writer) {
+    if (writer->fd >= 0) close(writer->fd);
+    writer->slot = nullptr;
+    writer->fd = -1;
+    writer->size = 0;
+}
+
+bool TempStoreFinish(TempWriter *writer, char *out, size_t capacity) {
+    if (!writer || !writer->slot || !out || !capacity) return false;
+    Entry *slot = writer->slot;
+    const int fd = writer->fd;
+    writer->fd = -1;  // closed here so a failure can report it
+    if (close(fd)) { unlink(slot->path); *slot = {}; Release(writer); return false; }
+    slot->size = writer->size;
+    slot->expires = NowMs() + kTtlMs;
+    slot->writing = false;
+    snprintf(out, capacity, "%s", slot->name);
+    Release(writer);
+    return true;
+}
+
+void TempStoreAbort(TempWriter *writer) {
+    if (!writer || !writer->slot) return;
+    unlink(writer->slot->path);
+    *writer->slot = {};
+    Release(writer);
+}
+
+bool TempStoreOriginalName(const char *name, char *out, size_t capacity) {
+    if (!name || !out || !capacity || !SafeName(name)) return false;
+    for (auto &entry : g_entries) {
+        if (!entry.used || entry.writing || strcmp(entry.name, name)) continue;
+        snprintf(out, capacity, "%s", entry.original);
+        return true;
+    }
+    return false;
+}
+
+bool TempStorePut(const char *filename, const char *content_type, const char *data, size_t size,
+                  char *out, size_t capacity) {
+    if (!data || !out || !capacity) return false;
+    TempWriter *writer = TempStoreBegin(filename, content_type);
+    if (!writer) return false;
+    if (!TempStoreWrite(writer, data, size)) { TempStoreAbort(writer); return false; }
+    return TempStoreFinish(writer, out, capacity);
 }
 
 const TempFile *TempStoreGet(const char *name) {

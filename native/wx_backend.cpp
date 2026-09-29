@@ -5,11 +5,13 @@
 #include "wx_send.h"
 #include "wx_store.h"
 #include "media.h"
+#include "mp4_probe.h"
 #include "tempstore.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
+#include <sys/stat.h>
 #include <time.h>
 
 namespace satori {
@@ -110,19 +112,36 @@ bool MentionName(void *context, const char *id, char *name, size_t capacity) {
 }
 
 // ---- message.create ------------------------------------------------------------------------------
-// A Satori content string is a sequence of text and <img> elements; WeChat carries either a
-// text message or a picture message, never both. So the content is cut at every <img> into the
-// sequence of messages it stands for, in the order the author wrote them. Every picture is
-// resolved to a local file, and checked to really be a picture, before the first message goes
-// out: a bad link fails the whole request instead of leaving half of it sent.
-constexpr size_t kSegments = 2 * kImages + 1;
-constexpr size_t kImageMax = 8u << 20;             // decoded bytes accepted from an inline source
-constexpr int kImageConfirmMs = 6000;              // how long to wait for WeChat to insert the picture's row
+// A Satori content string is a sequence of text and media elements (<img>, <video>, <audio>,
+// <file>); WeChat carries each of those as a message of its own, never mixed with text. So the
+// content is cut at every media element into the sequence of messages it stands for, in the order
+// the author wrote them. Every media source is resolved to a local file, and checked to be what it
+// claims, before the first message goes out: a bad link fails the whole request instead of leaving
+// half of it sent.
+constexpr size_t kMedia = 8;                        // media elements per request
+constexpr size_t kSegments = 2 * kMedia + 1;
+constexpr size_t kImageMax = 8u << 20;              // decoded bytes accepted from an inline picture
+constexpr size_t kInlineMax = 12u << 20;            // ...and from any other inline media (a request is <= 16 MiB)
+constexpr int kImageConfirmMs = 6000;               // how long to wait for WeChat to insert the picture's row
+constexpr int kRowWaitMs = 6000;                    // ...and a video's row
+constexpr int kSettleMs = 8000;                     // ceiling for waiting on one file/video upload to finish
+constexpr int kRequestBudgetMs = 12000;             // ...and for all the waiting one request may do (the server thread is shared)
+
+enum class Kind { Text, Image, Video, Audio, File };
+// What is actually sent. A <video> that is not an MP4 family container, or an <audio> in a format
+// WeChat cannot play as a voice message, goes out as a file: still delivered, still playable by
+// the recipient, and the returned Message says so (it holds a <file>).
+enum class Route { Text, Image, Video, File };
 
 struct Segment {
-    bool image = false;
-    size_t begin = 0, end = 0;     // text: the slice of the content
-    char path[1200] = {};          // image: the local file
+    Kind kind = Kind::Text;
+    Route route = Route::Text;
+    size_t begin = 0, end = 0;     // text: the slice of the content; media: the whole tag
+    char path[1200] = {};          // media: the local file
+    char poster[1200] = {};        // video: optional JPEG poster
+    char title[256] = {};          // file: the name the recipient sees
+    int duration_s = 0;            // video: play length
+    long long size = 0;            // media: bytes
 };
 
 // Magic bytes of the picture formats WeChat's pipeline takes.
@@ -133,30 +152,81 @@ bool LooksLikeImage(const unsigned char *head, size_t size) {
     return size >= 12 && !memcmp(head, "RIFF", 4) && !memcmp(head + 8, "WEBP", 4);
 }
 
-bool FileIsImage(const char *path) {
+bool FileHead(const char *path, unsigned char *head, size_t capacity, size_t *got) {
     FILE *file = fopen(path, "rb");
     if (!file) return false;
-    unsigned char head[16] = {};
-    const size_t got = fread(head, 1, sizeof(head), file);
+    *got = fread(head, 1, capacity, file);
     fclose(file);
-    return LooksLikeImage(head, got);
+    return true;
 }
 
-// A decoded picture -> a temp file (the same store upload.create uses, so it expires by
-// itself). mime may be empty, in which case the extension comes from the magic bytes.
-const char *StoreDecodedImage(const unsigned char *bytes, size_t size, const char *mime, char *path, size_t capacity) {
-    if (size > kImageMax) return "image_too_large";
-    if (!LooksLikeImage(bytes, size)) return "media_unsupported";
-    const char *extension = mime && !strncasecmp(mime, "image/png", 9) ? "picture.png"
-                          : mime && !strncasecmp(mime, "image/gif", 9) ? "picture.gif"
-                          : mime && !strncasecmp(mime, "image/webp", 10) ? "picture.webp"
-                          : size >= 4 && bytes[0] == 0x89 && bytes[1] == 'P' ? "picture.png"
-                          : size >= 4 && !memcmp(bytes, "GIF8", 4) ? "picture.gif"
-                          : size >= 12 && !memcmp(bytes, "RIFF", 4) ? "picture.webp" : "picture.jpg";
-    char name[160];
-    if (!TempStorePut(extension, "application/octet-stream", reinterpret_cast<const char *>(bytes), size, name, sizeof(name))) {
-        return "media_unresolved";
+bool FileIsImage(const char *path) {
+    unsigned char head[16] = {};
+    size_t got = 0;
+    return FileHead(path, head, sizeof(head), &got) && LooksLikeImage(head, got);
+}
+
+// A file extension (no dot) for what the bytes look like, or "" when nothing is recognised.
+// Used to name inline media and to give an untitled <file> a name that opens with the right app.
+const char *SniffExtension(const unsigned char *head, size_t size) {
+    if (size >= 3 && head[0] == 0xFF && head[1] == 0xD8 && head[2] == 0xFF) return "jpg";
+    if (size >= 4 && head[0] == 0x89 && head[1] == 'P' && head[2] == 'N' && head[3] == 'G') return "png";
+    if (size >= 4 && !memcmp(head, "GIF8", 4)) return "gif";
+    if (size >= 12 && !memcmp(head, "RIFF", 4) && !memcmp(head + 8, "WEBP", 4)) return "webp";
+    if (size >= 12 && !memcmp(head, "RIFF", 4) && !memcmp(head + 8, "WAVE", 4)) return "wav";
+    if (size >= 12 && !memcmp(head, "RIFF", 4) && !memcmp(head + 8, "AVI ", 4)) return "avi";
+    if (size >= 8 && !memcmp(head + 4, "ftyp", 4)) {
+        if (!memcmp(head + 8, "M4A ", 4) || !memcmp(head + 8, "M4B ", 4)) return "m4a";
+        if (!memcmp(head + 8, "qt  ", 4)) return "mov";
+        if (!memcmp(head + 8, "heic", 4) || !memcmp(head + 8, "heix", 4) || !memcmp(head + 8, "mif1", 4)) return "heic";
+        return "mp4";
     }
+    if (size >= 4 && head[0] == 0x1A && head[1] == 0x45 && head[2] == 0xDF && head[3] == 0xA3) return "mkv";
+    if (size >= 3 && !memcmp(head, "ID3", 3)) return "mp3";
+    if (size >= 2 && head[0] == 0xFF && (head[1] & 0xE0) == 0xE0) return "mp3";
+    if (size >= 4 && !memcmp(head, "OggS", 4)) return "ogg";
+    if (size >= 4 && !memcmp(head, "fLaC", 4)) return "flac";
+    if (size >= 6 && !memcmp(head, "#!AMR\n", 6)) return "amr";
+    if (size >= 9 && (!memcmp(head, "#!SILK_V3", 9) || (head[0] == 0x02 && size >= 10 && !memcmp(head + 1, "#!SILK_V3", 9)))) return "silk";
+    if (size >= 4 && !memcmp(head, "%PDF", 4)) return "pdf";
+    if (size >= 4 && !memcmp(head, "PK\x03\x04", 4)) return "zip";
+    if (size >= 3 && !memcmp(head, "FLV", 3)) return "flv";
+    return "";
+}
+
+// The extension a mime type suggests, for inline media that arrives with one.
+const char *MimeExtension(const char *mime) {
+    struct Entry { const char *prefix, *extension; };
+    static const Entry table[] = {
+        {"video/mp4", "mp4"}, {"video/quicktime", "mov"}, {"video/webm", "webm"}, {"video/x-matroska", "mkv"},
+        {"audio/mpeg", "mp3"}, {"audio/mp3", "mp3"}, {"audio/wav", "wav"}, {"audio/x-wav", "wav"}, {"audio/ogg", "ogg"},
+        {"audio/mp4", "m4a"}, {"audio/aac", "aac"}, {"audio/amr", "amr"}, {"audio/silk", "silk"}, {"audio/flac", "flac"},
+        {"application/pdf", "pdf"}, {"application/zip", "zip"}, {"text/plain", "txt"}, {"image/png", "png"},
+        {"image/jpeg", "jpg"}, {"image/gif", "gif"}, {"image/webp", "webp"},
+    };
+    for (const Entry &entry : table) if (mime && !strncasecmp(mime, entry.prefix, strlen(entry.prefix))) return entry.extension;
+    return "";
+}
+
+// A decoded inline payload -> a temp file named `hint`.<extension> (the same store upload.create
+// uses, so it expires by itself). `title_hint` becomes the download name.
+const char *StoreInline(Kind kind, const unsigned char *bytes, size_t size, const char *mime, char *path, size_t capacity,
+                        char *sniffed_name, size_t sniffed_capacity) {
+    if (kind == Kind::Image) {
+        if (size > kImageMax) return "image_too_large";
+        if (!LooksLikeImage(bytes, size)) return "media_unsupported";
+    } else if (size > kInlineMax) {
+        return "media_too_large";
+    }
+    const char *extension = SniffExtension(bytes, size);
+    if (!*extension) extension = MimeExtension(mime);
+    if (!*extension) extension = kind == Kind::Image ? "jpg" : "bin";
+    const char *stem = kind == Kind::Image ? "picture" : kind == Kind::Video ? "video" : kind == Kind::Audio ? "audio" : "file";
+    char filename[64];
+    snprintf(filename, sizeof(filename), "%s.%s", stem, extension);
+    if (sniffed_name) snprintf(sniffed_name, sniffed_capacity, "%s", filename);
+    char name[160];
+    if (!TempStorePut(filename, "application/octet-stream", reinterpret_cast<const char *>(bytes), size, name, sizeof(name))) return "media_unresolved";
     const TempFile *file = TempStoreGet(name);
     if (!file || strlen(file->path) >= capacity) return "media_unresolved";
     memcpy(path, file->path, strlen(file->path) + 1);
@@ -164,80 +234,146 @@ const char *StoreDecodedImage(const unsigned char *bytes, size_t size, const cha
 }
 
 // A base64 payload -> a temp file. mime may be empty.
-const char *DecodeBase64Image(const char *b64, size_t length, const char *mime, char *path, size_t capacity) {
-    if (length / 4 * 3 > kImageMax + 3) return "image_too_large";
+const char *DecodeBase64Media(Kind kind, const char *b64, size_t length, const char *mime, char *path, size_t capacity,
+                              char *name, size_t name_capacity) {
+    const size_t limit = kind == Kind::Image ? kImageMax : kInlineMax;
+    if (length / 4 * 3 > limit + 3) return kind == Kind::Image ? "image_too_large" : "media_too_large";
     auto *bytes = static_cast<unsigned char *>(malloc(length / 4 * 3 + 4));
     if (!bytes) return "media_unresolved";
     const long size = Base64Decode(b64, length, bytes, length / 4 * 3 + 4);
     const char *failure = size <= 0 ? "media_unresolved"
-                        : StoreDecodedImage(bytes, static_cast<size_t>(size), mime, path, capacity);
+                        : StoreInline(kind, bytes, static_cast<size_t>(size), mime, path, capacity, name, name_capacity);
     free(bytes);
     return failure;
 }
 
-// A data:image/...;base64,... source -> a temp file.
-const char *DecodeDataUri(const char *src, char *path, size_t capacity) {
-    const char *comma = strchr(src, ',');
-    if (!comma) return "media_unresolved";
-    char header[128];
-    const size_t header_size = static_cast<size_t>(comma - src);
-    if (header_size >= sizeof(header)) return "media_unresolved";
-    memcpy(header, src, header_size);
-    header[header_size] = 0;
-    if (!strcasestr(header, ";base64")) return "media_unresolved";
-    if (strncasecmp(header, "data:image/", 11)) return "media_unsupported";
-    return DecodeBase64Image(comma + 1, strlen(comma + 1), src + 5, path, capacity);
-}
-
-// Resolves one <img src> to a local file. Only sources this adapter can honour are accepted:
-// its own upload.create links, pictures carried inline as data: URIs, and the community
-// base64:// scheme (no mime, the format is sniffed from the magic bytes). WeChat has no public
-// URL for a picture and this build has no HTTP client, so a remote URL is refused with a message
-// that says what to do instead.
-const char *ResolveImage(const char *src, char *path, size_t capacity, const char **detail) {
+// Resolves one media element's `src` to a local file. Only sources this adapter can honour are
+// accepted: its own upload.create links, media carried inline as data: URIs, and the community
+// base64:// scheme (no mime, the format is sniffed from the magic bytes). WeChat has no public URL
+// for media and this build has no HTTP client, so a remote URL is refused with a message that says
+// what to do instead. `name` receives the client's file name when the source knows one.
+const char *ResolveSource(Kind kind, const char *src, char *path, size_t capacity, char *name, size_t name_capacity, const char **detail) {
     *detail = "";
+    name[0] = 0;
+    const bool image = kind == Kind::Image;
+    const char *too_large = image ? "image_too_large" : "media_too_large";
     if (!strncmp(src, "internal:", 9)) {
         if (!TempStoreResolveLink(src, path, capacity)) {
             *detail = "the link is not an upload of this adapter, or it has expired (uploads live for 5 minutes)";
             return "media_unresolved";
         }
+        if (const char *stored = strstr(src, "/_tmp/")) TempStoreOriginalName(stored + 6, name, name_capacity);
     } else if (!strncasecmp(src, "data:", 5)) {
-        const char *failure = DecodeDataUri(src, path, capacity);
+        const char *comma = strchr(src, ',');
+        char header[128];
+        const size_t header_size = comma ? static_cast<size_t>(comma - src) : 0;
+        if (!comma || header_size >= sizeof(header)) { *detail = "expected data:<mime>;base64,<data>"; return "media_unresolved"; }
+        memcpy(header, src, header_size);
+        header[header_size] = 0;
+        if (!strcasestr(header, ";base64")) { *detail = "expected data:<mime>;base64,<data>"; return "media_unresolved"; }
+        if (image && strncasecmp(header, "data:image/", 11)) { *detail = "expected data:image/...;base64,..."; return "media_unsupported"; }
+        const char *failure = DecodeBase64Media(kind, comma + 1, strlen(comma + 1), src + 5, path, capacity, name, name_capacity);
         if (failure) {
-            *detail = !strcmp(failure, "image_too_large") ? "inline pictures are limited to 8 MiB" : "expected data:image/...;base64,...";
+            *detail = !strcmp(failure, too_large) ? (image ? "inline pictures are limited to 8 MiB" : "inline media is limited to 12 MiB: use upload.create") : "undecodable base64 payload";
             return failure;
         }
+        name[0] = 0;   // an inline payload has no name of its own
     } else if (!strncasecmp(src, "base64://", 9)) {
-        const char *failure = DecodeBase64Image(src + 9, strlen(src + 9), "", path, capacity);
+        const char *failure = DecodeBase64Media(kind, src + 9, strlen(src + 9), "", path, capacity, name, name_capacity);
         if (failure) {
-            *detail = !strcmp(failure, "image_too_large") ? "inline pictures are limited to 8 MiB" : "expected base64://<base64-encoded picture>";
+            *detail = !strcmp(failure, too_large) ? (image ? "inline pictures are limited to 8 MiB" : "inline media is limited to 12 MiB: use upload.create") : "expected base64://<base64-encoded data>";
             return failure;
         }
+        name[0] = 0;
     } else {
-        *detail = "remote URLs cannot be fetched: upload the file with upload.create, or send it as a data: URI";
+        *detail = "remote URLs cannot be fetched: upload the file with upload.create, or send it inline as a data: URI";
         return "media_unresolved";
     }
-    if (!FileIsImage(path)) { *detail = "the file is not a JPEG, PNG, GIF or WebP picture"; return "media_unsupported"; }
     return nullptr;
 }
 
-bool HasMediaElement(const char *content) {
-    static const char *const tags[] = {"<audio", "<video", "<file"};
-    for (const char *tag : tags) {
-        for (const char *p = content; (p = strcasestr(p, tag)); ++p) {
-            const char after = p[strlen(tag)];
-            if (after == ' ' || after == '/' || after == '>' || after == '\t' || after == '\n') return true;
-        }
+// Keeps a title usable as a file name: no path separators or control characters, and short enough.
+void CleanTitle(const char *in, char *out, size_t capacity) {
+    size_t used = 0;
+    for (const unsigned char *p = reinterpret_cast<const unsigned char *>(in); *p && used + 1 < capacity; ++p) {
+        if (*p < 0x20 || *p == 0x7f || *p == '/' || *p == '\\') continue;
+        if (used + 4 >= capacity && *p >= 0x80) break;   // never cut a UTF-8 sequence in half
+        out[used++] = static_cast<char>(*p);
     }
-    return false;
+    while (used && (out[used - 1] == ' ' || out[used - 1] == '.')) --used;
+    out[used] = 0;
 }
 
-// The picture we just sent, as a Message: the signed link resolves to the copy WeChat stored.
-cJSON *SentImageMessage(Store *store, const char *channel_id, long long local_id) {
-    char id[32], link[300], content[400];
+// Decides how one resolved media element is sent, and fills in what that needs (a video's play
+// length, a file's name). Returns an error code, or null.
+const char *Classify(Segment &segment, const char *tag_title, const char *original_name, const char **detail) {
+    unsigned char head[64] = {};
+    size_t got = 0;
+    struct stat info{};
+    if (stat(segment.path, &info) || !S_ISREG(info.st_mode)) { *detail = "the resolved file is missing"; return "media_unresolved"; }
+    segment.size = static_cast<long long>(info.st_size);
+    if (segment.size <= 0) { *detail = "the file is empty"; return "media_unresolved"; }
+    FileHead(segment.path, head, sizeof(head), &got);
+    const char *extension = SniffExtension(head, got);
+    if (segment.kind == Kind::Image) {
+        if (!LooksLikeImage(head, got)) { *detail = "the file is not a JPEG, PNG, GIF or WebP picture"; return "media_unsupported"; }
+        segment.route = Route::Image;
+        return nullptr;
+    }
+    segment.route = Route::File;
+    if (segment.kind == Kind::Video) {
+        Mp4Info mp4;
+        if (Mp4Probe(segment.path, &mp4) && mp4.container && mp4.has_video) {
+            segment.route = Route::Video;
+            segment.duration_s = static_cast<int>((mp4.duration_ms + 999) / 1000);
+            if (segment.duration_s < 1) segment.duration_s = 1;
+        }
+    }
+    // A file's name: the tag's title, else the client's own file name, else a name made from what
+    // the bytes turned out to be.
+    char title[256] = {};
+    if (tag_title && *tag_title) CleanTitle(tag_title, title, sizeof(title));
+    if (!*title && original_name && *original_name) CleanTitle(original_name, title, sizeof(title));
+    if (!*title) {
+        const char *stem = segment.kind == Kind::Video ? "video" : segment.kind == Kind::Audio ? "audio" : "file";
+        snprintf(title, sizeof(title), "%s.%s", stem, *extension ? extension : "bin");
+    } else if (!strrchr(title, '.') && *extension) {
+        const size_t used = strlen(title);
+        if (used + strlen(extension) + 2 < sizeof(title)) snprintf(title + used, sizeof(title) - used, ".%s", extension);
+    }
+    snprintf(segment.title, sizeof(segment.title), "%s", title);
+    return nullptr;
+}
+
+void EscapeAttribute(const char *text, char *out, size_t capacity) {
+    size_t used = 0;
+    for (; *text && used + 7 < capacity; ++text) {
+        const char *entity = *text == '&' ? "&amp;" : *text == '<' ? "&lt;" : *text == '>' ? "&gt;" : *text == '"' ? "&quot;" : nullptr;
+        if (entity) { const size_t n = strlen(entity); memcpy(out + used, entity, n); used += n; }
+        else out[used++] = *text;
+    }
+    out[used] = 0;
+}
+
+// The Message for a media row we just sent. The store's own decoding is the most faithful (signed
+// links, duration, poster); when it cannot read the row back, a message built from what we sent.
+cJSON *SentMediaMessage(Store *store, const char *channel_id, long long local_id, const Segment &segment) {
+    char id[32];
     snprintf(id, sizeof(id), "%lld", local_id);
-    if (!MediaLink(StoreSelfId(store), "image", id, link, sizeof(link))) return nullptr;
-    snprintf(content, sizeof(content), "<img src=\"%s\"/>", link);
+    if (cJSON *stored = StoreMessageGet(store, channel_id, id)) return stored;
+    char content[900] = {};
+    char link[300] = {};
+    const char *kind = segment.route == Route::Image ? "image" : segment.route == Route::Video ? "video" : "file";
+    const bool linked = MediaLink(StoreSelfId(store), kind, id, link, sizeof(link));
+    if (segment.route == Route::Image) {
+        snprintf(content, sizeof(content), "<img src=\"%s\"/>", linked ? link : "");
+    } else if (segment.route == Route::Video) {
+        snprintf(content, sizeof(content), "<video src=\"%s\" duration=\"%d\"/>", linked ? link : "", segment.duration_s);
+    } else {
+        char title[600];
+        EscapeAttribute(segment.title, title, sizeof(title));
+        snprintf(content, sizeof(content), "<file src=\"%s\" title=\"%s\"/>", linked ? link : "", title);
+    }
     cJSON *message = cJSON_CreateObject();
     cJSON *channel = cJSON_CreateObject();
     cJSON *user = cJSON_CreateObject();
@@ -260,6 +396,35 @@ Response FailureAfter(const char *code, const char *detail, bool rejected, size_
     return response;
 }
 
+long long NowMs() {
+    timespec ts{};
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return static_cast<long long>(ts.tv_sec) * 1000 + ts.tv_nsec / 1000000;
+}
+
+void Pause(int ms) {
+    const timespec pause{0, ms * 1000 * 1000};
+    nanosleep(&pause, nullptr);
+}
+
+// Waits (bounded by both `limit_ms` and what is left of the request's budget) until WeChat's own
+// row leaves "sending": 2 = sent, 5 = failed, 1 = still uploading when the wait ran out.
+int WaitSettled(Store *store, long long local_id, int limit_ms, long long deadline) {
+    int status = 1;
+    const long long stop = NowMs() + limit_ms < deadline ? NowMs() + limit_ms : deadline;
+    for (;;) {
+        if (!StoreSentStatus(store, local_id, &status)) status = 1;
+        if (status != 1 || NowMs() >= stop) return status;
+        Pause(100);
+    }
+}
+
+// How long a file or video of `bytes` is given to finish uploading before the request answers.
+int SettleLimit(long long bytes) {
+    const long long limit = 1500 + bytes / (1 << 20) * 400;
+    return limit > kSettleMs ? kSettleMs : static_cast<int>(limit);
+}
+
 Response CreateMessages(const Request &request, Store *store) {
     if (!store) return {503, nullptr};
     const char *channel_id = Text(request, "channel_id");
@@ -273,41 +438,62 @@ Response CreateMessages(const Request &request, Store *store) {
         ~SendWindow() { StoreSendEnd(store, talker); }
     } send_window(store, channel_id);
 
-    // Cut the content at its pictures.
-    ImageSpan spans[kImages + 1];
-    const size_t span_count = ImageSpans(content, spans, kImages + 1);
-    if (span_count > kImages) return BadRequest("too_many_images", "at most 4 pictures per message.create");
+    // Cut the content at its media elements.
+    MediaSpan spans[kMedia + 1];
+    const size_t span_count = MediaSpans(content, spans, kMedia + 1);
+    if (span_count > kMedia) return BadRequest("too_many_media", "at most 8 media elements per message.create");
+    size_t images = 0;
+    for (size_t i = 0; i < span_count; ++i) if (spans[i].kind == 'i') ++images;
+    if (images > kImages) return BadRequest("too_many_images", "at most 4 pictures per message.create");
     Segment segments[kSegments];
     size_t segment_count = 0, cursor = 0;
     for (size_t i = 0; i <= span_count; ++i) {
         const size_t stop = i < span_count ? spans[i].begin : strlen(content);
         if (stop > cursor) { segments[segment_count].begin = cursor; segments[segment_count].end = stop; ++segment_count; }
         if (i < span_count) {
-            segments[segment_count].image = true;
-            segments[segment_count].begin = spans[i].begin;
-            segments[segment_count].end = spans[i].end;
+            Segment &media = segments[segment_count];
+            media.kind = spans[i].kind == 'i' ? Kind::Image : spans[i].kind == 'v' ? Kind::Video : spans[i].kind == 'a' ? Kind::Audio : Kind::File;
+            media.begin = spans[i].begin;
+            media.end = spans[i].end;
             ++segment_count;
             cursor = spans[i].end;
         }
     }
 
-    // Resolve every picture up front, and flatten every text segment to see which are blank.
+    // Resolve every media element up front, and flatten every text segment to see which are blank.
     struct Text { char plain[kOutgoingMax + 1]; char ids[2100]; bool blank; };
     auto *texts = static_cast<Text *>(calloc(kSegments, sizeof(Text)));
     if (!texts) return {500, nullptr};
     size_t sendable = 0;
     for (size_t i = 0; i < segment_count; ++i) {
         Segment &segment = segments[i];
-        if (segment.image) {
+        if (segment.kind != Kind::Text) {
+            const ImageSpan tag{segment.begin, segment.end};
             char *src = static_cast<char *>(malloc(strlen(content) + 1));
             if (!src) { free(texts); return {500, nullptr}; }
             src[0] = 0;
-            const bool has_src = TagAttribute(content, ImageSpan{segment.begin, segment.end}, "src", src, strlen(content) + 1) && *src;
+            const bool has_src = TagAttribute(content, tag, "src", src, strlen(content) + 1) && *src;
             const char *detail = "";
-            const char *failure = has_src ? ResolveImage(src, segment.path, sizeof(segment.path), &detail) : "media_unresolved";
-            if (!has_src) detail = "<img> without src";
+            char original[256] = {};
+            const char *failure = has_src ? ResolveSource(segment.kind, src, segment.path, sizeof(segment.path), original, sizeof(original), &detail)
+                                          : "media_unresolved";
+            if (!has_src) detail = "the element has no src";
             free(src);
             if (failure) { free(texts); return BadRequest(failure, detail); }
+            char title[256] = {};
+            TagAttribute(content, tag, "title", title, sizeof(title));
+            failure = Classify(segment, title, original, &detail);
+            if (failure) { free(texts); return BadRequest(failure, detail); }
+            if (segment.route == Route::Video) {
+                // An optional poster: a picture that cannot be read is simply not used.
+                char poster_src[1200] = {};
+                if (TagAttribute(content, tag, "poster", poster_src, sizeof(poster_src)) && *poster_src) {
+                    char poster_original[256];
+                    const char *poster_detail = "";
+                    if (ResolveSource(Kind::Image, poster_src, segment.poster, sizeof(segment.poster), poster_original, sizeof(poster_original), &poster_detail) ||
+                        !FileIsImage(segment.poster)) segment.poster[0] = 0;
+                }
+            }
             ++sendable;
             continue;
         }
@@ -334,28 +520,25 @@ Response CreateMessages(const Request &request, Store *store) {
         text.blank = !*text.plain;
         if (!text.blank) ++sendable;
     }
-    if (!sendable) {
-        free(texts);
-        // Nothing to say and nothing to show: tell "only media we cannot carry" from "empty".
-        if (HasMediaElement(content)) return BadRequest("media_unsupported", "this adapter can send text and pictures; audio, video and files are not supported");
-        return {400, nullptr};
-    }
+    if (!sendable) { free(texts); return {400, nullptr}; }
 
     cJSON *list = cJSON_CreateArray();
     if (!list) { free(texts); return {500, nullptr}; }
+    const long long deadline = NowMs() + kRequestBudgetMs;
     size_t sent_count = 0;
     for (size_t i = 0; i < segment_count; ++i) {
         cJSON *message = nullptr;
-        if (segments[i].image) {
+        const Segment &segment = segments[i];
+        if (segment.route == Route::Image) {
             const long long before = StoreWatermark(store);
-            SendResult sent = SendImage(channel_id, StoreSelfId(store), segments[i].path);
+            SendResult sent = SendImage(channel_id, StoreSelfId(store), segment.path);
             if (!sent.ok) { cJSON_Delete(list); free(texts); return FailureAfter("send_failed", sent.detail, sent.rejected, sent_count); }
             // The pipeline is asynchronous: only a row in WeChat's own table proves it started.
             long long local_id = 0;
             bool confirmed = false;
             for (int waited = 0; waited < kImageConfirmMs && !confirmed; waited += 40) {
                 confirmed = StoreFindSentImage(store, channel_id, before, &local_id);
-                if (!confirmed) { const timespec pause{0, 40 * 1000 * 1000}; nanosleep(&pause, nullptr); }
+                if (!confirmed) Pause(40);
             }
             if (!confirmed) {
                 cJSON_Delete(list); free(texts);
@@ -367,7 +550,41 @@ Response CreateMessages(const Request &request, Store *store) {
                 return FailureAfter("image_unconfirmed", "WeChat did not record the picture within 6 seconds; it may still be sent", false, sent_count);
             }
             StoreNoteSent(store, local_id);
-            message = SentImageMessage(store, channel_id, local_id);
+            message = SentMediaMessage(store, channel_id, local_id, segment);
+        } else if (segment.route == Route::File || segment.route == Route::Video) {
+            const bool video = segment.route == Route::Video;
+            const char *what = video ? "video" : "file";
+            long long local_id = 0;
+            if (video) {
+                const long long before = StoreWatermark(store);
+                SendResult sent = SendVideo(channel_id, segment.path, segment.poster, segment.duration_s);
+                if (!sent.ok) { cJSON_Delete(list); free(texts); return FailureAfter("send_failed", sent.detail, sent.rejected, sent_count); }
+                // The video task runs in WeChat's own coroutine; its row appears when it starts.
+                bool found = false;
+                for (int waited = 0; waited < kRowWaitMs && !found; waited += 50) {
+                    found = StoreFindSentVideo(store, channel_id, before, &local_id);
+                    if (!found) Pause(50);
+                }
+                if (!found) {
+                    cJSON_Delete(list); free(texts);
+                    return FailureAfter("video_unconfirmed", "WeChat did not record the video within 6 seconds; it may still be sent", false, sent_count);
+                }
+            } else {
+                SendResult sent = SendFile(channel_id, segment.path, segment.title);
+                if (!sent.ok) { cJSON_Delete(list); free(texts); return FailureAfter("send_failed", sent.detail, sent.rejected, sent_count); }
+                local_id = sent.local_id;
+            }
+            StoreNoteSent(store, local_id);
+            // The row exists now and WeChat is uploading; a failure it reports quickly (no network,
+            // a rejected file) is worth telling the caller, a slow upload is left to finish.
+            const int status = WaitSettled(store, local_id, SettleLimit(segment.size), deadline);
+            if (status == 5) {
+                cJSON_Delete(list); free(texts);
+                char detail[120];
+                snprintf(detail, sizeof(detail), "WeChat could not upload the %s (its send status is failed)", what);
+                return FailureAfter("upload_failed", detail, false, sent_count);
+            }
+            message = SentMediaMessage(store, channel_id, local_id, segment);
         } else if (!texts[i].blank) {
             SendResult sent = SendText(channel_id, texts[i].plain, texts[i].ids);
             if (!sent.ok) { cJSON_Delete(list); free(texts); return FailureAfter("send_failed", sent.detail, sent.rejected, sent_count); }

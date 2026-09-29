@@ -391,6 +391,43 @@ size_t ImageSpans(const char *content, ImageSpan *out, size_t max) {
     return count;
 }
 
+size_t MediaSpans(const char *content, MediaSpan *out, size_t max) {
+    if (!out || !max) return 0;
+    size_t count = 0;
+    for (const char *p = content ? content : ""; *p && count < max;) {
+        if (*p != '<') { ++p; continue; }
+        const char *q = p + 1;
+        char quote = 0;
+        for (; *q; ++q) {
+            if (quote) { if (*q == quote) quote = 0; continue; }
+            if (*q == '"' || *q == '\'') { quote = *q; continue; }
+            if (*q == '>') break;
+        }
+        if (!*q) break;  // Unterminated tag: nothing trustworthy follows.
+        const char *name = p + 1;
+        const bool closing = *name == '/';
+        if (closing) ++name;
+        const char *name_end = name;
+        while (name_end < q && TagChar(*name_end)) ++name_end;
+        const size_t length = static_cast<size_t>(name_end - name);
+        char kind = 0;
+        if (!closing) {
+            if (length == 3 && !strncasecmp(name, "img", 3)) kind = 'i';
+            else if (length == 5 && !strncasecmp(name, "audio", 5)) kind = 'a';
+            else if (length == 5 && !strncasecmp(name, "video", 5)) kind = 'v';
+            else if (length == 4 && !strncasecmp(name, "file", 4)) kind = 'f';
+        }
+        if (kind) {
+            out[count].begin = static_cast<size_t>(p - content);
+            out[count].end = static_cast<size_t>(q + 1 - content);
+            out[count].kind = kind;
+            ++count;
+        }
+        p = q + 1;
+    }
+    return count;
+}
+
 bool TagAttribute(const char *content, const ImageSpan &tag, const char *name, char *out, size_t capacity) {
     if (!content || !out || !capacity || tag.end <= tag.begin + 2) return false;
     const char *begin = content + tag.begin + 1;

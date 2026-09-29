@@ -35,6 +35,22 @@ SendResult SendText(const char *talker, const char *content, const char *mention
 // "a message exists": callers confirm with the database (StoreFindSentImage) before claiming
 // anything. `self_id` is this account's wxid (the pipeline needs the sender).
 SendResult SendImage(const char *talker, const char *self_id, const char *path);
+// Sends a local file as a WeChat file message (the grey "file" bubble, type-6 appmsg) through the
+// same code the chat UI reaches: WeChat's own AppMsgLogic inserts the row, tracks the attachment
+// and starts its own upload. The row exists when this returns; the upload finishes on its own
+// afterwards (poll the row's status: 1 sending, 2 sent, 5 failed). `title` is the file name the
+// recipient sees. The file is hard-linked (or copied) into WeChat's attachment directory first, so
+// the caller may delete its own copy as soon as this returns.
+SendResult SendFile(const char *talker, const char *path, const char *title);
+// Sends a local video (H.264/AAC MP4) as a WeChat video message: the playable bubble, not a file.
+// It hands the file to WeChat's video-send feature service (the one behind "send video" in the
+// chat UI), which extracts the poster, compresses when WeChat thinks it should, uploads and sends.
+// Asynchronous: `ok` means the task was launched; the row (type 43) shows up in the message table
+// a moment later. `thumb_path` is an optional JPEG poster; null or empty lets WeChat pick a frame.
+// `duration_s` is the play length in whole seconds (what the bubble shows); 0 when unknown.
+// The video is hard-linked (or copied) to a staging name first, so it survives the caller's own
+// temporary expiring while WeChat is still compressing and uploading it.
+SendResult SendVideo(const char *talker, const char *path, const char *thumb_path, int duration_s);
 // Recalls one of our own messages by its local id (the id message.create returned, decimal
 // string). Uses WeChat's own NetSceneRevokeMsg scene. Refused for
 // messages the account did not send.

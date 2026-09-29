@@ -43,14 +43,42 @@ bool Parameter(const char *header, const char *key, char *out, size_t capacity) 
     return found;
 }
 }
+bool MultipartBoundary(const char *type, char *boundary, size_t capacity) {
+    if (capacity < 71 || strncasecmp(type, "multipart/form-data;", 20)) return false;
+    if (!Parameter(type, "boundary", boundary, 71) || !*boundary) return false;
+    for (const char *p = boundary; *p; ++p)
+        if (!((*p >= 'a' && *p <= 'z') || (*p >= 'A' && *p <= 'Z') || (*p >= '0' && *p <= '9') || strchr("'()+_,-./:=? ", *p))) return false;
+    return boundary[strlen(boundary) - 1] != ' ';
+}
+bool ParsePartHeaders(char *headers, Part *out) {
+    Part part;
+    memset(&part, 0, sizeof(part));
+    strcpy(part.content_type, "application/octet-stream");
+    bool disposition = false, content_type = false;
+    for (char *p = headers; *p;) {
+        char *end = strstr(p, "\r\n"); if (!end) return false; *end = 0;
+        char *value = strchr(p, ':'); if (!value) return false; *value++ = 0;
+        while (*value == ' ' || *value == '\t') ++value;
+        for (const char *v = value; *v; ++v) if (static_cast<unsigned char>(*v) < 32) return false;
+        if (!strcasecmp(p, "Content-Disposition")) {
+            if (disposition || strncasecmp(value, "form-data;", 10) || !Parameter(value, "name", part.name, sizeof(part.name)) || !*part.name) return false;
+            disposition = true;
+            if (!Parameter(value, "filename", part.filename, sizeof(part.filename))) return false;
+        } else if (!strcasecmp(p, "Content-Type")) {
+            if (content_type || strlen(value) >= sizeof(part.content_type)) return false;
+            content_type = true; strcpy(part.content_type, value);
+        } else return false;
+        p = end + 2;
+    }
+    if (!disposition) return false;
+    *out = part;
+    return true;
+}
 bool ParseMultipart(const char *type, const char *data, size_t size, Multipart *out) {
     out->count = 0;
     if (strncasecmp(type, "multipart/form-data;", 20)) return false;
     char boundary[71];
-    if (!Parameter(type, "boundary", boundary, sizeof(boundary)) || !*boundary) return false;
-    for (const char *p = boundary; *p; ++p)
-        if (!((*p >= 'a' && *p <= 'z') || (*p >= 'A' && *p <= 'Z') || (*p >= '0' && *p <= '9') || strchr("'()+_,-./:=? ", *p))) return false;
-    if (boundary[strlen(boundary) - 1] == ' ') return false;
+    if (!MultipartBoundary(type, boundary, sizeof(boundary))) return false;
     char marker[76]; snprintf(marker, sizeof(marker), "--%s", boundary);
     const size_t marker_size = strlen(marker);
     size_t pos = 0;
@@ -69,25 +97,8 @@ bool ParseMultipart(const char *type, const char *data, size_t size, Multipart *
         const size_t hs = header_end - (data + pos);
         if (memchr(data + pos, 0, hs)) return false;
         char headers[2051]; memcpy(headers, data + pos, hs + 2); headers[hs + 2] = 0;
-        Part &part = out->parts[out->count]; memset(&part, 0, sizeof(part));
-        strcpy(part.content_type, "application/octet-stream");
-        bool disposition = false, content_type = false;
-        for (char *p = headers; *p;) {
-            char *end = strstr(p, "\r\n"); if (!end) return false; *end = 0;
-            char *value = strchr(p, ':'); if (!value) return false; *value++ = 0;
-            while (*value == ' ' || *value == '\t') ++value;
-            for (const char *v = value; *v; ++v) if (static_cast<unsigned char>(*v) < 32) return false;
-            if (!strcasecmp(p, "Content-Disposition")) {
-                if (disposition || strncasecmp(value, "form-data;", 10) || !Parameter(value, "name", part.name, sizeof(part.name)) || !*part.name) return false;
-                disposition = true;
-                if (!Parameter(value, "filename", part.filename, sizeof(part.filename))) return false;
-            } else if (!strcasecmp(p, "Content-Type")) {
-                if (content_type || strlen(value) >= sizeof(part.content_type)) return false;
-                content_type = true; strcpy(part.content_type, value);
-            } else return false;
-            p = end + 2;
-        }
-        if (!disposition) return false;
+        Part &part = out->parts[out->count];
+        if (!ParsePartHeaders(headers, &part)) return false;
         for (size_t i = 0; i < out->count; ++i) if (!strcmp(out->parts[i].name, part.name)) return false;
         pos = header_end - data + 4;
         char delimiter[78]; snprintf(delimiter, sizeof(delimiter), "\r\n%s", marker);

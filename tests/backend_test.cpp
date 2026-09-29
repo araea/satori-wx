@@ -9,6 +9,7 @@
 #include "wx_store.h"
 #include "wx_live.h"
 #include "wx_room.h"
+#include "wx_send.h"
 #include "wx_keepalive.h"
 #include "protocol.h"
 #include "tempstore.h"
@@ -17,12 +18,22 @@
 #include <unistd.h>
 #include <string.h>
 
+// ---- test state the stubs write to -----------------------------------------------------------
+long long g_next_row = 7000;
+int g_status = 2;
+struct SentCall { char kind; char talker[64]; char path[1200]; char title[300]; char poster[1200]; int duration; };
+SentCall g_calls[16];
+int g_call_count = 0;
+
 // ---- stubs for the WeChat-side collaborators (none of them run in this process) ----------
 namespace satori {
 // A non-null handle: the stubs below ignore it, and the backend refuses to send without a store.
 Store *LiveStore() { return reinterpret_cast<Store *>(1); }
 bool StoreFindSentImage(Store *, const char *, long long, long long *) { return false; }
 bool StoreFindStalledImage(Store *, const char *, long long, long long *) { return false; }
+// A video row that appears at once, and a status the test can flip to "failed".
+bool StoreFindSentVideo(Store *, const char *, long long, long long *id) { *id = ++::g_next_row; return true; }
+bool StoreSentStatus(Store *, long long, int *status) { *status = ::g_status; return true; }
 int LiveLoginSn() { return 1; }
 bool StartLiveStore(const char *, EventBus *, int) { return false; }
 const char *StoreSelfId(Store *) { return "self_wxid"; }
@@ -47,6 +58,33 @@ ActionResult RoomRemoveMember(const char *, const char *) { return {}; }
 ActionResult RoomSetAdmin(const char *, const char *, bool) { return {}; }
 void KeepaliveWakelockBegin() {}
 void KeepaliveWakelockEnd() {}
+
+// The media senders are stubbed too (the real ones need WeChat's JVM): they record what the backend
+// decided to send, which is exactly what the routing tests are about.
+SendResult SendFile(const char *talker, const char *path, const char *title) {
+    SentCall &call = ::g_calls[::g_call_count++ % 16];
+    call = {};
+    call.kind = 'f';
+    snprintf(call.talker, sizeof(call.talker), "%s", talker);
+    snprintf(call.path, sizeof(call.path), "%s", path);
+    snprintf(call.title, sizeof(call.title), "%s", title);
+    SendResult result{};
+    result.ok = true;
+    result.local_id = 9000 + ::g_call_count;
+    return result;
+}
+SendResult SendVideo(const char *talker, const char *path, const char *poster, int duration_s) {
+    SentCall &call = ::g_calls[::g_call_count++ % 16];
+    call = {};
+    call.kind = 'v';
+    snprintf(call.talker, sizeof(call.talker), "%s", talker);
+    snprintf(call.path, sizeof(call.path), "%s", path);
+    snprintf(call.poster, sizeof(call.poster), "%s", poster ? poster : "");
+    call.duration = duration_s;
+    SendResult result{};
+    result.ok = true;
+    return result;
+}
 } // namespace satori
 
 namespace {
@@ -186,14 +224,176 @@ int main() {
         Check(many.status == 400 && !strcmp(Code(many), "too_many_images"), "more than four pictures");
         cJSON_Delete(many.body);
     }
+    // ---- files, videos and audio ------------------------------------------------------------------
+    // The senders are stubs here; what matters is which one the backend picks, with what.
     {
-        // Audio, video and files are still not carried, and the client can tell.
-        const Outcome audio = Create("<audio src=\"internal:wechat/self_wxid/_tmp/a.mp3\"/>");
-        Check(audio.status == 400 && !strcmp(Code(audio), "media_unsupported"), "audio alone is refused as unsupported");
+        size_t mp4_size = 0, mp3_size = 0;
+        const char *fixtures = getenv("SATORI_FIXTURES");
+        char fixture[600];
+        snprintf(fixture, sizeof(fixture), "%s/tiny.mp4", fixtures ? fixtures : "tests/fixtures");
+        FILE *file = fopen(fixture, "rb");
+        Check(file != nullptr, "the mp4 fixture is there");
+        static unsigned char mp4[16384];
+        mp4_size = file ? fread(mp4, 1, sizeof(mp4), file) : 0;
+        if (file) fclose(file);
+        static const unsigned char mp3[] = {'I', 'D', '3', 3, 0, 0, 0, 0, 0, 0x21, 'T', 'I', 'T', '2', 0, 0, 0, 5, 0, 0, 0, 'x'};
+        mp3_size = sizeof(mp3);
+        static const unsigned char mkv[] = {0x1A, 0x45, 0xDF, 0xA3, 0x9F, 0x42, 0x86, 0x81, 0x01, 0x42, 0xF7, 0x81, 0x01};
+        char video_name[160], mp3_name[160], mkv_name[160], pdf_name[160], jpeg_name2[160], odd_name[160];
+        Check(satori::TempStorePut("clip.mp4", "video/mp4", reinterpret_cast<const char *>(mp4), mp4_size, video_name, sizeof(video_name)), "store an mp4");
+        Check(satori::TempStorePut("song.mp3", "audio/mpeg", reinterpret_cast<const char *>(mp3), mp3_size, mp3_name, sizeof(mp3_name)), "store an mp3");
+        Check(satori::TempStorePut("movie.mkv", "video/x-matroska", reinterpret_cast<const char *>(mkv), sizeof(mkv), mkv_name, sizeof(mkv_name)), "store an mkv");
+        Check(satori::TempStorePut("报告.pdf", "application/pdf", "%PDF-1.4 fake", 13, pdf_name, sizeof(pdf_name)), "store a pdf");
+        Check(satori::TempStorePut("poster.jpg", "image/jpeg", jpeg, sizeof(jpeg) - 1, jpeg_name2, sizeof(jpeg_name2)), "store a poster");
+        Check(satori::TempStorePut("noext", "application/octet-stream", "\x01\x02\x03\x04 raw", 9, odd_name, sizeof(odd_name)), "store an unnamed blob");
+
+        auto message_content = [](const Outcome &outcome, int index) -> const char * {
+            const cJSON *item = cJSON_IsArray(outcome.body) ? cJSON_GetArrayItem(outcome.body, index) : nullptr;
+            const cJSON *content = item ? cJSON_GetObjectItemCaseSensitive(item, "content") : nullptr;
+            return cJSON_IsString(content) ? content->valuestring : "";
+        };
+
+        // A real MP4 goes out as a video, with its true play length, and comes back as a <video>.
+        g_call_count = 0; g_status = 2;
+        snprintf(content, sizeof(content), "<video src=\"internal:wechat/self_wxid/_tmp/%s\"/>", video_name);
+        Outcome video = Create(content);
+        Check(video.status == 200 && cJSON_GetArraySize(video.body) == 1, "a video is sent");
+        Check(g_call_count == 1 && g_calls[0].kind == 'v' && g_calls[0].duration == 1 && !g_calls[0].poster[0], "an mp4 takes the video route with its duration");
+        Check(strstr(message_content(video, 0), "<video ") != nullptr, "the reply describes a video");
+        cJSON_Delete(video.body);
+
+        // The poster is used when it is a picture, ignored when it is not.
+        g_call_count = 0;
+        snprintf(content, sizeof(content), "<video src=\"internal:wechat/self_wxid/_tmp/%s\" poster=\"internal:wechat/self_wxid/_tmp/%s\"/>", video_name, jpeg_name2);
+        video = Create(content);
+        Check(video.status == 200 && g_calls[0].kind == 'v' && g_calls[0].poster[0], "a picture poster is passed along");
+        cJSON_Delete(video.body);
+        g_call_count = 0;
+        snprintf(content, sizeof(content), "<video src=\"internal:wechat/self_wxid/_tmp/%s\" poster=\"internal:wechat/self_wxid/_tmp/%s\"/>", video_name, text_name);
+        video = Create(content);
+        Check(video.status == 200 && g_calls[0].kind == 'v' && !g_calls[0].poster[0], "a poster that is not a picture is ignored");
+        cJSON_Delete(video.body);
+
+        // A video WeChat cannot play inline goes out as a file, and the reply says so.
+        g_call_count = 0;
+        snprintf(content, sizeof(content), "<video src=\"internal:wechat/self_wxid/_tmp/%s\"/>", mkv_name);
+        Outcome fallback = Create(content);
+        Check(fallback.status == 200 && g_calls[0].kind == 'f' && !strcmp(g_calls[0].title, "movie.mkv"), "a non-MP4 video is sent as a file under its own name");
+        Check(strstr(message_content(fallback, 0), "<file ") != nullptr && strstr(message_content(fallback, 0), "movie.mkv"), "the reply says it was sent as a file");
+        cJSON_Delete(fallback.body);
+
+        // Audio that WeChat cannot play as a voice message is a file too.
+        g_call_count = 0;
+        snprintf(content, sizeof(content), "<audio src=\"internal:wechat/self_wxid/_tmp/%s\"/>", mp3_name);
+        Outcome audio = Create(content);
+        Check(audio.status == 200 && g_calls[0].kind == 'f' && !strcmp(g_calls[0].title, "song.mp3"), "an mp3 is sent as a file under its own name");
         cJSON_Delete(audio.body);
-        const Outcome with_text = Create("听<audio src=\"x\"/>这个");
-        Check(with_text.status == 502 && !strcmp(Code(with_text), "send_failed"), "the text next to an unsupported element still goes");
-        cJSON_Delete(with_text.body);
+
+        // Files: the title wins, then the upload's own name, then a name made from the content.
+        g_call_count = 0;
+        snprintf(content, sizeof(content), "<file src=\"internal:wechat/self_wxid/_tmp/%s\" title=\"季度 报告.pdf\"/>", pdf_name);
+        Outcome named = Create(content);
+        Check(named.status == 200 && g_calls[0].kind == 'f' && !strcmp(g_calls[0].title, "季度 报告.pdf") && !strcmp(g_calls[0].talker, "filehelper"), "a file is sent under its title");
+        Check(strstr(message_content(named, 0), "title=\"季度 报告.pdf\"") != nullptr, "the reply carries the title");
+        cJSON_Delete(named.body);
+        g_call_count = 0;
+        snprintf(content, sizeof(content), "<file src=\"internal:wechat/self_wxid/_tmp/%s\"/>", pdf_name);
+        Outcome untitled = Create(content);
+        Check(untitled.status == 200 && !strcmp(g_calls[0].title, "报告.pdf"), "an untitled file keeps the name it was uploaded under (UTF-8 intact)");
+        cJSON_Delete(untitled.body);
+        g_call_count = 0;
+        snprintf(content, sizeof(content), "<file src=\"internal:wechat/self_wxid/_tmp/%s\"/>", odd_name);
+        Outcome nameless = Create(content);
+        Check(nameless.status == 200 && !strcmp(g_calls[0].title, "noext"), "a name without an extension stays as it is when the bytes say nothing");
+        cJSON_Delete(nameless.body);
+        g_call_count = 0;
+        snprintf(content, sizeof(content), "<file src=\"internal:wechat/self_wxid/_tmp/%s\" title=\"../../etc/pass/wd.pdf\"/>", pdf_name);
+        Outcome sneaky = Create(content);
+        Check(sneaky.status == 200 && !strchr(g_calls[0].title, '/') && strstr(g_calls[0].title, "wd.pdf"), "path separators never reach WeChat's file name");
+        cJSON_Delete(sneaky.body);
+        // Inline sources: a data: URI or base64://, named after what they turn out to be.
+        g_call_count = 0;
+        Outcome inline_file = Create("<file src=\"data:application/pdf;base64,JVBERi0xLjQgZmFrZQ==\"/>");
+        Check(inline_file.status == 200 && !strcmp(g_calls[0].title, "file.pdf"), "an inline file is named from its bytes");
+        cJSON_Delete(inline_file.body);
+        g_call_count = 0;
+        inline_file = Create("<file src=\"base64://JVBERi0xLjQgZmFrZQ==\" title=\"合同\"/>");
+        Check(inline_file.status == 200 && !strcmp(g_calls[0].title, "合同.pdf"), "a title without an extension gets the sniffed one");
+        cJSON_Delete(inline_file.body);
+
+        // Order: every media element is its own message, in the order written.
+        g_call_count = 0;
+        snprintf(content, sizeof(content), "先看视频<video src=\"internal:wechat/self_wxid/_tmp/%s\"/>再看文件<file src=\"internal:wechat/self_wxid/_tmp/%s\" title=\"a.pdf\"/>",
+                 video_name, pdf_name);
+        Outcome ordered = Create(content);
+        Check(ordered.status == 502 && !strcmp(Code(ordered), "send_failed") && g_call_count == 0,
+              "the text before a video goes first (and, with no JVM here, stops the request at the sender)");
+        cJSON_Delete(ordered.body);
+        snprintf(content, sizeof(content), "<video src=\"internal:wechat/self_wxid/_tmp/%s\"/><file src=\"internal:wechat/self_wxid/_tmp/%s\" title=\"a.pdf\"/>", video_name, pdf_name);
+        ordered = Create(content);
+        Check(ordered.status == 200 && cJSON_GetArraySize(ordered.body) == 2 && g_call_count == 2 && g_calls[0].kind == 'v' && g_calls[1].kind == 'f',
+              "a video then a file arrive as two messages in that order");
+        cJSON_Delete(ordered.body);
+
+        // A refused upload is a failure the caller hears about; a slow one is not.
+        g_status = 5;
+        snprintf(content, sizeof(content), "<file src=\"internal:wechat/self_wxid/_tmp/%s\" title=\"a.pdf\"/>", pdf_name);
+        Outcome failed = Create(content);
+        Check(failed.status == 502 && !strcmp(Code(failed), "upload_failed"), "WeChat's failed status is reported");
+        cJSON_Delete(failed.body);
+        g_status = 1;
+        Outcome slow = Create(content);
+        Check(slow.status == 200, "an upload still running when the wait ends is not an error");
+        cJSON_Delete(slow.body);
+        g_status = 2;
+
+        // Requests that can never work are refused before anything is sent.
+        g_call_count = 0;
+        Outcome remote = Create("<video src=\"https://example.invalid/a.mp4\"/>");
+        Check(remote.status == 400 && !strcmp(Code(remote), "media_unresolved") && g_call_count == 0, "a remote video URL is refused with advice");
+        cJSON_Delete(remote.body);
+        Outcome missing = Create("<file title=\"x.txt\"/>");
+        Check(missing.status == 400 && !strcmp(Code(missing), "media_unresolved"), "a file without a source");
+        cJSON_Delete(missing.body);
+        Outcome gone = Create("<audio src=\"internal:wechat/self_wxid/_tmp/does-not-exist.mp3\"/>");
+        Check(gone.status == 400 && !strcmp(Code(gone), "media_unresolved"), "an expired audio link");
+        cJSON_Delete(gone.body);
+        Outcome not_a_picture = Create("<img src=\"internal:wechat/self_wxid/_tmp/" "x\"/>");
+        Check(not_a_picture.status == 400, "a picture link that does not resolve is still refused");
+        cJSON_Delete(not_a_picture.body);
+        char many[2400] = {};
+        for (int i = 0; i < 9; ++i) {
+            char one[200];
+            snprintf(one, sizeof(one), "<file src=\"internal:wechat/self_wxid/_tmp/%s\" title=\"f%d.pdf\"/>", pdf_name, i);
+            strncat(many, one, sizeof(many) - strlen(many) - 1);
+        }
+        g_call_count = 0;
+        Outcome too_many = Create(many);
+        Check(too_many.status == 400 && !strcmp(Code(too_many), "too_many_media") && g_call_count == 0, "more than eight media elements");
+        cJSON_Delete(too_many.body);
+        // Nothing gets out when one of several is bad.
+        g_call_count = 0;
+        snprintf(content, sizeof(content), "<file src=\"internal:wechat/self_wxid/_tmp/%s\" title=\"ok.pdf\"/><video src=\"https://example.invalid/a.mp4\"/>", pdf_name);
+        Outcome half = Create(content);
+        Check(half.status == 400 && g_call_count == 0, "a bad element stops the whole request before the good one is sent");
+        cJSON_Delete(half.body);
+        // A video posted as a data: URI takes the same route as an uploaded one.
+        g_call_count = 0;
+        char inline_video[20000];
+        static char b64[16000];
+        static const char alphabet[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        size_t out = 0;
+        for (size_t i = 0; i < mp4_size; i += 3) {
+            const unsigned a = mp4[i], b = i + 1 < mp4_size ? mp4[i + 1] : 0, c = i + 2 < mp4_size ? mp4[i + 2] : 0;
+            b64[out++] = alphabet[a >> 2]; b64[out++] = alphabet[((a & 3) << 4) | (b >> 4)];
+            b64[out++] = i + 1 < mp4_size ? alphabet[((b & 15) << 2) | (c >> 6)] : '=';
+            b64[out++] = i + 2 < mp4_size ? alphabet[c & 63] : '=';
+        }
+        b64[out] = 0;
+        snprintf(inline_video, sizeof(inline_video), "<video src=\"data:video/mp4;base64,%s\"/>", b64);
+        Outcome inline_result = Create(inline_video);
+        Check(inline_result.status == 200 && g_calls[0].kind == 'v' && g_calls[0].duration == 1, "an inline mp4 is a video too");
+        cJSON_Delete(inline_result.body);
     }
     {
         char long_text[4200];

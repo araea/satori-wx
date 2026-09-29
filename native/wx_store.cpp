@@ -1524,6 +1524,34 @@ bool StoreFindStalledImage(Store *store, const char *talker, long long since, lo
     return true;
 }
 
+bool StoreFindSentVideo(Store *store, const char *talker, long long since, long long *local_id) {
+    if (!store || !store->db || !SafeSql(talker) || !local_id) return false;
+    char sql[300];
+    snprintf(sql, sizeof(sql),
+             "SELECT msgId FROM message WHERE talker = '%s' AND isSend = 1 AND type = 43 AND msgId > %lld ORDER BY msgId LIMIT 1",
+             talker, since);
+    long long found = 0;
+    pthread_mutex_lock(&store->mutex);
+    WcdbQuery(store->db, sql, LocalIdRow, &found);
+    pthread_mutex_unlock(&store->mutex);
+    if (found <= 0) return false;
+    *local_id = found;
+    return true;
+}
+
+bool StoreSentStatus(Store *store, long long local_id, int *status) {
+    if (!store || !store->db || !status || local_id <= 0) return false;
+    char sql[200];
+    snprintf(sql, sizeof(sql), "SELECT status + 1000 FROM message WHERE msgId = %lld AND isSend = 1", local_id);
+    long long found = 0;
+    pthread_mutex_lock(&store->mutex);
+    WcdbQuery(store->db, sql, LocalIdRow, &found);
+    pthread_mutex_unlock(&store->mutex);
+    if (found < 1000) return false;   // no row (LocalIdRow leaves 0)
+    *status = static_cast<int>(found - 1000);
+    return true;
+}
+
 cJSON *StoreUserObject(Store *store, const char *id) { return MemberUser(store, id); }
 
 cJSON *StoreGuildObject(Store *store, const char *id) {

@@ -2,6 +2,7 @@
 #include "protocol.h"
 #include "multipart.h"
 #include "tempstore.h"
+#include "upload_stream.h"
 #include "version.h"
 #include "webhook.h"
 #include "ws_crypto.h"
@@ -26,6 +27,11 @@ constexpr size_t kHeader = 8192, kMessage = 16384, kInput = kHeader + kMessage;
 // Only `upload.create` may carry a larger body, and only from an authenticated caller: the
 // token is checked from the headers alone, before a single body byte is buffered.
 constexpr size_t kUploadMax = 16u << 20;
+// `upload.create` is the exception to the exception: a multipart body bigger than one JSON
+// message is never buffered. It is parsed as it arrives and written straight to the temp store,
+// so only the disk bounds it (a video is tens to hundreds of MiB). Same rule: the token is
+// checked from the headers before the first body byte is read.
+constexpr uint64_t kUploadStreamMax = 1ull << 30;
 // A client that lets this much data back up unread is a stalled consumer, not a busy one.
 constexpr size_t kOutputMax = 4u << 20;
 // Stop replaying history into a connection while this much is still waiting to be written.
@@ -52,7 +58,18 @@ struct Client {
     // has drained, so a multi-megabyte video never has to fit in memory.
     int file_fd;
     uint64_t file_left;
+    // A multipart upload being written to the temp store as it arrives (see kUploadStreamMax).
+    struct UploadJob *upload;
 };
+struct UploadJob {
+    UploadStream *stream;
+    char platform[64], user[160];
+};
+void UploadFree(UploadJob *job) {
+    if (!job) return;
+    UploadEnd(job->stream);
+    free(job);
+}
 int64_t Now() {
     timespec ts{};
     clock_gettime(CLOCK_MONOTONIC, &ts);
@@ -82,6 +99,7 @@ void Drop(Client &c) {
         if (c.ws && g_client_count > 0) g_client_count = g_client_count - 1;
     }
     if (c.file_fd >= 0) close(c.file_fd);
+    UploadFree(c.upload); c.upload = nullptr;
     free(c.input); free(c.output); free(c.message);
     c.fd = -1; c.file_fd = -1; c.file_left = 0;
     c.input = c.output = c.message = nullptr;
@@ -418,6 +436,26 @@ void WebSocket(Client &c, const Config &config, Hub *hub) {
         memmove(c.input, c.input + consumed, c.used - consumed); c.used -= consumed;
     }
 }
+// Feeds what has arrived of a streamed upload body to its parser and answers when it is over.
+void UploadPump(Client &c) {
+    UploadJob *job = c.upload;
+    const UploadState state = UploadFeed(job->stream, c.input, c.used);
+    c.used = 0;
+    if (state == UploadState::More) { c.deadline = Now() + kRequestMs; return; }
+    if (state == UploadState::Bad) { Reply(c, 400, "Bad Request", "{\"error\":\"invalid_upload\"}"); UploadFree(job); c.upload = nullptr; return; }
+    if (state == UploadState::Failed) { Reply(c, 500, "Internal Server Error", "{\"error\":\"upload_failed\"}"); UploadFree(job); c.upload = nullptr; return; }
+    cJSON *result = cJSON_CreateObject();
+    bool ok = result != nullptr;
+    for (size_t i = 0; ok && i < UploadCount(job->stream); ++i) {
+        char url[512];
+        snprintf(url, sizeof(url), "internal:%s/%s/_tmp/%s", job->platform, job->user, UploadStoredName(job->stream, i));
+        ok = cJSON_AddStringToObject(result, UploadField(job->stream, i), url) != nullptr;
+    }
+    char *text = ok ? cJSON_PrintUnformatted(result) : nullptr;
+    Reply(c, text ? 200 : 500, text ? "OK" : "Internal Server Error", text ? text : "{}");
+    free(text); cJSON_Delete(result);
+    UploadFree(job); c.upload = nullptr;
+}
 struct Header { char *name, *value; };
 bool HeaderToken(const char *list, const char *token) {
     const size_t n = strlen(token);
@@ -433,6 +471,7 @@ bool HeaderToken(const char *list, const char *token) {
     return false;
 }
 void Http(Client &c, const Config &config, Hub *hub, const Backend *backend, WebHooks *hooks) {
+    if (c.upload) { UploadPump(c); return; }
     c.input[c.used] = 0;
     const char *end = static_cast<const char *>(memmem(c.input, c.used, "\r\n\r\n", 4));
     if (!end) {
@@ -483,11 +522,68 @@ void Http(Client &c, const Config &config, Hub *hub, const Backend *backend, Web
     const char *expect = header("Expect");
     const bool wants_continue = !strcasecmp(expect, "100-continue");
     if (*expect && !wants_continue) { Reply(c, 417, "Expectation Failed", "{}"); return; }
-    size_t body_size = 0;
+    uint64_t announced = 0;
     for (const char *p = header("Content-Length"); *p; ++p) {
         if (*p < '0' || *p > '9') { bad(); return; }
-        body_size = body_size * 10 + (*p - '0');
-        if (body_size > kUploadMax) { Reply(c, 413, "Content Too Large", "{}"); return; }
+        announced = announced * 10 + static_cast<uint64_t>(*p - '0');
+        if (announced > kUploadStreamMax) { Reply(c, 413, "Content Too Large", "{}"); return; }
+    }
+    const bool streamed_upload = announced > kMessage && !strcmp(path, "/v1/upload.create");
+    if (!streamed_upload && announced > kUploadMax) { Reply(c, 413, "Content Too Large", "{}"); return; }
+    const size_t body_size = streamed_upload ? 0 : static_cast<size_t>(announced);
+    if (streamed_upload) {
+        // Everything that could refuse the request is checked now, from the headers alone, so a
+        // refused upload costs no body at all (the connection closes with the answer).
+        const char *auth = header("Authorization");
+        if (!*auth) { Reply(c, 401, "Unauthorized", "{\"error\":\"missing_token\"}"); return; }
+        if (strncasecmp(auth, "Bearer ", 7) || !EqualToken(config.token, auth + 7)) {
+            Reply(c, 403, "Forbidden", "{\"error\":\"invalid_token\"}"); return;
+        }
+        if (strcmp(method, "POST")) { Reply(c, 405, "Method Not Allowed", "{}"); return; }
+        const char *content_type = header("Content-Type");
+        if (strncasecmp(content_type, "multipart/form-data;", 20) || !strstr(content_type, "boundary=")) {
+            Reply(c, 415, "Unsupported Media Type", "{}"); return;
+        }
+        if (!*header("Satori-Platform") || !*header("Satori-User-ID")) { Reply(c, 400, "Bad Request", "{\"error\":\"missing_login_headers\"}"); return; }
+        const cJSON *login = FindLogin(hub, header("Satori-Platform"), header("Satori-User-ID"));
+        if (!login) { Reply(c, 403, "Forbidden", "{\"error\":\"login_not_found\"}"); return; }
+        if (cJSON_GetObjectItemCaseSensitive(login, "status")->valuedouble != 1) { Reply(c, 503, "Service Unavailable", "{\"error\":\"login_offline\"}"); return; }
+        bool supported = false;
+        const cJSON *features = cJSON_GetObjectItemCaseSensitive(login, "features");
+        for (const cJSON *f = features ? features->child : nullptr; f; f = f->next)
+            if (cJSON_IsString(f) && !strcmp(f->valuestring, "upload.create")) supported = true;
+        if (!supported) { Reply(c, 404, "Not Found", "{\"error\":\"unsupported_api\"}"); return; }
+        if (!TempStoreAvailable()) { Reply(c, 501, "Not Implemented", "{\"error\":\"upload_unavailable\"}"); return; }
+        auto valid_id = [](const char *id) {
+            const size_t size = strlen(id);
+            if (!size || size >= 128) return false;
+            for (size_t i = 0; i < size; ++i) {
+                const char ch = id[i];
+                if (!((ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') || ch == '_' || ch == '-' || ch == '.')) return false;
+            }
+            return true;
+        };
+        if (!valid_id(header("Satori-Platform")) || !valid_id(header("Satori-User-ID")) ||
+            strlen(header("Satori-Platform")) >= sizeof(UploadJob::platform) || strlen(header("Satori-User-ID")) >= sizeof(UploadJob::user)) {
+            Reply(c, 400, "Bad Request", "{\"error\":\"invalid_upload\"}"); return;
+        }
+        auto *job = static_cast<UploadJob *>(calloc(1, sizeof(UploadJob)));
+        if (!job) { Reply(c, 503, "Service Unavailable", "{\"error\":\"out_of_memory\"}"); return; }
+        job->stream = UploadBegin(content_type, announced);
+        if (!job->stream) { free(job); Reply(c, 400, "Bad Request", "{\"error\":\"invalid_upload\"}"); return; }
+        snprintf(job->platform, sizeof(job->platform), "%s", header("Satori-Platform"));
+        snprintf(job->user, sizeof(job->user), "%s", header("Satori-User-ID"));
+        c.upload = job;
+        c.deadline = Now() + kRequestMs;
+        // The body starts right behind the headers; whatever already arrived is the first chunk.
+        memmove(c.input, c.input + length, c.used - length); c.used -= length;
+        if (wants_continue && !c.continued && !c.used) {
+            static const char interim[] = "HTTP/1.1 100 Continue\r\n\r\n";
+            c.continued = true;
+            Queue(c, interim, sizeof(interim) - 1);
+        }
+        if (c.used) UploadPump(c);
+        return;
     }
     // Everything but the two routes that can carry a picture keeps the small JSON limit
     // (message.create takes an <img src="data:..."> inline, upload.create takes multipart). A

@@ -16,6 +16,20 @@ bool TempStoreAvailable();
 // type and a 5 minute expiry, and copies the stored name into `out`. False on any I/O error.
 bool TempStorePut(const char *filename, const char *content_type, const char *data, size_t size,
                   char *out, size_t capacity);
+// Streaming variant of TempStorePut for bodies that must not be held in memory (a video is
+// tens or hundreds of MiB): begin, write any number of chunks, then finish (or abort). The
+// writer reserves one of the store's slots for its whole life; nothing is visible to
+// TempStoreGet until finish. `filename` is what the client called the file; it is kept (UTF-8,
+// control characters stripped) so a later <file> without a title can still say what it was.
+struct TempWriter;
+TempWriter *TempStoreBegin(const char *filename, const char *content_type);
+bool TempStoreWrite(TempWriter *writer, const char *data, size_t size);
+// Commits the file and frees the writer; copies the stored name into `out`.
+bool TempStoreFinish(TempWriter *writer, char *out, size_t capacity);
+// Deletes the partial file and frees the writer. Null-safe.
+void TempStoreAbort(TempWriter *writer);
+// The client's original file name for a stored name (empty when unknown). False if not stored.
+bool TempStoreOriginalName(const char *name, char *out, size_t capacity);
 struct TempFile {
     const char *path;
     const char *content_type;

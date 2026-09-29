@@ -18,15 +18,15 @@ FLAGS=(-std=c++20 -O2 -fPIC -fvisibility=hidden -fno-exceptions -fno-rtti
        -I "$R/native")
 "$CC" -std=c11 -O2 -fPIC -fvisibility=hidden -DCJSON_HIDE_SYMBOLS -DCJSON_NESTING_LIMIT=16 \
     -c "$R/native/vendor/cjson/cJSON.c" -o "$WORK/cjson.o"
-"$CXX" "${FLAGS[@]}" -shared "$R/native/module.cpp" "$R/native/server.cpp" "$R/native/protocol.cpp" "$R/native/multipart.cpp" \
+"$CXX" "${FLAGS[@]}" -shared "$R/native/module.cpp" "$R/native/server.cpp" "$R/native/protocol.cpp" "$R/native/multipart.cpp" "$R/native/upload_stream.cpp" \
     "$R/native/tempstore.cpp" "$R/native/webhook.cpp" "$R/native/wx_account.cpp" "$R/native/wx_adapter.cpp" "$R/native/wx_live.cpp" "$R/native/wx_watch.cpp" \
-    "$R/native/wx_store.cpp" "$R/native/wx_backend.cpp" "$R/native/wx_capabilities.cpp" "$R/native/wx_send.cpp" \
+    "$R/native/wx_store.cpp" "$R/native/wx_backend.cpp" "$R/native/wx_capabilities.cpp" "$R/native/wx_send.cpp" "$R/native/wx_send_media.cpp" "$R/native/mp4_probe.cpp" \
     "$R/native/wx_room.cpp" "$R/native/wx_pat.cpp" "$R/native/wx_message.cpp" "$R/native/wx_events.cpp" "$R/native/wx_media.cpp" "$R/native/media.cpp" "$R/native/xml_lite.cpp" \
     "$R/native/wx_keepalive.cpp" \
     "$R/native/wx_key.cpp" "$R/native/wcdb.cpp" "$WORK/cjson.o" \
     -Wl,--no-undefined,-z,relro,-z,now -llog -ldl -o "$WORK/module/zygisk/arm64-v8a.so"
 "$CXX" "${FLAGS[@]}" "$R/tools/device_verify.cpp" "$R/native/server.cpp" "$R/native/protocol.cpp" \
-    "$R/native/multipart.cpp" "$R/native/tempstore.cpp" "$R/native/webhook.cpp" "$WORK/cjson.o" -Wl,--no-undefined -o "$OUT/satori-wx-check"
+    "$R/native/multipart.cpp" "$R/native/upload_stream.cpp" "$R/native/tempstore.cpp" "$R/native/webhook.cpp" "$WORK/cjson.o" -Wl,--no-undefined -o "$OUT/satori-wx-check"
 "$CXX" "${FLAGS[@]}" "$R/tools/account_probe.cpp" "$R/native/wx_account.cpp" "$R/native/protocol.cpp" \
     "$R/native/wx_capabilities.cpp" "$WORK/cjson.o" -Wl,--no-undefined -o "$OUT/satori-wx-account"
 "$CXX" "${FLAGS[@]}" "$R/tools/wcdb_probe.cpp" "$R/native/wcdb.cpp" \

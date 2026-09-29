@@ -100,6 +100,12 @@ bool StoreFindSentImage(Store *store, const char *talker, long long since, long 
 // The opposite case: an inserted picture row whose content never filled in — WeChat's pipeline
 // accepted the request but stalled. Used to tell the caller exactly what happened.
 bool StoreFindStalledImage(Store *store, const char *talker, long long since, long long *local_id);
+// The first video message (type 43) this account sent to `talker` after row `since`. WeChat's video
+// pipeline inserts the row at the start (status 1) and fills it in when the upload finishes.
+bool StoreFindSentVideo(Store *store, const char *talker, long long since, long long *local_id);
+// The send status of one of our own rows: 1 sending, 2 sent, 5 failed (other values as WeChat
+// writes them). False when the row does not exist.
+bool StoreSentStatus(Store *store, long long local_id, int *status);
 // Satori User / Guild objects for event payloads; a bare {"id"} when the contact is unknown.
 cJSON *StoreUserObject(Store *store, const char *id);
 cJSON *StoreGuildObject(Store *store, const char *id);

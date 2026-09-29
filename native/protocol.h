@@ -45,6 +45,11 @@ size_t ImageSources(const char *content, char (*out)[kImageSrcMax], size_t max);
 // bytes supplied by the caller, and `src_size` says how long the attribute really was.
 struct ImageSpan { size_t begin, end; };
 size_t ImageSpans(const char *content, ImageSpan *out, size_t max);
+// The same scan for every element WeChat carries as a message of its own: pictures, audio,
+// video and files. `kind` is 'i' (img), 'a' (audio), 'v' (video) or 'f' (file). Closing tags
+// are ignored, so `<file src=".."></file>` counts once.
+struct MediaSpan { size_t begin, end; char kind; };
+size_t MediaSpans(const char *content, MediaSpan *out, size_t max);
 // The value of `name` inside the tag [begin, end) of `content`, entity-decoded, or false.
 bool TagAttribute(const char *content, const ImageSpan &tag, const char *name, char *out, size_t capacity);
 // RFC 4648 base64 (whitespace ignored, padding optional). Returns the decoded size, or -1 on a

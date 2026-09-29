@@ -193,6 +193,77 @@ class ProtocolTests(unittest.TestCase):
         with Wire() as w:  # Any other expectation is still refused.
             w.sock.sendall(b'POST /v1/meta HTTP/1.1\r\nHost: x\r\nExpect: something\r\n\r\n')
             self.assertEqual(int(w.file.readline().split()[1]), 417)
+    def test_upload_streams_past_the_json_limit(self):
+        # 40 MiB: three times the old buffered ceiling. The body is written to the store as it
+        # arrives, in odd-sized pieces that straddle the multipart boundary.
+        payload = os.urandom(40 * 1024 * 1024 + 3)
+        payload = payload[:1000] + b'\r\n--boundary' + payload[1000:]   # data that looks like the delimiter
+        body, h = self.multipart(payload, name='clip.mp4', ctype='video/mp4')
+        with Wire() as w:
+            head = (b'POST /v1/upload.create HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer ' + TOKEN.encode() +
+                    b'\r\nSatori-Platform: wechat\r\nSatori-User-ID: fixture\r\nContent-Type: ' + h['Content-Type'].encode() +
+                    b'\r\nContent-Length: ' + str(len(body)).encode() + b'\r\n\r\n')
+            w.sock.sendall(head)
+            view = memoryview(body)
+            step = 700001
+            for off in range(0, len(body), step):
+                w.sock.sendall(view[off:off + step])
+            status = int(w.file.readline().split()[1])
+            self.assertEqual(status, 200)
+        # Read the answer through the ordinary helper as well, then fetch the file back.
+        body2, h2 = self.multipart(b'second small one', name='b.txt', ctype='text/plain')
+        s2, r2 = wire.ServerTests.http(self, '/v1/upload.create', body2, headers=h2)
+        self.assertEqual(s2, 200)
+        self.assertEqual(wire.ServerTests.raw_http('/v1/proxy/' + r2['file'])[2], b'second small one')
+    def test_streamed_upload_round_trip(self):
+        payload = os.urandom(5 * 1024 * 1024 + 11)
+        body, h = self.multipart(payload, name='ある.bin')
+        status, result = wire.ServerTests.http(self, '/v1/upload.create', body, headers=h)
+        self.assertEqual(status, 200, result)
+        pstatus, headers, pbody = wire.ServerTests.raw_http('/v1/proxy/' + result['file'])
+        self.assertEqual((pstatus, pbody), (200, payload))
+    def test_streamed_upload_is_checked_before_the_body(self):
+        body, h = self.multipart(os.urandom(100000))
+        base = (b'POST /v1/upload.create HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer ' + TOKEN.encode() + b'\r\n')
+        length = b'\r\nContent-Length: ' + str(len(body)).encode() + b'\r\n\r\n'
+        cases = [
+            ('unknown login', b'Satori-Platform: wechat\r\nSatori-User-ID: nobody\r\nContent-Type: ' + h['Content-Type'].encode(), 403),
+            ('no login headers', b'Content-Type: ' + h['Content-Type'].encode(), 400),
+            ('not multipart', b'Satori-Platform: wechat\r\nSatori-User-ID: fixture\r\nContent-Type: application/json', 415),
+            ('multipart without boundary', b'Satori-Platform: wechat\r\nSatori-User-ID: fixture\r\nContent-Type: multipart/form-data; x=1', 415),
+        ]
+        for name, extra, code in cases:
+            with self.subTest(name), Wire() as w:
+                w.sock.sendall(base + extra + length)   # only the headers: the answer must not wait for the body
+                self.assertEqual(int(w.file.readline().split()[1]), code)
+        # Announcing more than the streaming ceiling is refused outright.
+        with Wire() as w:
+            w.sock.sendall(base + b'Satori-Platform: wechat\r\nSatori-User-ID: fixture\r\nContent-Type: ' + h['Content-Type'].encode() +
+                           b'\r\nContent-Length: 2000000000\r\n\r\n')
+            self.assertEqual(int(w.file.readline().split()[1]), 413)
+    def test_streamed_upload_rejects_malformed_bodies(self):
+        payload = os.urandom(200000)
+        good, h = self.multipart(payload)
+        head = lambda n: (b'POST /v1/upload.create HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer ' + TOKEN.encode() +
+                          b'\r\nSatori-Platform: wechat\r\nSatori-User-ID: fixture\r\nContent-Type: ' + h['Content-Type'].encode() +
+                          b'\r\nContent-Length: ' + str(n).encode() + b'\r\n\r\n')
+        for name, body in [('no closing boundary', good[:-len(b'--boundary--\r\n')]),
+                           ('junk after the end', good + b'junk'),
+                           ('garbage before the boundary', b'junk\r\n' + good)]:
+            with self.subTest(name), Wire() as w:
+                w.sock.sendall(head(len(body)) + body)
+                self.assertEqual(int(w.file.readline().split()[1]), 400)
+        # A client that announces a big body and then goes away leaves the server healthy.
+        with Wire() as w:
+            w.sock.sendall(head(len(good)) + good[:50000])
+        self.assertEqual(self.http('meta')[0], 200)
+        # Expect: 100-continue works on the streamed path as well.
+        with Wire() as w:
+            w.sock.sendall(head(len(good)).replace(b'\r\nContent-Type', b'\r\nExpect: 100-continue\r\nContent-Type', 1))
+            self.assertEqual(w.file.readline(), b'HTTP/1.1 100 Continue\r\n')
+            self.assertEqual(w.file.readline(), b'\r\n')
+            w.sock.sendall(good)
+            self.assertEqual(int(w.file.readline().split()[1]), 200)
     def test_media_resolver_route(self):
         payload = bytes(range(256)) * 4096
         with open(os.path.join(self.media, 'clip.mp4'), 'wb') as f: f.write(payload)
