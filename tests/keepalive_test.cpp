@@ -30,7 +30,8 @@ void CheckNumber(const cJSON *keep, const char *name, double expected) {
 } // namespace
 
 int main() {
-    // Defaults: nothing posted, no holds, no clients, no login.
+    // Defaults: nothing posted, no holds, no clients, no login. The user toggle wakes up on:
+    // the locks themselves cannot be held here (no JVM), only wanted.
     cJSON *status = cJSON_CreateObject();
     satori::KeepaliveStatus(status);
     const cJSON *keep = Field(status, "keepalive");
@@ -38,7 +39,7 @@ int main() {
     CheckBool(keep, "notification", false);
     CheckBool(keep, "notifications_enabled", false);
     CheckBool(keep, "channel", false);
-    CheckBool(keep, "wakelock", false);
+    CheckBool(keep, "wakelock", true);
     CheckBool(keep, "wakelock_held", false);
     CheckBool(keep, "cpu_held", false);
     CheckBool(keep, "wifi_held", false);

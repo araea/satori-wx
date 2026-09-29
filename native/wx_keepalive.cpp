@@ -54,7 +54,10 @@ bool g_started = false;
 char g_token[129] = {};
 unsigned g_port = 5601;
 
-volatile bool g_want_lock = false;
+// The user toggle defaults to on: the module exists to keep the service responsive, so the
+// untimed CPU + Wi-Fi hold is armed from the first keeper tick. The button and
+// POST /v1/internal/wakelock turn it off for the current boot.
+volatile bool g_want_lock = true;
 volatile bool g_lock_held = false;
 // Nesting depth of module-driven holds around outbound work; a user hold is independent.
 volatile int g_auto_depth = 0;
