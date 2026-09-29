@@ -148,7 +148,11 @@ class ServerTests(unittest.TestCase):
         with Wire() as w:
             w.upgrade()
             op, payload = w.identify()
-            self.assertEqual((op, json.loads(payload)), (1, {'op': 4, 'body': {'logins': [], 'proxy_urls': []}}))
+            ready = json.loads(payload)
+            extension = ready['body'].pop('satori_wx')  # the process identity: an integer sequence and a session id
+            self.assertEqual((op, ready), (1, {'op': 4, 'body': {'logins': [], 'proxy_urls': []}}))
+            self.assertIsInstance(extension['sn'], int)  # never `1.79e+15`: integer parsers refuse floats
+            self.assertEqual(str(extension['sn']), payload.decode().split('"sn":')[1].split('}')[0])
             w.send('{"op":1}')
             self.assertEqual(w.receive(), (1, b'{"op":2}'))
             w.send(b'ping', op=9)
@@ -164,7 +168,14 @@ class ServerTests(unittest.TestCase):
     def test_resume(self):
         with Wire() as w:
             w.upgrade(); self.assertEqual(json.loads(w.identify(sn=0)[1])['op'], 4)
-        self.ws_close(json.dumps({'op': 3, 'body': {'token': TOKEN, 'sn': 1}}), 4009)
+        # A cursor from another process (or out of the replay window) is not refused: the
+        # reference server answers READY too, and adapter-satori keeps its last `sn` across
+        # restarts. The READY names the session so the client can tell.
+        for sn in (1, 2 ** 52):
+            with Wire() as w:
+                w.upgrade(); ready = json.loads(w.identify(sn=sn)[1])
+                self.assertEqual(ready['op'], 4)
+                self.assertEqual(ready['body']['satori_wx']['session_id'].isdigit(), True)
     def test_repeated_identify(self):
         with Wire() as w:
             w.upgrade(); w.identify()

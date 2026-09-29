@@ -99,7 +99,8 @@ int main() {
         Check(!strcmp(Str(event, "type"), "message-deleted"), "type");
         Check(!strcmp(Nested(event, "message", "id"), "10"), "message id is the local id the message was announced with");
         Check(!strcmp(Nested(event, "channel", "id"), "123@chatroom") && !strcmp(Nested(event, "guild", "id"), "123@chatroom"), "channel and guild");
-        Check(!strcmp(Nested(event, "user", "id"), "wxid_a") && !strcmp(Nested(Item(event, "message"), "user", "id"), "wxid_a"), "the author is remembered from the announcement");
+        Check(!strcmp(Nested(event, "user", "id"), "wxid_a") && !Item(Item(event, "message"), "user"), "the author is remembered from the announcement, at the top level only");
+        Check(Item(Item(event, "message"), "created_at") && !Item(Item(event, "message"), "timestamp"), "message time is created_at");
         Check(!strcmp(Nested(event, "user", "nick"), "甲"), "and described");
         Check(Item(Item(event, "login"), "sn") && Item(event, "timestamp"), "login and timestamp");
         cJSON_Delete(event);
@@ -128,7 +129,7 @@ int main() {
         Check(!strcmp(Str(event, "type"), "guild-member-added"), "member added");
         Check(!strcmp(Nested(event, "guild", "id"), "123@chatroom") && !strcmp(Nested(event, "guild", "name"), "群名"), "guild with its name");
         Check(!strcmp(Nested(event, "user", "id"), "wxid_c") && !strcmp(Nested(event, "user", "nick"), "丙"), "the new member");
-        Check(!strcmp(Nested(Item(event, "member"), "user", "id"), "wxid_c"), "as a guild member too");
+        Check(Item(event, "member") && !Item(Item(event, "member"), "user") && Item(Item(event, "member"), "joined_at"), "the member carries the join time, not the user again");
         cJSON_Delete(event);
     }
     sink.Clear();
@@ -195,7 +196,7 @@ int main() {
     if (sink.count == 1) {
         cJSON *event = Event(sink, 0);
         Check(!strcmp(Str(event, "type"), "friend-added") && !strcmp(Nested(event, "user", "id"), "wxid_stranger") &&
-                  !strcmp(Nested(Item(event, "friend"), "user", "id"), "wxid_stranger"), "friend-added");
+                  !Item(event, "friend"), "friend-added: the friend is the user resource");
         cJSON_Delete(event);
     }
     sink.Clear();

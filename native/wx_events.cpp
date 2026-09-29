@@ -127,13 +127,10 @@ void AnnounceRevoked(Scanner *scanner, const RevokedRow &row, long long now_ms) 
         char id[24];
         snprintf(id, sizeof(id), "%lld", row.id);
         cJSON_AddStringToObject(message, "id", id);
-        cJSON_AddNumberToObject(message, "timestamp", static_cast<double>(row.create_time));
+        cJSON_AddNumberToObject(message, "created_at", static_cast<double>(row.create_time));
         cJSON_AddItemToObject(event, "message", message);
     }
-    if (known) {
-        cJSON_AddItemToObject(event, "user", StoreUserObject(scanner->store, author));
-        if (message) cJSON_AddItemToObject(message, "user", StoreUserObject(scanner->store, author));
-    }
+    if (known) cJSON_AddItemToObject(event, "user", StoreUserObject(scanner->store, author));
     Enqueue(scanner, event);
 }
 
@@ -148,22 +145,22 @@ void AnnounceMember(Scanner *scanner, const char *type, const char *room, const 
     cJSON *event = BaseEvent(*scanner, type, now_ms);
     if (!event) return;
     cJSON_AddItemToObject(event, "guild", StoreGuildObject(scanner->store, room));
-    cJSON *user = StoreUserObject(scanner->store, user_id);
+    // `user` lives at the top level only; the member carries what belongs to the membership.
     cJSON *member = cJSON_CreateObject();
-    if (member && user) cJSON_AddItemToObject(member, "user", cJSON_Duplicate(user, true));
-    if (user) cJSON_AddItemToObject(event, "user", user);
+    if (member && !strcmp(type, "guild-member-added")) cJSON_AddNumberToObject(member, "joined_at", static_cast<double>(now_ms));
     if (member) cJSON_AddItemToObject(event, "member", member);
+    cJSON *user = StoreUserObject(scanner->store, user_id);
+    if (user) cJSON_AddItemToObject(event, "user", user);
     Enqueue(scanner, event);
 }
 
 void AnnounceFriend(Scanner *scanner, const char *type, const char *user_id, long long now_ms) {
     cJSON *event = BaseEvent(*scanner, type, now_ms);
     if (!event) return;
+    // The friend is the `user` resource; a `friend` object that only repeated it would break the
+    // promotion rule, and WeChat gives no remark name to put in it.
     cJSON *user = StoreUserObject(scanner->store, user_id);
-    cJSON *friend_object = cJSON_CreateObject();
-    if (friend_object && user) cJSON_AddItemToObject(friend_object, "user", cJSON_Duplicate(user, true));
     if (user) cJSON_AddItemToObject(event, "user", user);
-    if (friend_object) cJSON_AddItemToObject(event, "friend", friend_object);
     Enqueue(scanner, event);
 }
 

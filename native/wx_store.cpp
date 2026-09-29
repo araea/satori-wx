@@ -927,7 +927,7 @@ cJSON *BuildMessage(Store *store, const Row &row, const Decoded &decoded, Parts 
     snprintf(id, sizeof(id), "%lld", row.id);
     cJSON_AddStringToObject(message, "id", id);
     cJSON_AddStringToObject(message, "content", content);
-    cJSON_AddNumberToObject(message, "timestamp", static_cast<double>(row.create_time));
+    cJSON_AddNumberToObject(message, "created_at", static_cast<double>(row.create_time));
     free(content);
     cJSON_AddItemToObject(message, "channel", cJSON_Duplicate(parts.channel, true));
     cJSON_AddItemToObject(message, "user", cJSON_Duplicate(parts.user, true));
@@ -938,7 +938,8 @@ cJSON *BuildMessage(Store *store, const Row &row, const Decoded &decoded, Parts 
     return message;
 }
 
-// The event wrapper Satori wants around a message: the same resources, promoted to the top.
+// The event wrapper Satori wants around a message: the resources are promoted to the top and
+// leave the `message` itself.
 char *MessageEventJson(int login_sn, const char *type, cJSON *message, Parts &parts, double timestamp, bool manual_self = false) {
     cJSON *root = cJSON_CreateObject();
     cJSON *login = cJSON_CreateObject();
@@ -951,6 +952,10 @@ char *MessageEventJson(int login_sn, const char *type, cJSON *message, Parts &pa
     if (parts.guild) { cJSON_AddItemToObject(root, "guild", parts.guild); parts.guild = nullptr; }
     if (parts.user) { cJSON_AddItemToObject(root, "user", parts.user); parts.user = nullptr; }
     if (parts.member) { cJSON_AddItemToObject(root, "member", parts.member); parts.member = nullptr; }
+    // Resource promotion (the protocol overview): what the event carries at the top level is not
+    // repeated inside `message`. `message.get` / `message.list` keep the nested form.
+    static const char *const kPromoted[] = {"channel", "guild", "user", "member"};
+    for (const char *key : kPromoted) cJSON_DeleteItemFromObjectCaseSensitive(message, key);
     cJSON_AddItemToObject(root, "message", message);
     if (manual_self) {
         // Same shape as satori-qq's extension: the account's own message, typed by its owner.

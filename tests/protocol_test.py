@@ -302,7 +302,12 @@ class ProtocolTests(unittest.TestCase):
         with Wire() as w:
             w.upgrade(); _, ready = w.identify()
             ready = json.loads(ready)
+            extension = ready['body'].pop('satori_wx')  # the process identity rides in READY only
             self.assertEqual(ready['body'], self.http('meta')[1])
+            self.assertEqual(extension['sn'], self.http('internal/status')[1]['sequence'])
+            with Wire() as again:  # same process, same session id; a restart would change it
+                again.upgrade(); _, second = again.identify()
+                self.assertEqual(json.loads(second)['body']['satori_wx']['session_id'], extension['session_id'])
             self.assertEqual(self.http('login.get')[1], ready['body']['logins'][0])
             self.publish({'proxy_urls': [], 'logins': [{'fake': True}]}, meta=True)
             op, body = w.receive()
@@ -354,9 +359,11 @@ class ProtocolTests(unittest.TestCase):
     def test_replay_floor(self):
         for i in range(80): self.publish(self.event(str(i)))
         self.wait_sequence(self.base + 80)
-        with Wire() as w:
+        with Wire() as w:  # too old for the replay window: READY, then live only, no partial history
             w.upgrade(); op, body = w.identify(sn=self.base)
-            self.assertEqual((op, struct.unpack('!H', body)[0]), (8, 4009))
+            self.assertEqual(json.loads(body)['op'], 4)
+            self.publish(self.event('live'))
+            self.assertEqual(json.loads(w.receive()[1])['body']['message']['content'], 'live')
         with Wire() as w:
             w.upgrade(); w.identify(sn=self.base + 79)
             self.assertEqual(json.loads(w.receive()[1])['body']['message']['content'], '79')

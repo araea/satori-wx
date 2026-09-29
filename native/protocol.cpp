@@ -555,8 +555,12 @@ Hub *CreateHub() {
     hub->meta = cJSON_Parse("{\"logins\":[],\"proxy_urls\":[]}");
     if (!hub->meta) { free(hub); return nullptr; }
     timespec ts{}; clock_gettime(CLOCK_REALTIME, &ts);
-    // Disjoint practical sequence ranges across process restarts; still a JS-safe integer.
-    hub->epoch = static_cast<uint64_t>(ts.tv_sec) * 1000000 + ts.tv_nsec / 1000;
+    // Disjoint practical sequence ranges across process restarts (a restart takes far longer
+    // than the events of one millisecond). Milliseconds, not microseconds: cJSON prints a
+    // double with 15 significant digits when that round-trips, so a 16-digit sequence ending in
+    // 0 came out as `1.7907233899972e+15`, a float that integer parsers such as serde_json's
+    // `as_i64()` refuse. Thirteen digits always print as plain integers.
+    hub->epoch = static_cast<uint64_t>(ts.tv_sec) * 1000 + ts.tv_nsec / 1000000;
     hub->latest = hub->floor = hub->lost_through = hub->epoch;
     return hub;
 }
@@ -566,6 +570,19 @@ void DestroyHub(Hub *hub) {
     cJSON_Delete(hub->meta); free(hub);
 }
 const cJSON *Meta(Hub *hub) { return hub->meta; }
+cJSON *ReadyBody(Hub *hub) {
+    cJSON *body = cJSON_Duplicate(hub->meta, true);
+    cJSON *extension = cJSON_CreateObject();
+    if (!body || !extension) { cJSON_Delete(body); cJSON_Delete(extension); return nullptr; }
+    char session[24];
+    snprintf(session, sizeof(session), "%llu", static_cast<unsigned long long>(hub->epoch));
+    if (!cJSON_AddStringToObject(extension, "session_id", session) ||
+        !cJSON_AddNumberToObject(extension, "sn", static_cast<double>(hub->latest)) ||
+        !cJSON_AddItemToObject(body, "satori_wx", extension)) {
+        cJSON_Delete(body); cJSON_Delete(extension); return nullptr;
+    }
+    return body;
+}
 const cJSON *FindLogin(Hub *hub, const char *platform, const char *user) {
     for (const cJSON *p = Item(hub->meta, "logins")->child; p; p = p->next) {
         const cJSON *pf = Item(p, "platform"), *id = Item(Item(p, "user"), "id");

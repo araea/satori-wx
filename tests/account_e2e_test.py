@@ -82,7 +82,7 @@ class AccountEndToEndTests(unittest.TestCase):
                                              'channel.get', 'channel.list', 'user.channel.create',
                                              'upload.create', 'message.create', 'message.delete', 'channel.delete',
                                              'guild.member.kick', 'guild.member.role.set',
-                                             'guild.member.role.unset'])
+                                             'guild.member.role.unset', 'login.get', 'guild.plain'])
         self.assertEqual(self.login_get(), (200, login))
         with Wire() as w:
             w.upgrade()

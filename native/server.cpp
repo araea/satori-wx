@@ -361,13 +361,20 @@ void Signal(Client &c, const char *data, size_t size, const Config &config, Hub 
         else if (sn && (!cJSON_IsNumber(sn) || !isfinite(sn->valuedouble) || sn->valuedouble < 0 ||
                         sn->valuedouble > 9007199254740991.0 || floor(sn->valuedouble) != sn->valuedouble)) {
             Close(c, 4000);
-        } else if (sn && !CanResume(hub, static_cast<uint64_t>(sn->valuedouble))) {
-            Close(c, 4009);
         } else {
+            // A cursor this process cannot honour (it belongs to an earlier process, or has
+            // fallen out of the replay window) is not an error: the reference server never
+            // refuses IDENTIFY either, and clients such as adapter-satori keep the last `sn`
+            // across restarts, so rejecting would leave them reconnecting forever. Answer READY
+            // and continue live; `satori_wx.session_id` in it tells a client whether the
+            // server restarted.
+            const bool resume = sn && CanResume(hub, static_cast<uint64_t>(sn->valuedouble));
             c.identified = true; c.deadline = Now() + kHeartbeatMs;
             c.replay_until = Latest(hub);
-            c.cursor = sn ? static_cast<uint64_t>(sn->valuedouble) : Latest(hub);
-            char *ready = Envelope(4, Meta(hub));
+            c.cursor = resume ? static_cast<uint64_t>(sn->valuedouble) : Latest(hub);
+            cJSON *body = ReadyBody(hub);
+            char *ready = body ? Envelope(4, body) : nullptr;
+            cJSON_Delete(body);
             if (ready) { Frame(c, 1, ready, strlen(ready)); free(ready); }
             else Close(c, 1011);
         }

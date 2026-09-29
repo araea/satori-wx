@@ -67,8 +67,7 @@ cJSON *SentMessage(Store *store, const char *channel_id, const char *content, lo
     snprintf(id, sizeof(id), "%lld", local_id);
     cJSON_AddStringToObject(message, "id", id);
     cJSON_AddStringToObject(message, "content", escaped);
-    cJSON_AddNumberToObject(message, "timestamp", static_cast<double>(time(nullptr)));
-    cJSON_AddNumberToObject(message, "created_at", static_cast<double>(time(nullptr)));
+    cJSON_AddNumberToObject(message, "created_at", static_cast<double>(time(nullptr)) * 1000);
     cJSON_AddStringToObject(channel, "id", channel_id);
     cJSON_AddNumberToObject(channel, "type", strstr(channel_id, "@chatroom") ? 0 : 1);
     cJSON_AddStringToObject(user, "id", StoreSelfId(store));
@@ -401,7 +400,7 @@ cJSON *SentMediaMessage(Store *store, const char *channel_id, long long local_id
     cJSON_AddItemToObject(message, "user", user);
     cJSON_AddStringToObject(message, "id", id);
     cJSON_AddStringToObject(message, "content", content);
-    cJSON_AddNumberToObject(message, "timestamp", static_cast<double>(time(nullptr)) * 1000);
+    cJSON_AddNumberToObject(message, "created_at", static_cast<double>(time(nullptr)) * 1000);
     cJSON_AddStringToObject(channel, "id", channel_id);
     cJSON_AddNumberToObject(channel, "type", strstr(channel_id, "@chatroom") ? 0 : 1);
     cJSON_AddStringToObject(user, "id", StoreSelfId(store));

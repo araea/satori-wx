@@ -36,7 +36,9 @@ bool Parse(const char *body, satori::Config *config) {
 void TestFeatures() {
     size_t count = 0;
     const char *const *list = satori::WeChatFeatures(&count);
-    Check(count == 20, "feature count is 20: the write methods are always published");
+    Check(count == 22, "feature count is 22: the write methods are always published, plus login.get and guild.plain");
+    Check(HasFeature(list, count, "login.get"), "login.get present: every SDK implements it");
+    Check(HasFeature(list, count, "guild.plain"), "guild.plain present: a WeChat group is its only channel");
     Check(HasFeature(list, count, "message.create"), "message.create present");
     Check(HasFeature(list, count, "message.delete"), "message.delete present");
     Check(HasFeature(list, count, "channel.delete"), "channel.delete present");

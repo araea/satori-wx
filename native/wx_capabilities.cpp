@@ -17,6 +17,9 @@ const char *const kFeatures[] = {
     "guild.member.kick",
     "guild.member.role.set",
     "guild.member.role.unset",
+    "login.get",
+    // A WeChat group chat is the guild and its only channel: `guild.id` == `channel.id`.
+    "guild.plain",
 };
 // Standard methods WeChat has no concept for. Reported so clients can mark them unusable
 // instead of retrying: WeChat messages cannot be edited and carry no reactions, groups have

@@ -72,6 +72,10 @@ struct Hub;
 Hub *CreateHub();
 void DestroyHub(Hub *hub);
 const cJSON *Meta(Hub *hub);
+// The READY body: the meta snapshot plus this process's session identity under `satori_wx`
+// (`session_id`, `sn`). A client that sees `session_id` change knows the server restarted and
+// that its `sn` cursor belongs to an earlier life. Caller frees.
+cJSON *ReadyBody(Hub *hub);
 // Number of ONLINE logins currently in the hub snapshot. Updated by Apply; the message
 // store waits for this so it does not publish before the login is known (events are dropped).
 extern volatile int g_login_count;

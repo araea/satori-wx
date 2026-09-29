@@ -152,17 +152,19 @@ int main() {
         cJSON *group = cJSON_Parse(sink.events[0]);
         Check(!strcmp(Str(group, "type"), "message-created"), "event type");
         Check(Num(group, "timestamp") == 1700000000000.0, "timestamp");
+        Check(Num(Item(group, "message"), "created_at") == 1700000000000.0 && !Item(Item(group, "message"), "timestamp"), "message time is created_at in ms");
         Check(Num(Item(group, "login"), "sn") == 1, "login sn");
         Check(!strcmp(Nested(group, "user", "id"), "wxid_abc"), "group sender from prefix");
         Check(!strcmp(Nested(group, "message", "content"), "你好"), "group text without prefix");
         Check(!strcmp(Nested(group, "channel", "id"), "123@chatroom"), "group channel id");
         Check(Num(Item(group, "channel"), "type") == 0, "group channel type");
-        Check(!strcmp(Nested(Item(group, "message"), "channel", "id"), "123@chatroom"), "message carries channel");
+        // Resource promotion: nothing the event carries at the top is repeated inside `message`.
+        Check(!Item(Item(group, "message"), "channel") && !Item(Item(group, "message"), "user") &&
+                  !Item(Item(group, "message"), "guild") && !Item(Item(group, "message"), "member"), "message carries no promoted resources");
         // Satori wants the guild and the member promoted next to the message in a group.
         Check(!strcmp(Nested(group, "guild", "id"), "123@chatroom") && !strcmp(Nested(group, "guild", "name"), "群备注"), "group event carries the guild");
         Check(!strcmp(Nested(group, "member", "nick"), "甲"), "group event carries the in-group nickname");
         Check(!strcmp(Nested(group, "channel", "name"), "群备注"), "group channel is named after the group");
-        Check(!strcmp(Nested(Item(group, "message"), "guild", "id"), "123@chatroom"), "message carries the guild too");
         cJSON_Delete(group);
         cJSON *priv = cJSON_Parse(sink.events[1]);
         Check(!strcmp(Nested(priv, "user", "id"), "wxid_xyz"), "private sender");
