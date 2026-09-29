@@ -8,7 +8,7 @@
 
 纯 native C++：无 DEX、无 Java 助手、无 ArtMethod 改写、无 hook 引擎。连发送都是纯反射调用微信自己的代码，不加载任何额外东西。
 
-当前版本 v0.11.0：响应速度与去开关。v0.10.0 之前读侧与事件侧补齐、发送侧有了群内 @ 与图片；v0.11.0 把新消息的到达从 1–2 秒一拍的轮询改成 inotify 驱动（毫秒级），把 wxguard 的解冻从 5 秒轮询改成 cgroup 事件驱动（几毫秒），撤掉发送开关（写方法始终在 features 里；旧配置里的 `send=` 仍被接受但不起作用），并整理了常驻通知（不再重复标题、不再显示唤醒锁与发送状态）。
+当前版本 v0.11.2：常驻通知改为单行收起态。v0.11.0 之前读侧与事件侧补齐、发送侧有了群内 @ 与图片；v0.11.0 把新消息的到达从 1–2 秒一拍的轮询改成 inotify 驱动（毫秒级），把 wxguard 的解冻从 5 秒轮询改成 cgroup 事件驱动（几毫秒），撤掉发送开关（写方法始终在 features 里；旧配置里的 `send=` 仍被接受但不起作用），并整理了常驻通知（不再重复标题、不再显示唤醒锁与发送状态）；v0.11.1 修了图片发送的确认（空壳行不算发出）；v0.11.2 撤掉常驻通知的 `BigTextStyle`——Android 12 起拉下通知栏时带样式的通知默认展开，没有公开 API 能让它默认收起，普通单行通知是唯一收起态的形态，在线时长并入这一行。
 
 - 收到的消息按 Satori 元素解码（图片 / 语音 / 视频 / 表情 / 链接 / 文件 / 回复 / @），媒体是签名链接，由 `/v1/proxy` 流式回包，见 [消息内容](wechat-content.md)。
 - 事件：`message-created`（带 `guild` `member` 与头像）、`message-deleted`、`guild-member-added|removed`、`guild-added|removed`、`friend-added|removed`，见 [事件](wechat-events.md)。
@@ -198,7 +198,7 @@ python3 tools/dexmethodstrings.py $APK 'Lcom/tencent/mm/app/q3;' b
 3. 想继续写功能：从 5 个待做写操作里挑一个，按发送 / 撤回的老路子做。先只读地找到微信自己的接口（离线 DEX 反查 + 必要时 JADX），再反射调用，最后真机验一条。群改名在可读 dex 里没有 cgi，删好友也没有 `delcontact`（只有 `delcontactlabel`），入群 / 好友审批依赖申请消息里的 ticket。想碰媒体发送先读 [发送各类消息](wechat-send-types.md)。
 4. 纪律：每个方法真实实现后才进 `features`；`unsupported` 只放微信真的没有的能力；破坏性动作不伪造成功。往上加 `unsupported` 条目时记得同步 `tests/capabilities_test.cpp` 的计数断言。
 
-## v0.10.0 / v0.11.0 真机验收清单（重启手机、微信起来之后按顺序跑一遍）
+## v0.10.0 / v0.11.0 / v0.11.2 真机验收清单（重启手机、微信起来之后按顺序跑一遍）
 
 模块的 `.so` 在开机时被 Zygisk Next 钉成 memfd，覆盖磁盘文件后必须重启手机才会加载新代码（见 `satori-wx-module-deploy` 记忆条目）。主机测试里没有的部分只能在这里验：JNI 调用、真实的库与文件。
 
@@ -212,6 +212,10 @@ api() { local body=${2:-'{}'}; curl -s -X POST "http://127.0.0.1:5601/v1/$1" -H 
 # 0) v0.11.0：events.watching 必须是 true，然后量延迟——http 几十毫秒、event 也是几十毫秒（旧轮询是 200–1900ms 均匀分布）
 api internal/status | head -c 600
 python3 tools/latency-probe.py -n 10
+
+# 0b) v0.11.2：拉下通知栏，知言的条目应当是收起的一行（标题 + 客户端数 + 端口 + 在线时长），
+#     不再自动展开；点开长按也没有展开的正文（BigTextStyle 已撤，在线时长就在这一行里）
+api internal/status | python3 -c 'import json,sys; print(json.load(sys.stdin)["keepalive"])'
 
 # 1) 版本、事件计数、send.media；capabilities 里要有 event_types
 api internal/status | head -c 1500

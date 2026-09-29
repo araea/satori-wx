@@ -31,9 +31,11 @@ void KeepaliveWakelockEnd();
 // Adds the "keepalive" block to /v1/internal/status and /v1/internal/capabilities.
 void KeepaliveStatus(cJSON *object);
 // The text the resident notification shows for the current state: `title` and `text` are the
-// collapsed row, `big` is the expanded body (`text` plus the uptime line; never the title again,
-// and nothing about the wake lock or sending). Returns the accent color. `serving_ms` is how long
-// the service has been online and listening (0 when it is not). Exposed for tests.
-int KeepaliveRender(long long serving_ms, char *title, size_t title_size, char *text, size_t text_size,
-                    char *big, size_t big_size);
+// single collapsed row (`text` ends with the uptime; nothing about the wake lock, which is the
+// button's own label, or about sending, which has no switch). The row is posted without an
+// expandable style on purpose: Android 12 and later open the shade with styled notifications
+// expanded, and a plain row is the only thing it keeps collapsed. Returns the accent color.
+// `serving_ms` is how long the service has been online and listening (0 when it is not).
+// Exposed for tests.
+int KeepaliveRender(long long serving_ms, char *title, size_t title_size, char *text, size_t text_size);
 } // namespace satori

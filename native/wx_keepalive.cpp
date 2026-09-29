@@ -123,7 +123,7 @@ struct Java {
     jobject lock = nullptr;      // PowerManager.WakeLock
     jobject wifi_lock = nullptr; // WifiManager.WifiLock
     jclass cls_context = nullptr, cls_pm = nullptr, cls_nm = nullptr, cls_builder = nullptr,
-           cls_big = nullptr, cls_pi = nullptr, cls_intent = nullptr, cls_component = nullptr,
+           cls_pi = nullptr, cls_intent = nullptr, cls_component = nullptr,
            cls_channel = nullptr, cls_sbn = nullptr;
     jmethodID get_service = nullptr, get_package_name = nullptr, get_app_context = nullptr,
               get_app_info = nullptr, get_package_manager = nullptr, start_service = nullptr;
@@ -132,10 +132,9 @@ struct Java {
     jmethodID nm_create = nullptr, nm_notify = nullptr, nm_enabled = nullptr, nm_active = nullptr,
               nm_get = nullptr;
     jmethodID builder_ctor = nullptr, b_icon = nullptr, b_title = nullptr, b_text = nullptr,
-              b_style = nullptr, b_ongoing = nullptr, b_alert = nullptr, b_when = nullptr,
+              b_ongoing = nullptr, b_alert = nullptr, b_when = nullptr,
               b_category = nullptr, b_content_intent = nullptr, b_action = nullptr, b_build = nullptr,
               b_color = nullptr;
-    jmethodID big_ctor = nullptr, big_set = nullptr;
     jmethodID pi_activity = nullptr, pi_broadcast = nullptr;
     jmethodID intent_ctor = nullptr, intent_component = nullptr, intent_put_int = nullptr,
               intent_put_string = nullptr, intent_put_bool = nullptr;
@@ -244,14 +243,13 @@ bool ResolveJava(JNIEnv *env) {
     g_j.cls_pm = static_cast<jclass>(env->NewGlobalRef(Class(env, "android/os/PowerManager")));
     g_j.cls_nm = static_cast<jclass>(env->NewGlobalRef(Class(env, "android/app/NotificationManager")));
     g_j.cls_builder = static_cast<jclass>(env->NewGlobalRef(Class(env, "android/app/Notification$Builder")));
-    g_j.cls_big = static_cast<jclass>(env->NewGlobalRef(Class(env, "android/app/Notification$BigTextStyle")));
     g_j.cls_pi = static_cast<jclass>(env->NewGlobalRef(Class(env, "android/app/PendingIntent")));
     g_j.cls_intent = static_cast<jclass>(env->NewGlobalRef(Class(env, "android/content/Intent")));
     g_j.cls_component = static_cast<jclass>(env->NewGlobalRef(Class(env, "android/content/ComponentName")));
     g_j.cls_channel = static_cast<jclass>(env->NewGlobalRef(Class(env, "android/app/NotificationChannel")));
     g_j.cls_sbn = static_cast<jclass>(env->NewGlobalRef(Class(env, "android/service/notification/StatusBarNotification")));
 
-    const bool resolved = g_j.cls_pm && g_j.cls_nm && g_j.cls_builder && g_j.cls_big && g_j.cls_pi &&
+    const bool resolved = g_j.cls_pm && g_j.cls_nm && g_j.cls_builder && g_j.cls_pi &&
                           g_j.cls_intent && g_j.cls_component && g_j.cls_channel && g_j.cls_sbn &&
                           app_info_class && package_manager;
     if (!resolved) return false;
@@ -282,8 +280,6 @@ bool ResolveJava(JNIEnv *env) {
     snprintf(chain, sizeof(chain), "(Ljava/lang/CharSequence;)%s", builder);
     g_j.b_title = Method(env, g_j.cls_builder, "setContentTitle", chain);
     g_j.b_text = Method(env, g_j.cls_builder, "setContentText", chain);
-    snprintf(chain, sizeof(chain), "(Landroid/app/Notification$Style;)%s", builder);
-    g_j.b_style = Method(env, g_j.cls_builder, "setStyle", chain);
     snprintf(chain, sizeof(chain), "(Z)%s", builder);
     g_j.b_ongoing = Method(env, g_j.cls_builder, "setOngoing", chain);
     g_j.b_alert = Method(env, g_j.cls_builder, "setOnlyAlertOnce", chain);
@@ -299,12 +295,6 @@ bool ResolveJava(JNIEnv *env) {
     g_j.b_build = Method(env, g_j.cls_builder, "build", "()Landroid/app/Notification;");
 
     g_j.builder_ctor = Method(env, g_j.cls_builder, "<init>", "(Landroid/content/Context;Ljava/lang/String;)V");
-    g_j.big_ctor = Method(env, g_j.cls_big, "<init>", "()V");
-    g_j.big_set = Method(env, g_j.cls_big, "setBigText",
-                         "(Ljava/lang/CharSequence;)Landroid/app/Notification$BigTextStyle;");
-    if (!g_j.big_set)
-        g_j.big_set = Method(env, g_j.cls_big, "bigText",
-                             "(Ljava/lang/CharSequence;)Landroid/app/Notification$BigTextStyle;");
 
     const char *pi_sig = "(Landroid/content/Context;ILandroid/content/Intent;I)Landroid/app/PendingIntent;";
     g_j.pi_activity = StaticMethod(env, g_j.cls_pi, "getActivity", pi_sig);
@@ -403,8 +393,8 @@ bool ResolveJava(JNIEnv *env) {
     // Only mark ready when every method called unconditionally below is present; a null
     // method ID would be a hard crash, not a Java exception.
     const bool complete = g_j.lock && g_j.wifi_lock && g_j.builder_ctor && g_j.b_icon && g_j.b_title &&
-                          g_j.b_text && g_j.b_style && g_j.b_ongoing && g_j.b_alert && g_j.b_when &&
-                          g_j.b_category && g_j.b_build && g_j.big_ctor && g_j.big_set && g_j.nm_notify;
+                          g_j.b_text && g_j.b_ongoing && g_j.b_alert && g_j.b_when &&
+                          g_j.b_category && g_j.b_build && g_j.nm_notify;
     g_j.ok = complete;
     return complete;
 }
@@ -495,11 +485,13 @@ void FormatUptime(long long ms, char *out, size_t size) {
 }
 
 // Renders the resident entry from live state and returns its accent color. The online/listening
-// split and the attached-client count mirror satori-qq's StatusNotice. The collapsed row is the
-// title plus `text`; `big` (the expanded body) repeats `text` and adds the uptime, and never the
-// title again. Nothing else belongs here: the wake-lock state is the button's own label, and
-// sending is always on, so there is no state to report for either.
-int RenderState(long long serving_ms, char *title, size_t title_size, char *text, size_t text_size, char *big, size_t big_size) {
+// split and the attached-client count mirror satori-qq's StatusNotice. The whole entry is one
+// collapsed row — the title plus `text`, which ends with the uptime — posted without an
+// expandable style: Android 12 and later open the notification shade with styled notifications
+// expanded, and a plain row is the only thing it keeps collapsed. Nothing else belongs here:
+// the wake-lock state is the button's own label, and sending is always on, so there is no state
+// to report for either.
+int RenderState(long long serving_ms, char *title, size_t title_size, char *text, size_t text_size) {
     const bool online = g_login_count > 0;
     const bool listening = g_server_ready;
     const int clients = g_client_count > 0 ? g_client_count : 0;
@@ -518,12 +510,11 @@ int RenderState(long long serving_ms, char *title, size_t title_size, char *text
         snprintf(title, title_size, "知言 · 服务异常");
         snprintf(text, text_size, "本地端口 %u 未监听", g_port);
     }
-    snprintf(big, big_size, "%s", text);
     if (online && listening && serving_ms > 0) {
         char uptime[64];
         FormatUptime(serving_ms, uptime, sizeof(uptime));
-        const size_t used = strlen(big);
-        if (used < big_size) snprintf(big + used, big_size - used, "\n%s", uptime);
+        const size_t used = strlen(text);
+        if (used < text_size) snprintf(text + used, text_size - used, " · %s", uptime);
     }
     return color;
 }
@@ -557,11 +548,11 @@ void Notify(JNIEnv *env) {
     }
     g_notify_enabled = enabled;
 
-    char title[96], text[160], big[320], key[480];
+    char title[96], text[160], key[320];
     const int color = RenderState(g_serving_since_ms > 0 ? NowMs() - g_serving_since_ms : 0, title, sizeof(title),
-                                  text, sizeof(text), big, sizeof(big));
-    // Everything the entry shows: the collapsed row, the expanded body (uptime), the button label.
-    snprintf(key, sizeof(key), "%s|%s|%d|%d", title, big, g_login_count, g_want_lock ? 1 : 0);
+                                  text, sizeof(text));
+    // Everything the entry shows: the collapsed row (title, line, uptime) and the button label.
+    snprintf(key, sizeof(key), "%s|%s|%d|%d", title, text, g_login_count, g_want_lock ? 1 : 0);
     const bool changed = strcmp(key, g_last_key) != 0;
     const long long now = NowMs();
     const bool alive = changed || StillPosted(env);
@@ -580,11 +571,6 @@ void Notify(JNIEnv *env) {
     env->CallObjectMethod(builder, g_j.b_icon, g_j.icon);
     env->CallObjectMethod(builder, g_j.b_title, jtitle);
     env->CallObjectMethod(builder, g_j.b_text, jtext);
-    jobject style = env->NewObject(g_j.cls_big, g_j.big_ctor);
-    if (style) {
-        env->CallObjectMethod(style, g_j.big_set, String(env, big));
-        env->CallObjectMethod(builder, g_j.b_style, style);
-    }
     env->CallObjectMethod(builder, g_j.b_ongoing, JNI_TRUE);
     env->CallObjectMethod(builder, g_j.b_alert, JNI_TRUE);
     env->CallObjectMethod(builder, g_j.b_when, JNI_FALSE);
@@ -653,7 +639,6 @@ void Notify(JNIEnv *env) {
         }
         env->DeleteLocalRef(notification);
     }
-    env->DeleteLocalRef(style);
     env->DeleteLocalRef(jtitle);
     env->DeleteLocalRef(jtext);
     env->DeleteLocalRef(builder);
@@ -716,9 +701,8 @@ void *Manager(void *) {
 }
 } // namespace
 
-int KeepaliveRender(long long serving_ms, char *title, size_t title_size, char *text, size_t text_size,
-                    char *big, size_t big_size) {
-    return RenderState(serving_ms, title, title_size, text, text_size, big, big_size);
+int KeepaliveRender(long long serving_ms, char *title, size_t title_size, char *text, size_t text_size) {
+    return RenderState(serving_ms, title, title_size, text, text_size);
 }
 
 void KeepaliveStart(void *vm, const Config &config) {
