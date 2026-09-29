@@ -10,9 +10,9 @@
 | 标准方法目录 | 37 个方法；与上游 protocol/src/index.ts 的 Methods 对照 |
 | JSON 参数 | 必填、可选、字符串、对象、布尔、非负整数、分页枚举验证 |
 | 方法可用性 | 登录快照 features 控制；不支持返回 404（在参数校验之前判定，不支持的方法缺参也回 404 而非 400），声明支持但无 handler 返回 501，离线返回 503 |
-| login.get / meta / READY | 同一份登录快照；登录身份由只读偏好解析得到，无账号时为空 |
+| login.get / meta / READY | 同一份登录快照；登录身份由只读偏好解析得到，无账号时为空；`features` 列出全部实现的方法（含 `login.get`）与平台特性 `guild.plain`（微信群就是它唯一的频道） |
 | message.create / update 的 content | 保留 Satori 标记字符串；提供 native 文本转义 helper，不把标记当 HTML 执行 |
-| message.create（发送） | 反射调微信自己的发送管线；内容按 `<img>` 切成有序的文本 / 图片消息，**返回 `Message[]`（官方客户端对结果调用 `.map()`）**；文本走 `NetSceneSendMsg`，群里的 `<at>` 是真提及（`atuserlist`），图片走聊天界面自己的 `rj()` 管线；不限目标、不限速；成功＝已派发，非投递确认（图片要等库里出现行才回 200） |
+| message.create（发送） | 反射调微信自己的发送管线；内容先按 `<message>` 容器 / `<message/>` 分隔符切成多条（各自走下面的流水线，回执按序合成一个 `Message[]`，空白段跳过；`<message forward>` 微信没有合并转发，回 400 `forward_unsupported`），`<p>` 与相邻内容之间保证换行；每条再按 `<img>` 切成有序的文本 / 图片消息，**返回 `Message[]`（官方客户端对结果调用 `.map()`）**；文本走 `NetSceneSendMsg`，群里的 `<at>` 是真提及（`atuserlist`），图片走聊天界面自己的 `rj()` 管线；不限目标、不限速；成功＝已派发，非投递确认（图片要等库里出现行才回 200） |
 | message.create 的图片 | `src` 只认 `upload.create` 的 `internal:` 链接、`data:image/…;base64` 与 `base64://`；所有图片先解析、核对魔数，坏一张整条 400（`media_unresolved` / `media_unsupported` / `image_too_large` / `too_many_images`）；6 秒内没入库回 502 `image_unconfirmed`，不假报成功。见 [发送各类消息](wechat-send-types.md) |
 | message.create 的视频 / 文件 / 音频 / 引用 | `<video>`：MP4 / MOV 且有视频轨发成视频气泡（`poster` 可选、时长取自文件），其它容器作为文件；`<file>`：文件名取 `title` → 上传名 → 按内容猜扩展名；`<audio>` 转成 SILK 发语音条（≤ 60 秒，回执里是 `<audio duration>`），超长 / 太短 / 读不出来的作为文件（回执里是 `<file>`）；`<quote id>` 是微信的引用回复（挂在第一段文字，找不到被引用消息退成普通文本）。每个媒体元素单独成条，`src` 只认 `internal:` / `data:` / `base64://`，先全部解析再发；发完等库里 status 离开「发送中」，失败回 502 `upload_failed`，慢上传照回 200。错误码：`media_unresolved` / `media_unsupported` / `media_too_large` / `too_many_media` / `video_unconfirmed` / `voice_unconfirmed` / `upload_failed` |
 | message.delete（撤回） | 用 `ex0.k0.F0.k(talker,localId)` 取 MsgInfo，反射调 `com.tencent.mm.modelsimple.d1`（cgi revokemsg）；只撤回本账号消息 |
@@ -32,15 +32,15 @@
 | upload.create | multipart/form-data，有界二进制零拷贝解析，字段名与返回 URL 映射由后端实现 |
 | WebSocket | RFC 6455 握手、掩码、文本分片、控制帧交错、UTF-8、关闭、大小限制 |
 | IDENTIFY / READY / PING / PONG | 完成；10 秒鉴权、30 秒心跳期限 |
-| EVENT | native 生产者队列；服务端分配 sn / timestamp；多客户端广播 |
+| EVENT | native 生产者队列；服务端分配 sn / timestamp；多客户端广播；事件遵守资源提升（`message` 里不重复 `channel` `guild` `user` `member`，`member` 里不重复 `user`），消息时间是 `created_at`（毫秒） |
 | 登录事件 | added / updated / removed 更新快照；非登录事件只带 sn/platform/user 身份 |
 | META | op=5，当前仅广播空 proxy_urls；不在 META 中传 logins |
-| 会话恢复 | 64 条有界历史、按客户端游标发送；登录事件不回放；过期或未来序号拒绝恢复 |
+| 会话恢复 | 64 条有界历史、按客户端游标发送；登录事件不回放；游标不在窗口内（旧进程、滚出窗口、未来序号）不拒绝：回 READY 后从当前推送，READY 带 `satori_wx.session_id` 供客户端判断服务端是否重启 |
 | 背压 | 32 条生产队列；满时 Publish 返回 false；单客户端发送缓冲有界；回放超出缓存时关闭 |
 | WebHook（标准可选） | 完成：`/v1/meta/webhook.create` / `webhook.delete`，EVENT / META 以 `Satori-Opcode` 推送，可选 `Authorization`；仅 http，无 TLS |
 | 资源代理 | 未实现，proxy_urls 保持空，相关路由 404 |
 
-序号以进程启动时的 Unix 微秒为基线，在进程内递增，并限制在 JSON / JavaScript 安全整数范围。正常重启后旧进程序号落在新窗口外，会被拒绝；不宣称跨进程持久回放。显式 sn=0 仅在当前进程历史未丢弃非登录事件时允许从缓存起点恢复。
+序号以进程启动时的 Unix 毫秒为基线，在进程内递增，并限制在 JSON / JavaScript 安全整数范围（毫秒而非微秒：16 位的数在 cJSON 里可能被印成 `1.79e+15`，整数解析器读不了）。正常重启后旧进程序号落在新窗口外，此时按上一行处理，不宣称跨进程持久回放。显式 sn=0 仅在当前进程历史未丢弃非登录事件时从缓存起点恢复，否则同样从当前推送。
 
 HTTP 请求体 / WS 消息最大 16 KiB（`message.create` 是 16 MiB 且先验令牌再缓冲，`upload.create` 流式收到 1 GiB、同样先验令牌与登录）、HTTP 头 8 KiB、单事件 128 KiB、最多 16 个登录快照，单连接 HTTP 响应后关闭。当前 HTTP profile 不支持 chunked 请求体、TLS 或 WebSocket 压缩；支持 `Expect: 100-continue`。这些限制是实现约束，并非 Satori 标准规定的上限。
 
@@ -74,6 +74,12 @@ HTTP 请求体 / WS 消息最大 16 KiB（`message.create` 是 16 MiB 且先验�
 - 视频 / 文件 / 引用测试（`tests/backend_test.cpp`，发送器换成记录调用的桩）：每种路由（MP4 → 视频、MKV → 文件、mp3 → 文件、有 / 无 title 的文件、内联 base64）、封面取舍、顺序、失败状态、坏一个整条不发、引用的各种边角；`tests/mp4_test.cpp` 用 ffmpeg 生成的真容器；`tests/upload_stream_test.cpp` 把同一个 body 按 15 种分块喂进流式解析器，逐字节比对落盘结果，并与缓冲解析器对拍畸形 body。
 - tempstore 测试覆盖 `internal:` 链接的解析（外链、别的平台、`_tmp` 之外、路径穿越、未知名字、手工放进去的文件、输出缓冲太小），这条曾经因为 `sizeof` 用在指针上而全数失败。
 - 账号端到端测试用夹具偏好文件驱动真实适配层，验证 meta / login.get / READY 的一致快照、离线状态与账号切换；WebHook 测试用本地接收端验证 `Satori-Opcode`、`Authorization` 与信号体，以及登记上限 / 注销；详情见 [只读账号身份](wechat-account.md)。
+
+`tools/conformance.py` 是对着一个在跑的服务端做的黑盒探针（只读，不发任何聊天消息）：状态码表、`features` 与 404 的关系、`login.get` / `meta` / READY 的一致、分页信封、`message.list` 的方向与令牌、`upload.create` 到 `/v1/proxy` 的往返、代理路由的 400 / 403 / 404、WebSocket 的 PING / 旧 `sn` 恢复、驼峰键，`--listen` 时还核对实时事件的形状（含资源提升）。satori-qq 带着同一份，两个实现可以用同一把尺子量：
+
+```sh
+python3 tools/conformance.py --base http://127.0.0.1:5601 --token "$(su -c 'sed -n s/^token=//p /data/adb/modules/satori_wx/satori-wx.conf')"
+```
 
 JNI 那部分（图片管线、@ 的 Object 重载）主机上跑不了，只在真机验，清单见 [HANDOFF](HANDOFF.md)。
 

@@ -29,7 +29,9 @@ ZygiskNext 的 `zygisk_next_api.h` 是另一套公开接口，有自己的 `zn_m
 
 请求结构和 cJSON 字符串边界都受检查；含 NUL 的输入、`\u0000`、非法 UTF-8 被拒绝。当前对任何原始 `\u0000` 字节序列保守拒绝（包括双重转义后的字面量）。请求 JSON 必须是对象。cJSON 前增加词法检查，拒绝前导零、缺小数位、裸控制字符。WebSocket 不协商扩展 / 压缩和子协议；二进制消息返回 1003，超限返回 1009。
 
-登录事件不参与回放；消息与其它事件由 `wx_live` 生产。事件是堆上的变长字符串，单条上限 128 KiB。非零恢复序号关闭为 4009，客户端应清空旧序号重新 IDENTIFY。
+登录事件不参与回放；消息与其它事件由 `wx_live` 生产。事件是堆上的变长字符串，单条上限 128 KiB。
+
+**IDENTIFY 不拒绝旧序号。** 带来的 `sn` 若属于上一个进程、或已滚出 64 条的回放窗口，服务端照常回 READY，从当前起推送；官方服务端从不拒绝 IDENTIFY，adapter-satori 之类的客户端又会跨重启保留最后的 `sn`，被拒就会一直重连。READY 的 body 除了 `logins`、`proxy_urls`，还带 `satori_wx: {session_id, sn}`：`session_id` 是本进程的标识，客户端发现它变了就知道服务端重启过、旧序号已作废（acumen 据此重置游标）。已连接的客户端读得太慢、积压超出回放窗口时，仍以 4009 关闭，重连后按上面的规则继续。
 
 ## 生命周期与配置
 
@@ -39,6 +41,6 @@ ZygiskNext 的 `zygisk_next_api.h` 是另一套公开接口，有自己的 `zn_m
 
 ## 验证与未验证项
 
-`tests/run.sh` 使用同一份 `native/server.cpp` 编译独立原生进程，Python 标准库通过真实 socket 验证 HTTP 状态、鉴权、JSON 错误、大小限制、WebSocket 握手参考向量、分片、掩码、控制帧、合包 / 分包、会话恢复拒绝、IDENTIFY 超时、慢连接隔离。密钥捕获复用 `native/data_slot.h`。
+`tests/run.sh` 使用同一份 `native/server.cpp` 编译独立原生进程，Python 标准库通过真实 socket 验证 HTTP 状态、鉴权、JSON 错误、大小限制、WebSocket 握手参考向量、分片、掩码、控制帧、合包 / 分包、会话恢复（旧序号不被拒）、IDENTIFY 超时、慢连接隔离。密钥捕获复用 `native/data_slot.h`。
 
 已验证 Termux 原生编译和协议行为；这不能代替装入微信进程后的验证。尚未验证：设备当前 ZygiskNext 的实际加载、SELinux 下监听、微信启动稳定性、真实微信账号 / 消息适配。后台保活自 v0.7.0 起有实现（微信进程内常驻通知 + 唤醒锁 + `startService`，以及 root 侧 `wxguard`），见 [常驻通知与保活](keepalive.md)。

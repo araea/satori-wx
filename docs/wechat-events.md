@@ -6,9 +6,9 @@
 | --- | --- | --- |
 | `message-created` | `channel` `message` `user`（群里另有 `guild` `member`） | `message` 表的新行，见 [消息内容](wechat-content.md) |
 | `message-deleted` | `channel` `message` `user`（作者不明时没有 `user`） | 撤回：微信原地改写那一行 |
-| `guild-member-added` `guild-member-removed` | `guild` `member` `user` | `chatroom.memberlist` 的差异 |
+| `guild-member-added` `guild-member-removed` | `guild` `member` `user` | `chatroom.memberlist` 的差异；`member` 不重复 `user`，入群的带 `joined_at`（毫秒） |
 | `guild-added` `guild-removed` | `guild` | 自己入群 / 退群、被移出、群被解散 |
-| `friend-added` `friend-removed` | `user` `friend` | `rcontact` 里好友集合的差异 |
+| `friend-added` `friend-removed` | `user` | `rcontact` 里好友集合的差异；好友就是 `user`，事件里没有重复它的 `friend` |
 
 `message-created` 是毫秒级的：`wx_watch` 用 inotify 盯着账号库所在目录，微信一写库就立刻读新行（机制见[消息内容](wechat-content.md#轮询)），从微信落库到事件发出通常不到 50ms。下面几类没有「新行」可等，走扫描器，延迟以秒计。
 

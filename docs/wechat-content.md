@@ -12,7 +12,7 @@
 | `msgSvrId` | 服务端 id；`message.get` 也认它 |
 | `type` | 基础类型，见下 |
 | `isSend` | 1 = 本账号发出 |
-| `createTime` | 毫秒；Satori `timestamp` |
+| `createTime` | 毫秒；事件的 `timestamp`，`message.created_at` |
 | `talker` | 会话：`wxid_…` 私聊，`<数字>@chatroom` 群 |
 | `content` | 群里别人的消息带 `wxid:\n` 头；表情与视频在任何会话里都带头 |
 | `imgPath` | 媒体文件名：图片 `THUMBNAIL_DIRPATH://th_<md5>`，语音 `amr_…`，视频时间戳名 |
@@ -80,7 +80,7 @@ internal:wechat/<login>/_msg/<kind>/<msgId>/<签名>
 
 ## 事件里的资源
 
-`message-created` 按 Satori 的资源提升带上：
+`message-created` 按 Satori 的资源提升带上：`channel`、`guild`、`user`、`member` 只在事件顶层，`message` 里不再重复（`member` 里也没有 `user`）；`message.get` / `message.list` 返回的 `Message` 才是嵌套形态。
 
 ```json
 {"type":"message-created","login":{"sn":1},"timestamp":1790000000000,
@@ -88,7 +88,7 @@ internal:wechat/<login>/_msg/<kind>/<msgId>/<签名>
  "guild":{"id":"…@chatroom","name":"群名"},
  "user":{"id":"wxid_…","name":"备注","nick":"昵称","avatar":"https://wx.qlogo.cn/…"},
  "member":{"nick":"群内昵称"},
- "message":{"id":"4099","content":"…","timestamp":1790000000000,"channel":{…},"user":{…},"guild":{…},"member":{…},"quote":{…}}}
+ "message":{"id":"4099","content":"…","created_at":1790000000000,"quote":{…}}}
 ```
 
 私聊没有 `guild` 与 `member`。头像取自 `img_flag`（微信缓存的公网头像地址，`reserved2` 大图，`reserved1` 小图），没有就不给。
