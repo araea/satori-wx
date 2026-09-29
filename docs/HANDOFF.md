@@ -8,7 +8,7 @@
 
 纯 native C++：无 DEX、无 Java 助手、无 ArtMethod 改写、无 hook 引擎。连发送都是纯反射调用微信自己的代码，不加载任何额外东西。
 
-当前版本 v0.11.5：`/v1/internal/pat` 发微信「拍一戳」（内部扩展端点，不是 Satori 方法），收到的拍一戳行（appmsg 62）解码为可投递消息。v0.11.4：`message.create` 的图片 `src` 额外接受 `base64://`（社区通用 scheme，无 mime，按魔数定格式）——知微发图片就是这种，此前被当远程 URL 拒掉。v0.11.3：唤醒锁默认开。v0.11.2 曾把常驻通知改成单行收起态，已整体撤回（通知仍是标题加一行、展开正文带在线时长的老样子）；v0.11.3 只改一处——用户唤醒锁默认开，开机后第一个 keeper tick 就持上不定时的 CPU + Wi-Fi 锁，按钮与 `POST /v1/internal/wakelock` 关掉只管本次开机。v0.11.0 之前读侧与事件侧补齐、发送侧有了群内 @ 与图片；v0.11.0 把新消息的到达从 1–2 秒一拍的轮询改成 inotify 驱动（毫秒级），把 wxguard 的解冻从 5 秒轮询改成 cgroup 事件驱动（几毫秒），撤掉发送开关（写方法始终在 features 里；旧配置里的 `send=` 仍被接受但不起作用），并整理了常驻通知（不再重复标题、不再显示唤醒锁与发送状态）；v0.11.1 修了图片发送的确认（空壳行不算发出）。
+当前版本 v0.11.6：自己账号的消息里，号主在微信里手发的那些事件带 `satori_wx.manual_self: true`，模块自己 `message.create` 发出去被读回来的不带（见 [事件](wechat-events.md)）——acumen 靠它区分「号主贴的链接」与「机器人自己的回声」。v0.11.5：`/v1/internal/pat` 发微信「拍一戳」（内部扩展端点，不是 Satori 方法），收到的拍一戳行（appmsg 62）解码为可投递消息。v0.11.4：`message.create` 的图片 `src` 额外接受 `base64://`（社区通用 scheme，无 mime，按魔数定格式）——知微发图片就是这种，此前被当远程 URL 拒掉。v0.11.3：唤醒锁默认开。v0.11.2 曾把常驻通知改成单行收起态，已整体撤回（通知仍是标题加一行、展开正文带在线时长的老样子）；v0.11.3 只改一处——用户唤醒锁默认开，开机后第一个 keeper tick 就持上不定时的 CPU + Wi-Fi 锁，按钮与 `POST /v1/internal/wakelock` 关掉只管本次开机。v0.11.0 之前读侧与事件侧补齐、发送侧有了群内 @ 与图片；v0.11.0 把新消息的到达从 1–2 秒一拍的轮询改成 inotify 驱动（毫秒级），把 wxguard 的解冻从 5 秒轮询改成 cgroup 事件驱动（几毫秒），撤掉发送开关（写方法始终在 features 里；旧配置里的 `send=` 仍被接受但不起作用），并整理了常驻通知（不再重复标题、不再显示唤醒锁与发送状态）；v0.11.1 修了图片发送的确认（空壳行不算发出）。
 
 - 收到的消息按 Satori 元素解码（图片 / 语音 / 视频 / 表情 / 链接 / 文件 / 回复 / @），媒体是签名链接，由 `/v1/proxy` 流式回包，见 [消息内容](wechat-content.md)。
 - 事件：`message-created`（带 `guild` `member` 与头像）、`message-deleted`、`guild-member-added|removed`、`guild-added|removed`、`friend-added|removed`，见 [事件](wechat-events.md)。

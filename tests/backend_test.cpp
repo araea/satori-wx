@@ -27,6 +27,9 @@ int LiveLoginSn() { return 1; }
 bool StartLiveStore(const char *, EventBus *, int) { return false; }
 const char *StoreSelfId(Store *) { return "self_wxid"; }
 long long StoreWatermark(Store *) { return 0; }
+void StoreSendBegin(Store *, const char *) {}
+void StoreSendEnd(Store *, const char *) {}
+void StoreNoteSent(Store *, long long) {}
 long long StorePoll(Store *, long long, int, bool (*)(void *, const char *), void *, bool *) { return 0; }
 cJSON *StoreMessageList(Store *, const char *, const char *, const char *, int, const char *) { return nullptr; }
 cJSON *StoreMessageGet(Store *, const char *, const char *) { return nullptr; }

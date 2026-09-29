@@ -12,6 +12,7 @@
 #include <string.h>
 #include <strings.h>
 #include <sys/stat.h>
+#include <time.h>
 #include <unistd.h>
 
 namespace satori {
@@ -34,6 +35,12 @@ struct Store {
     struct { long long id; char user[80]; } authors[512];
     unsigned author_next;
     pthread_mutex_t mutex;
+    // The module's own sends (see StoreSendBegin): open message.create windows per talker, and the
+    // local ids of the last messages it created. Guarded by send_mutex, never held with `mutex`.
+    struct { char talker[80]; int busy; long long until_ms; } sending[8];
+    long long sent_ids[64];
+    unsigned sent_next;
+    pthread_mutex_t send_mutex;
 };
 
 namespace {
@@ -60,10 +67,12 @@ Store *CreateStoreEx(const char *library, const char *path, const void *key, int
     auto *store = static_cast<Store *>(calloc(1, sizeof(Store)));
     if (!store) return nullptr;
     if (pthread_mutex_init(&store->mutex, nullptr)) { free(store); return nullptr; }
+    if (pthread_mutex_init(&store->send_mutex, nullptr)) { pthread_mutex_destroy(&store->mutex); free(store); return nullptr; }
     store->db = WcdbOpenEx(library, path, key, key_size, 0, compatibility, 0, 1);
     if (!store->db) {
         snprintf(store->error, sizeof(store->error), "open failed: %s", WcdbError(nullptr));
         pthread_mutex_destroy(&store->mutex);
+        pthread_mutex_destroy(&store->send_mutex);
         free(store);
         return nullptr;
     }
@@ -83,7 +92,73 @@ void DestroyStore(Store *store) {
     if (!store) return;
     if (store->db) WcdbClose(store->db);
     pthread_mutex_destroy(&store->mutex);
+    pthread_mutex_destroy(&store->send_mutex);
     free(store);
+}
+
+namespace {
+long long MonotonicMs() {
+    timespec now{};
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    return static_cast<long long>(now.tv_sec) * 1000 + now.tv_nsec / 1000000;
+}
+// How long after a message.create ends its rows still count as the module's: the poller is woken
+// by the database write within milliseconds, but WeChat can be frozen for seconds in between.
+constexpr long long kSendGraceMs = 5000;
+
+// Slot for `talker`: the one already open, else a free or expired one, else the oldest.
+int SendSlot(Store *store, const char *talker, long long now) {
+    int free_slot = -1, oldest = 0;
+    for (int i = 0; i < 8; ++i) {
+        auto &slot = store->sending[i];
+        if (!strcmp(slot.talker, talker)) return i;
+        if (free_slot < 0 && !slot.busy && slot.until_ms <= now) free_slot = i;
+        if (slot.until_ms < store->sending[oldest].until_ms) oldest = i;
+    }
+    return free_slot >= 0 ? free_slot : oldest;
+}
+
+bool SentByModule(Store *store, const char *talker, long long id) {
+    const long long now = MonotonicMs();
+    bool mine = false;
+    pthread_mutex_lock(&store->send_mutex);
+    for (int i = 0; i < 64 && !mine; ++i) mine = store->sent_ids[i] == id;
+    for (int i = 0; i < 8 && !mine; ++i) {
+        const auto &slot = store->sending[i];
+        mine = !strcmp(slot.talker, talker) && (slot.busy > 0 || now < slot.until_ms);
+    }
+    pthread_mutex_unlock(&store->send_mutex);
+    return mine;
+}
+} // namespace
+
+void StoreSendBegin(Store *store, const char *talker) {
+    if (!store || !talker || strlen(talker) >= sizeof(store->sending[0].talker)) return;
+    pthread_mutex_lock(&store->send_mutex);
+    auto &slot = store->sending[SendSlot(store, talker, MonotonicMs())];
+    if (strcmp(slot.talker, talker)) { snprintf(slot.talker, sizeof(slot.talker), "%s", talker); slot.busy = 0; }
+    ++slot.busy;
+    pthread_mutex_unlock(&store->send_mutex);
+}
+
+void StoreSendEnd(Store *store, const char *talker) {
+    if (!store || !talker) return;
+    pthread_mutex_lock(&store->send_mutex);
+    for (int i = 0; i < 8; ++i) {
+        auto &slot = store->sending[i];
+        if (strcmp(slot.talker, talker)) continue;
+        if (slot.busy > 0) --slot.busy;
+        slot.until_ms = MonotonicMs() + kSendGraceMs;
+        break;
+    }
+    pthread_mutex_unlock(&store->send_mutex);
+}
+
+void StoreNoteSent(Store *store, long long local_id) {
+    if (!store || local_id <= 0) return;
+    pthread_mutex_lock(&store->send_mutex);
+    store->sent_ids[store->sent_next++ % 64] = local_id;
+    pthread_mutex_unlock(&store->send_mutex);
 }
 
 bool StoreReady(Store *store) { return store && store->db; }
@@ -864,7 +939,7 @@ cJSON *BuildMessage(Store *store, const Row &row, const Decoded &decoded, Parts 
 }
 
 // The event wrapper Satori wants around a message: the same resources, promoted to the top.
-char *MessageEventJson(int login_sn, const char *type, cJSON *message, Parts &parts, double timestamp) {
+char *MessageEventJson(int login_sn, const char *type, cJSON *message, Parts &parts, double timestamp, bool manual_self = false) {
     cJSON *root = cJSON_CreateObject();
     cJSON *login = cJSON_CreateObject();
     if (!root || !login) { cJSON_Delete(root); cJSON_Delete(login); return nullptr; }
@@ -877,6 +952,14 @@ char *MessageEventJson(int login_sn, const char *type, cJSON *message, Parts &pa
     if (parts.user) { cJSON_AddItemToObject(root, "user", parts.user); parts.user = nullptr; }
     if (parts.member) { cJSON_AddItemToObject(root, "member", parts.member); parts.member = nullptr; }
     cJSON_AddItemToObject(root, "message", message);
+    if (manual_self) {
+        // Same shape as satori-qq's extension: the account's own message, typed by its owner.
+        cJSON *extension = cJSON_CreateObject();
+        if (extension) {
+            cJSON_AddBoolToObject(extension, "manual_self", 1);
+            cJSON_AddItemToObject(root, "satori_wx", extension);
+        }
+    }
     char *text = cJSON_PrintUnformatted(root);
     cJSON_Delete(root);
     return text;
@@ -1021,7 +1104,8 @@ long long StorePoll(Store *store, long long since, int login_sn, bool (*emit)(vo
                 const char *author = cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(parts.user, "id"));
                 char author_copy[80] = {};
                 if (author) snprintf(author_copy, sizeof(author_copy), "%s", author);
-                char *text = message ? MessageEventJson(login_sn, "message-created", message, parts, static_cast<double>(rows[i].create_time)) : nullptr;
+                const bool manual_self = rows[i].is_send && !SentByModule(store, rows[i].talker ? rows[i].talker : "", rows[i].id);
+                char *text = message ? MessageEventJson(login_sn, "message-created", message, parts, static_cast<double>(rows[i].create_time), manual_self) : nullptr;
                 FreeParts(parts);
                 if (text && strlen(text) >= kEventSize) { free(text); text = nullptr; ++store->skipped; }
                 if (text) {

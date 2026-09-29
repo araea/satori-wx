@@ -171,6 +171,7 @@ int main() {
         cJSON_Delete(priv);
         cJSON *sent = cJSON_Parse(sink.events[2]);
         Check(!strcmp(Nested(sent, "user", "id"), "self_wxid"), "sent author is self");
+        Check(Item(Item(sent, "satori_wx"), "manual_self") && cJSON_IsTrue(Item(Item(sent, "satori_wx"), "manual_self")), "the owner's own row is marked manual_self");
         cJSON_Delete(sent);
         cJSON *image = cJSON_Parse(sink.events[3]);
         Check(Contains(Nested(image, "message", "content"), "<img src=\"internal:wechat/self_wxid/_msg/image/4/"), "image is a signed link, not dropped");
@@ -500,6 +501,48 @@ int main() {
     cJSON *none_roles = satori::StoreMemberRoleList(store, "123@chatroom", "nobody");
     Check(none_roles && cJSON_GetArraySize(Item(none_roles, "data")) == 0, "non-member has no roles");
     cJSON_Delete(none_roles);
+
+    // ---- the owner's own rows versus the module's own sends ---------------------------------------
+    {
+        const long long base_mark = satori::StoreWatermark(store);
+        satori::Wcdb *own_writer = satori::WcdbOpenEx(library, path, nullptr, 0, 0, 0, 0, 0);
+        // 600: typed by the owner. 601: created by message.create (known by local id). 602: written
+        // while a message.create to that talker is open. 603: after it closed, still in the grace.
+        // 604: another talker, no send open. 605: an incoming row is never marked.
+        Exec(own_writer, "INSERT INTO message(msgId,msgSvrId,type,isSend,createTime,talker,content) VALUES(9600,8000,1,1,1700004000000,'wxid_own','https://example.com/typed')");
+        Exec(own_writer, "INSERT INTO message(msgId,msgSvrId,type,isSend,createTime,talker,content) VALUES(9601,8001,1,1,1700004001000,'wxid_bot','sent by id')");
+        Exec(own_writer, "INSERT INTO message(msgId,msgSvrId,type,isSend,createTime,talker,content) VALUES(9602,8002,1,1,1700004002000,'wxid_win','sent in window')");
+        Exec(own_writer, "INSERT INTO message(msgId,msgSvrId,type,isSend,createTime,talker,content) VALUES(9603,8003,1,1,1700004003000,'wxid_win','sent in grace')");
+        Exec(own_writer, "INSERT INTO message(msgId,msgSvrId,type,isSend,createTime,talker,content) VALUES(9604,8004,1,1,1700004004000,'wxid_elsewhere','typed elsewhere')");
+        Exec(own_writer, "INSERT INTO message(msgId,msgSvrId,type,isSend,createTime,talker,content) VALUES(9605,8005,1,0,1700004005000,'wxid_own','incoming')");
+        satori::WcdbClose(own_writer);
+        satori::StoreNoteSent(store, 9601);
+        satori::StoreSendBegin(store, "wxid_win");
+        Sink own;
+        Drain(store, base_mark, &own);
+        satori::StoreSendEnd(store, "wxid_win");
+        Check(own.count == 6, "every row of the scenario is delivered");
+        bool marked[6] = {};
+        for (int i = 0; i < own.count && i < 6; ++i) {
+            cJSON *event = cJSON_Parse(own.events[i]);
+            marked[i] = cJSON_IsTrue(Item(Item(event, "satori_wx"), "manual_self"));
+            cJSON_Delete(event);
+        }
+        Check(marked[0], "an owner-typed row is manual_self");
+        Check(!marked[1], "a row the module created is not (local id)");
+        Check(!marked[2] && !marked[3], "rows written while the module was sending to that talker are not (window)");
+        Check(marked[4], "another talker's own row is still manual_self");
+        Check(!marked[5], "an incoming row is never marked");
+        // After the window closes the grace still covers a late poll.
+        satori::Wcdb *late_writer = satori::WcdbOpenEx(library, path, nullptr, 0, 0, 0, 0, 0);
+        Exec(late_writer, "INSERT INTO message(msgId,msgSvrId,type,isSend,createTime,talker,content) VALUES(9606,8006,1,1,1700004006000,'wxid_win','late poll')");
+        satori::WcdbClose(late_writer);
+        Sink late;
+        Drain(store, 9605, &late);
+        cJSON *late_event = late.count ? cJSON_Parse(late.events[0]) : nullptr;
+        Check(late.count == 1 && !Item(late_event, "satori_wx"), "a poll that lags a moment behind the send still recognises it");
+        cJSON_Delete(late_event);
+    }
 
     satori::DestroyStore(store);
     char cleanup[600];

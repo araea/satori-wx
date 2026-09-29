@@ -266,6 +266,12 @@ Response CreateMessages(const Request &request, Store *store) {
     const char *content = Text(request, "content");
     if (!*channel_id || !*content) return {400, nullptr};
     const bool group = strstr(channel_id, "@chatroom") != nullptr;
+    // Rows this request makes are ours, not the owner's typing: the event poller asks the store.
+    struct SendWindow {
+        Store *store; const char *talker;
+        SendWindow(Store *s, const char *t) : store(s), talker(t) { StoreSendBegin(store, talker); }
+        ~SendWindow() { StoreSendEnd(store, talker); }
+    } send_window(store, channel_id);
 
     // Cut the content at its pictures.
     ImageSpan spans[kImages + 1];
@@ -360,10 +366,12 @@ Response CreateMessages(const Request &request, Store *store) {
                     return FailureAfter("image_unconfirmed", "WeChat recorded the picture but its pipeline stalled (content empty); the image was not sent", false, sent_count);
                 return FailureAfter("image_unconfirmed", "WeChat did not record the picture within 6 seconds; it may still be sent", false, sent_count);
             }
+            StoreNoteSent(store, local_id);
             message = SentImageMessage(store, channel_id, local_id);
         } else if (!texts[i].blank) {
             SendResult sent = SendText(channel_id, texts[i].plain, texts[i].ids);
             if (!sent.ok) { cJSON_Delete(list); free(texts); return FailureAfter("send_failed", sent.detail, sent.rejected, sent_count); }
+            StoreNoteSent(store, sent.local_id);
             message = SentMessage(store, channel_id, texts[i].plain, sent.local_id);
         } else {
             continue;

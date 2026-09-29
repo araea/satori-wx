@@ -20,6 +20,16 @@ const char *StoreError(Store *store);
 const char *StoreSelfId(Store *store);
 // Highest message rowid, or -1 when it cannot be read.
 long long StoreWatermark(Store *store);
+// Who wrote a row this account sent: this module (message.create) or a person typing in WeChat
+// itself. WeChat's table has one flag (`isSend`) for both, so the module keeps its own account:
+// a `message.create` to a talker is open from Begin to End (plus a short grace, for a poll that
+// lags behind), and every local id it got back is remembered. Rows the poller reads from this
+// account that match neither are announced with `satori_wx.manual_self`, the counterpart of
+// satori-qq's marker, so a consumer can tell the owner's own messages from the echo of its
+// own sends.
+void StoreSendBegin(Store *store, const char *talker);
+void StoreSendEnd(Store *store, const char *talker);
+void StoreNoteSent(Store *store, long long local_id);
 // Emits one `message-created` event per new chat message (rowid > since) and returns the new
 // watermark: the last row that was handled. A row whose event `emit` refuses (the queue is
 // full) is *not* passed, so it is offered again on the next call instead of being lost; rows
