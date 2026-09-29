@@ -97,11 +97,12 @@ XmlSlice XmlDocument(const char *xml) {
     return slice;
 }
 
-bool XmlChild(XmlSlice scope, const char *name, XmlSlice *inner, XmlSlice *attrs) {
-    if (!scope.Valid() || !name || !*name) return false;
+// Generalized XmlChild: counts direct children named `name` and returns the `index`-th (0-based).
+bool XmlChildAt(XmlSlice scope, const char *name, int index, XmlSlice *inner, XmlSlice *attrs) {
+    if (!scope.Valid() || !name || !*name || index < 0) return false;
     const size_t wanted = strlen(name);
     const char *p = scope.begin, *end = scope.end;
-    int depth = 0;
+    int depth = 0, seen = -1;
     bool matching = false;
     const char *inner_begin = nullptr, *attrs_begin = nullptr, *attrs_end = nullptr;
     while (p < end) {
@@ -116,9 +117,12 @@ bool XmlChild(XmlSlice scope, const char *name, XmlSlice *inner, XmlSlice *attrs
             if (!close) return false;
             if (depth > 0) --depth;
             if (depth == 0 && matching) {
-                if (inner) { inner->begin = inner_begin; inner->end = p; }
-                if (attrs) { attrs->begin = attrs_begin; attrs->end = attrs_end; }
-                return true;
+                matching = false;
+                if (++seen == index) {
+                    if (inner) { inner->begin = inner_begin; inner->end = p; }
+                    if (attrs) { attrs->begin = attrs_begin; attrs->end = attrs_end; }
+                    return true;
+                }
             }
             p = close + 1;
             continue;
@@ -131,9 +135,13 @@ bool XmlChild(XmlSlice scope, const char *name, XmlSlice *inner, XmlSlice *attrs
         if (depth == 0 && static_cast<size_t>(tag_name_end - tag) == wanted && !memcmp(tag, name, wanted)) {
             const char *a_end = self_closing ? close - 1 : close;
             if (self_closing) {
-                if (inner) { inner->begin = inner->end = close + 1; }
-                if (attrs) { attrs->begin = tag_name_end; attrs->end = a_end; }
-                return true;
+                if (++seen == index) {
+                    if (inner) { inner->begin = inner->end = close + 1; }
+                    if (attrs) { attrs->begin = tag_name_end; attrs->end = a_end; }
+                    return true;
+                }
+                p = close + 1;
+                continue;
             }
             matching = true;
             inner_begin = close + 1;
@@ -143,6 +151,10 @@ bool XmlChild(XmlSlice scope, const char *name, XmlSlice *inner, XmlSlice *attrs
         p = close + 1;
     }
     return false;
+}
+
+bool XmlChild(XmlSlice scope, const char *name, XmlSlice *inner, XmlSlice *attrs) {
+    return XmlChildAt(scope, name, 0, inner, attrs);
 }
 
 bool XmlPath(XmlSlice scope, const char *path, XmlSlice *inner, XmlSlice *attrs) {

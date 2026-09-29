@@ -8,6 +8,7 @@
 #include "wx_key.h"
 #include "wx_live.h"
 #include "wx_media.h"
+#include "wx_pat.h"
 #include "media.h"
 #include "wx_send.h"
 #include <android/log.h>
@@ -168,6 +169,7 @@ public:
             satori::SetMediaResolver(satori::WeChatMediaResolver);
             satori::SetStatusProvider(AddBackendStatus);
             satori::SetWakelockProvider(satori::KeepaliveWakelock);
+            satori::SetPatProvider(satori::PatDispatch);
         }
         if (!target_ || !configured_) api_->setOption(zygisk::DLCLOSE_MODULE_LIBRARY);
     }

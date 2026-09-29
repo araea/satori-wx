@@ -1,4 +1,5 @@
 #pragma once
+#include <stddef.h>
 #include <stdint.h>
 #include "vendor/cjson/cJSON.h"
 namespace satori {
@@ -25,6 +26,11 @@ void SetTempDir(const char *dir);
 // resulting user intent. When null the endpoint reports 501.
 using WakelockProvider = void (*)(int action, bool *held);
 void SetWakelockProvider(WakelockProvider provider);
+// Optional hook for POST /v1/internal/pat: sends WeChat's "拍一戳" through WeChat's own scene.
+// `rejected` is set when the request was refused before anything was dispatched. When null the
+// endpoint reports 501.
+using PatProvider = bool (*)(const char *channel, const char *user, bool *rejected, char *detail, size_t size);
+void SetPatProvider(PatProvider provider);
 // Resolves a message-media route under `/v1/proxy/internal:<platform>/<user>/<path>` (any path
 // other than `_tmp/...`) to a local file. The resolver owns the authorization of the link: the
 // route needs no Authorization header, so it must reject anything that was not issued by this

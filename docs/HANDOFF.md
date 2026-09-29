@@ -8,12 +8,13 @@
 
 纯 native C++：无 DEX、无 Java 助手、无 ArtMethod 改写、无 hook 引擎。连发送都是纯反射调用微信自己的代码，不加载任何额外东西。
 
-当前版本 v0.11.4：`message.create` 的图片 `src` 额外接受 `base64://`（社区通用 scheme，无 mime，按魔数定格式）——知微发图片就是这种，此前被当远程 URL 拒掉。v0.11.3：唤醒锁默认开。v0.11.2 曾把常驻通知改成单行收起态，已整体撤回（通知仍是标题加一行、展开正文带在线时长的老样子）；v0.11.3 只改一处——用户唤醒锁默认开，开机后第一个 keeper tick 就持上不定时的 CPU + Wi-Fi 锁，按钮与 `POST /v1/internal/wakelock` 关掉只管本次开机。v0.11.0 之前读侧与事件侧补齐、发送侧有了群内 @ 与图片；v0.11.0 把新消息的到达从 1–2 秒一拍的轮询改成 inotify 驱动（毫秒级），把 wxguard 的解冻从 5 秒轮询改成 cgroup 事件驱动（几毫秒），撤掉发送开关（写方法始终在 features 里；旧配置里的 `send=` 仍被接受但不起作用），并整理了常驻通知（不再重复标题、不再显示唤醒锁与发送状态）；v0.11.1 修了图片发送的确认（空壳行不算发出）。
+当前版本 v0.11.5：`/v1/internal/pat` 发微信「拍一戳」（内部扩展端点，不是 Satori 方法），收到的拍一戳行（appmsg 62）解码为可投递消息。v0.11.4：`message.create` 的图片 `src` 额外接受 `base64://`（社区通用 scheme，无 mime，按魔数定格式）——知微发图片就是这种，此前被当远程 URL 拒掉。v0.11.3：唤醒锁默认开。v0.11.2 曾把常驻通知改成单行收起态，已整体撤回（通知仍是标题加一行、展开正文带在线时长的老样子）；v0.11.3 只改一处——用户唤醒锁默认开，开机后第一个 keeper tick 就持上不定时的 CPU + Wi-Fi 锁，按钮与 `POST /v1/internal/wakelock` 关掉只管本次开机。v0.11.0 之前读侧与事件侧补齐、发送侧有了群内 @ 与图片；v0.11.0 把新消息的到达从 1–2 秒一拍的轮询改成 inotify 驱动（毫秒级），把 wxguard 的解冻从 5 秒轮询改成 cgroup 事件驱动（几毫秒），撤掉发送开关（写方法始终在 features 里；旧配置里的 `send=` 仍被接受但不起作用），并整理了常驻通知（不再重复标题、不再显示唤醒锁与发送状态）；v0.11.1 修了图片发送的确认（空壳行不算发出）。
 
 - 收到的消息按 Satori 元素解码（图片 / 语音 / 视频 / 表情 / 链接 / 文件 / 回复 / @），媒体是签名链接，由 `/v1/proxy` 流式回包，见 [消息内容](wechat-content.md)。
 - 事件：`message-created`（带 `guild` `member` 与头像）、`message-deleted`、`guild-member-added|removed`、`guild-added|removed`、`friend-added|removed`，见 [事件](wechat-events.md)。
 - `message.list` 是 Satori 的双向分页；事件不再有 4 KiB 上限（128 KiB）；轮询水位不再吞消息。
 - `message.create`：群里的 `<at>` 是真提及；`<img>` 走聊天界面自己的 `rj()` 图片管线（真机已验证，见 [发送各类消息](wechat-send-types.md)）；回复 `<quote>` 仍被当元素丢掉。
+- 拍一戳：`POST /v1/internal/pat`（`{channel_id, user_id}`）发「拍一戳」，走微信自己的 NetSceneSendPat（`qv3.b`，cgi `sendpat`）；收到的拍一戳行（type 922746929 / appmsg 62）解码成消息投递，作者是发起者，模板里的 `${wxid}` 占位符展开（自己变「你」）。见 `native/wx_pat.cpp` 头注释。
 - `upload.create` 收得下 16 MiB，`/v1/proxy` 流式回包、支持 `Range`。
 - 发送没有开关：所有会话都可发送，没有限速也没有白名单，模块自己也不给发送加任何延迟。
 
@@ -71,6 +72,7 @@ token=<32-128 位字母数字-_>
 | `native/wx_capabilities.cpp/.h` | 唯一 features 列表 + `unsupported` 列表 |
 | `native/wx_send.cpp/.h` | 反射发送器（`SendText` 文本与 @、`SendImage` 图片、`SendRecall` 撤回）+ 状态 / 计数快照（无白名单、无限速）；对外暴露 ReflectEnv / ReflectResolve / ReflectLoad / ReflectDispatchScene 供群管理复用 |
 | `native/wx_room.cpp/.h` | 反射群管理写操作：`qn.p`（踢人 / 退群，`m1` 派发）与 `qn.b` / `qn.e`（设 / 撤管理员，`z2.d` Cgi 派发） |
+| `native/wx_pat.cpp/.h` | 反射拍一戳：`nv3.l.nj` 插入本地行 + `qv3.b`（cgi `sendpat`）`doScene` 派发；`PatDispatch` 是 `/v1/internal/pat` 的 provider |
 | `native/tempstore.cpp/.h` | 内置 `upload.create` 的落盘与 TTL；`/v1/proxy` 的 `internal:.../_tmp/...` 目标 |
 | `native/wx_keepalive.cpp/.h` | 微信进程内常驻状态通知、唤醒锁、每 10 分钟重启微信自己的 CoreService；`keepalive` 状态块 |
 | `native/wx_key.cpp/.h` | 捕获 SQLCipher 密钥：RegisterNatives 指针替换，只取 setCipherKey / nativeSetKey |
@@ -147,6 +149,8 @@ MsgInfo = ex0.k0.F0.k(talker, localId)          // ex0.j0，按 talker+本地 ms
 
 群管理写操作：`channel.delete`（退群）/ `guild.member.kick` 用 `qn.p`（cgi `delchatroommember`）复用发送路径的 `doScene(派发器, y2)`；`guild.member.role.set/unset` 用 `qn.b` / `qn.e`（cgi `add/delchatroomadmin`），经 `com.tencent.mm.modelbase.z2.d(o, null, false)` 交给微信自带 Cgi 运行器。详情、参数与未做的方法见 [群管理写操作](wechat-room.md)。
 
+拍一戳（v0.11.5，`/v1/internal/pat`）：微信双击头像的流程是两步，都可反射达成——`nv3.l` 单例（服务定位器 `ph5.n0.c(ov3.j.class)`）的 `nj(会话, 发起者, 被拍者, 模板, 时间秒, svrId)` 先插本地互动行（type 922746929，返回 `Pair(msgId, createTime)`，不可拍时返回 (0,0)），再 `new qv3.b(pair, 会话, 被拍者, 0)`（cgi `/cgi-bin/micromsg-bin/sendpat`，构造器自己拼 `uin_msgId_createTime` 指针串）走 `doScene(派发器, y2)`。scene int 0 是普通拍一戳，1 是「改拍一拍后缀」；直派不走中央 runner，所以 849 回调（svrId 回填、失败 Toast）都不会发生，本地记录的 svrId 停在 0，纯展示问题。`nj` 拒绝时 `PatSend` 直接 rejected，不派发。
+
 资源路由：`upload.create` 由 `native/tempstore.cpp` 落盘，返回 `internal:wechat/<user>/_tmp/<name>`（5 分钟）；收到的消息媒体是 `internal:wechat/<user>/_msg/<kind>/<id>/<签名>`（见 [消息内容](wechat-content.md)）。`/v1/proxy/{url}` 在 `server.cpp` 里：`internal:` 解析登录号后流式回文件（`_tmp` 直接查，`_msg` 交给已登记的解析器，先验签）；http(s) 前缀未登记则 403；非法 400；未知登录 / 验签失败 404；带 CORS，不需 Satori 登录头。`proxy_urls` 仍为空（微信没有公网资源 URL）。
 
 ## 协议层要点
@@ -175,6 +179,8 @@ python3 tools/dexmethodstrings.py $APK 'Lcom/tencent/mm/app/q3;' b
 ```
 
 `tools/dexlib.py` 是精确指令解码器。注意：`libapp.so` 里的编译化 dex 这些工具看不到，能用可读 dex 拼出来的路径优先别去碰它（发送就是这么找到的）。JADX 也可用：`~/tools/jadx/bin/jadx --single-class <点分名> -d <输出目录> base.apk`。
+
+库检查台 `tools/wxq.cpp`（`./build.sh` 不编它，手编：`clang -O2 -I native tools/wxq.cpp native/wcdb.cpp -ldl -o build/wxq`）：只读跑一条 SELECT，参数是 libWCDB.so 路径、库路径、`hex:<密钥>` 或 `-`（明文）。密钥在 `<微信数据目录>/files/satori-wx/key.log` 的 `hex=`；热拷贝 db+wal 的副本读不了，直接以只读方式开活库（密钥确定正确时是安全的）。
 
 ## 已知限制 / 安全项
 
@@ -250,6 +256,11 @@ api message.delete '{"channel_id":"filehelper","message_id":"<上一步返回的
 
 # 7) 收消息：让别人给你发图片 / 语音 / 引用回复 / 在群里 @ 你，events-tail 里对应看到
 #    <img>/<audio>、<quote id=…/>、<at id="wxid_8zxjsghrk8vz41" …/>
+
+# 8) 拍一戳（v0.11.5）：真机验证一条——发到自己文件助手会 rejected（filehelper 不可拍），
+#    在真群里拍一个成员应当 200；本机微信聊天页出现「你拍了拍…」，对方收到拍一戳提示。
+api internal/pat '{"channel_id":"filehelper","user_id":"wxid_8zxjsghrk8vz41"}'   # 期望 502 rejected:true
+api internal/pat '{"channel_id":"<群id>@chatroom","user_id":"<群成员wxid>"}'      # 期望 200 {"ok":true}
 ```
 
 - 群里的 @ 发送（`<at id=… name=…/>`）需要一个真的群，验之前先问用户要不要在哪个群里试；验证办法是看微信库里那行的 `lvbuffer` 是否带 `<atuserlist>`，以及对方手机上是否高亮。

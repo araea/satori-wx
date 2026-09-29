@@ -177,7 +177,45 @@ int main() {
     satori::DecodeMessage(Row(304, 50, "wxid_f", "<voipmsg type=\"VoIPBubbleMsg\"/>"), kSelf, &d);
     Check(!d.deliver && d.kind == MsgKind::Ignored, "call logs are ignored");
     satori::DecodeMessage(Row(305, 49, "wxid_f", "<msg><appmsg><title>x</title><type>62</type></appmsg></msg>"), kSelf, &d);
-    Check(!d.deliver, "a pat is an interaction tip, not a message");
+    Check(!d.deliver && d.kind == MsgKind::System, "a pat wrapper without records is bookkeeping");
+    // ---- pats ("拍一戳") ----------------------------------------------------------------------
+    // Shaped like a real type-922746929 row (appmsg 62 wrapper around <patMsg>).
+    satori::DecodeMessage(Row(310, 922746929, "123@chatroom",
+        "<msg><appmsg appid=\"\" sdkver=\"0\"><title>当前版本不支持展示该内容，请升级至最新版本。</title><type>62</type>"
+        "<patMsg><chatUser>123@chatroom</chatUser><records><recordNum>1</recordNum><record>"
+        "<fromUser>wxid_a</fromUser><pattedUser>wxid_self</pattedUser>"
+        "<template><![CDATA[\"${wxid_a}\" 拍了拍 \"${wxid_self}\"]]></template>"
+        "<createTime>1790611143000</createTime><readStatus>1</readStatus><svrId>4122221325758051183</svrId>"
+        "<showModifyTip>0</showModifyTip><isNewPatMsg>1</isNewPatMsg></record></records></patMsg></appmsg></msg>"), kSelf, &d);
+    Check(d.deliver && d.kind == MsgKind::Other, "a pat record delivers");
+    Eq(d.content, "\"wxid_a\" 拍了拍 \"你\"", "pat template expands, self becomes 你");
+    Eq(d.sender, "wxid_a", "pat author is the pat-er");
+    // Several records in one aggregated row read as several lines.
+    satori::DecodeMessage(Row(311, 922746929, "123@chatroom",
+        "<msg><appmsg><type>62</type><patMsg><records><recordNum>2</recordNum>"
+        "<record><fromUser>wxid_a</fromUser><pattedUser>wxid_b</pattedUser>"
+        "<template><![CDATA[\"${wxid_a}\" 拍了拍 \"${wxid_b}\"]]></template></record>"
+        "<record><fromUser>wxid_c</fromUser><pattedUser>wxid_self</pattedUser>"
+        "<template><![CDATA[\"${wxid_c}\" 拍了拍 \"${wxid_self}\"]]></template></record>"
+        "</records></patMsg></appmsg></msg>"), kSelf, &d);
+    Check(d.deliver, "an aggregated pat row delivers");
+    Eq(d.content, "\"wxid_a\" 拍了拍 \"wxid_b\"\n\"wxid_c\" 拍了拍 \"你\"", "aggregated pat records join with a newline");
+    Eq(d.sender, "wxid_a", "aggregated pat keeps the first pat-er as author");
+    // Our own pat: the row is ours, the patted one is a plain id.
+    satori::DecodeMessage(Row(312, 922746929, "wxid_f",
+        "<msg><appmsg><type>62</type><patMsg><records><record>"
+        "<fromUser>wxid_self</fromUser><pattedUser>wxid_f</pattedUser>"
+        "<template><![CDATA[\"${wxid_self}\" 拍了拍 \"${wxid_f}\"]]></template>"
+        "</record></records></patMsg></appmsg></msg>"), kSelf, &d);
+    Check(d.deliver, "our own pat delivers");
+    Eq(d.content, "\"你\" 拍了拍 \"wxid_f\"", "own pat names itself 你");
+    // A record without a template still reads as who patted whom.
+    satori::DecodeMessage(Row(313, 922746929, "123@chatroom",
+        "<msg><appmsg><type>62</type><patMsg><records><record>"
+        "<fromUser>wxid_a</fromUser><pattedUser>wxid_b</pattedUser></record>"
+        "</records></patMsg></appmsg></msg>"), kSelf, &d);
+    Check(d.deliver, "a template-less pat delivers");
+    Eq(d.content, "\"wxid_a\" 拍了拍 \"wxid_b\"", "template-less pat falls back to the plain wording");
     Check(satori::IsRevokeType(268445456) && satori::IsRevokeType(285222674) && !satori::IsRevokeType(10000), "revoke types");
     Check(satori::IsSystemType(10000) && satori::IsSystemType(268445456) && !satori::IsSystemType(1), "system types");
     satori::DecodeMessage(Row(306, 49, "wxid_f", "<msg><appmsg"), kSelf, &d);

@@ -36,6 +36,7 @@ constexpr int64_t kRequestMs = 10000, kHeartbeatMs = 30000, kStreamMs = 20000;
 // Registered by the module; null in tests and standalone tools.
 StatusProvider g_status_provider = nullptr;
 WakelockProvider g_wakelock_provider = nullptr;
+PatProvider g_pat_provider = nullptr;
 MediaResolver g_media_resolver = nullptr;
 // Buffers are heap-allocated per connection and freed on Drop: eight fixed 60 KiB structs sat
 // resident for the life of WeChat, and none of them could hold a real upload or a real image.
@@ -547,8 +548,9 @@ void Http(Client &c, const Config &config, Hub *hub, const Backend *backend, Web
     const bool webhook_create = !strcmp(path, "/v1/meta/webhook.create");
     const bool webhook_delete = !strcmp(path, "/v1/meta/webhook.delete");
     const bool wakelock = !strcmp(path, "/v1/internal/wakelock");
+    const bool pat = !strcmp(path, "/v1/internal/pat");
     const Method *rpc = !strncmp(path, "/v1/", 4) ? FindMethod(path + 4) : nullptr;
-    if (!meta && !status && !capabilities && !webhook_create && !webhook_delete && !wakelock && !rpc) { Reply(c, 404, "Not Found", "{\"error\":\"unknown_api\"}"); return; }
+    if (!meta && !status && !capabilities && !webhook_create && !webhook_delete && !wakelock && !pat && !rpc) { Reply(c, 404, "Not Found", "{\"error\":\"unknown_api\"}"); return; }
     if (strcmp(method, "POST")) { Reply(c, 405, "Method Not Allowed", "{}"); return; }
     cJSON *body = nullptr;
     Multipart uploads{};
@@ -627,6 +629,40 @@ void Http(Client &c, const Config &config, Hub *hub, const Backend *backend, Web
         } else {
             Reply(c, 400, "Bad Request", "{\"error\":\"invalid_request\"}");
         }
+    } else if (pat) {
+        // WeChat's "拍一戳". Not a Satori method: an internal extra on the same account rules
+        // as the rpc methods (token + login headers), handled by the module's provider.
+        const cJSON *channel_id = cJSON_GetObjectItemCaseSensitive(body, "channel_id");
+        const cJSON *user_id = cJSON_GetObjectItemCaseSensitive(body, "user_id");
+        if (!*header("Satori-Platform") || !*header("Satori-User-ID")) {
+            Reply(c, 400, "Bad Request", "{\"error\":\"missing_login_headers\"}");
+        } else if (!FindLogin(hub, header("Satori-Platform"), header("Satori-User-ID"))) {
+            Reply(c, 403, "Forbidden", "{\"error\":\"login_not_found\"}");
+        } else if (!g_pat_provider) {
+            Reply(c, 501, "Not Implemented", "{\"error\":\"backend_not_implemented\"}");
+        } else if (!cJSON_IsString(channel_id) || !*channel_id->valuestring || !cJSON_IsString(user_id) || !*user_id->valuestring) {
+            Reply(c, 400, "Bad Request", "{\"error\":\"invalid_request\"}");
+        } else {
+            char detail[160] = {};
+            bool rejected = false;
+            const bool ok = g_pat_provider(channel_id->valuestring, user_id->valuestring, &rejected, detail, sizeof(detail));
+            if (ok) {
+                Reply(c, 200, "OK", "{\"ok\":true}");
+            } else {
+                cJSON *body_out = cJSON_CreateObject();
+                if (body_out) {
+                    cJSON_AddStringToObject(body_out, "error", "pat_failed");
+                    if (detail[0]) cJSON_AddStringToObject(body_out, "detail", detail);
+                    if (rejected) cJSON_AddBoolToObject(body_out, "rejected", true);
+                    char *text = cJSON_PrintUnformatted(body_out);
+                    Reply(c, 502, "Request Failed", text ? text : "{}");
+                    free(text);
+                    cJSON_Delete(body_out);
+                } else {
+                    Reply(c, 500, "Internal Server Error", "{}");
+                }
+            }
+        }
     } else if (webhook_create || webhook_delete) {
         const cJSON *url = cJSON_GetObjectItemCaseSensitive(body, "url");
         const cJSON *token = cJSON_GetObjectItemCaseSensitive(body, "token");
@@ -671,6 +707,7 @@ void Http(Client &c, const Config &config, Hub *hub, const Backend *backend, Web
 
 void SetStatusProvider(StatusProvider provider) { g_status_provider = provider; }
 void SetWakelockProvider(WakelockProvider provider) { g_wakelock_provider = provider; }
+void SetPatProvider(PatProvider provider) { g_pat_provider = provider; }
 void SetTempDir(const char *dir) { TempStoreSetDir(dir); }
 void SetMediaResolver(MediaResolver resolver) { g_media_resolver = resolver; }
 

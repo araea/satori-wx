@@ -112,6 +112,12 @@ class ServerTests(unittest.TestCase):
         h = {'Satori-Platform': 'wechat', 'Satori-User-ID': 'test'}
         self.assertEqual(self.http('/v1/login.get', headers=h)[0], 403)
         self.assertEqual(self.http('/v1/message.create', body=b'{"channel_id":"x","content":"hello"}', headers=h)[0], 403)
+    def test_pat_endpoint(self):
+        # The pat route follows the account rules of the rpc methods; without a backend
+        # provider a known login would answer 501, and there is none in the bare hub.
+        self.assertEqual(self.http('/v1/internal/pat')[0], 400)  # missing login headers
+        h = {'Satori-Platform': 'wechat', 'Satori-User-ID': 'test'}
+        self.assertEqual(self.http('/v1/internal/pat', headers=h)[0], 403)  # unknown login
     def test_json_rejection(self):
         cases = [b'[]', b'null', b'{', b'{}x', b'{}\0', b'{"x":1,"x":2}',
                  b'{"x":\x011}', b'{"x":\x0b1}', b'{"x":01}', b'{"x":1.}', b'{"x":"\n"}', b'{"x":"\xff"}',

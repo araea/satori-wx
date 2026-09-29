@@ -20,6 +20,8 @@ XmlSlice XmlDocument(const char *xml);
 // and end tag (empty for <name/>); `attrs`, when given, the text inside the start tag after the
 // element name (what XmlAttribute reads).
 bool XmlChild(XmlSlice scope, const char *name, XmlSlice *inner, XmlSlice *attrs = nullptr);
+// The `index`-th (0-based) direct child element `name` of `scope`, for repeated children.
+bool XmlChildAt(XmlSlice scope, const char *name, int index, XmlSlice *inner, XmlSlice *attrs = nullptr);
 // Follows a '/'-separated chain of direct children from `scope`.
 bool XmlPath(XmlSlice scope, const char *path, XmlSlice *inner, XmlSlice *attrs = nullptr);
 // Element text: CDATA unwrapped, character references decoded, surrounding whitespace trimmed.

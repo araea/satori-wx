@@ -189,6 +189,63 @@ void DecodeQuote(XmlSlice appmsg, const MessageRow &, Decoded *out) {
     out->refer_text = original;
 }
 
+// Renders one "拍了拍" record's template: each "${wxid}" placeholder becomes the id, or "你"
+// when it is this account. The template is plain text apart from the placeholders.
+void ExpandPatTemplate(const char *tpl, const char *self_id, TextBuf &text) {
+    for (const char *p = tpl; *p;) {
+        if (p[0] == '$' && p[1] == '{') {
+            const char *close = strchr(p + 2, '}');
+            const size_t n = close ? static_cast<size_t>(close - (p + 2)) : 0;
+            if (close && n < 96) {
+                char id[96];
+                memcpy(id, p + 2, n); id[n] = 0;
+                const bool mine = self_id && *self_id && !strcmp(id, self_id);
+                text.Text(mine ? "你" : id);
+                p = close + 1;
+                continue;
+            }
+        }
+        text.Text(p, 1);
+        ++p;
+    }
+}
+
+// A "拍了拍" row (appmsg type 62): <patMsg><records><record> carries who patted whom, plus the
+// server's own tip template ("${a}" 拍了拍 "${b}"). One row may aggregate several records. It
+// is delivered as a message whose author is the first record's pat-er, so a client sees who
+// patted (and can react to being patted); a wrapper without readable records stays bookkeeping.
+void DecodePat(XmlSlice appmsg, const char *self_id, Decoded *out) {
+    XmlSlice records;
+    if (!XmlPath(appmsg, "patMsg/records", &records)) { out->kind = MsgKind::System; return; }
+    TextBuf text;
+    char first_sender[96] = {};
+    int delivered = 0;
+    for (int i = 0; i < 32; ++i) {
+        XmlSlice record;
+        if (!XmlChildAt(records, "record", i, &record)) break;
+        char from[96] = {}, patted[96] = {}, tpl[512] = {};
+        XmlGetText(record, "fromUser", from, sizeof(from));
+        XmlGetText(record, "pattedUser", patted, sizeof(patted));
+        if (!*from && !*patted) continue;
+        XmlGetText(record, "template", tpl, sizeof(tpl));
+        if (delivered) text.Append('\n');
+        if (*tpl) {
+            ExpandPatTemplate(tpl, self_id, text);
+        } else {
+            text.Append('"'); text.Text(from); text.Append('"');
+            text.Text(" \xE6\x8B\x8D\xE4\xBA\x86\xE6\x8B\x8D ");
+            text.Append('"'); text.Text(patted); text.Append('"');
+        }
+        if (!delivered) snprintf(first_sender, sizeof(first_sender), "%s", from);
+        ++delivered;
+    }
+    if (!delivered || text.failed) { out->kind = MsgKind::System; return; }
+    out->kind = MsgKind::Other;
+    out->deliver = true;
+    out->content = text.Take();
+    snprintf(out->sender, sizeof(out->sender), "%s", first_sender);
+}
+
 void DecodeAppMsg(const MessageRow &row, const char *body, const char *self_id, Decoded *out) {
     out->deliver = false;  // each branch below opts in once it has something to say
     XmlSlice root = XmlDocument(body);
@@ -205,7 +262,7 @@ void DecodeAppMsg(const MessageRow &row, const char *body, const char *self_id, 
     XmlGetText(appmsg, "type", type_text, sizeof(type_text));
     const int subtype = atoi(type_text);
     if (subtype == 57) { out->kind = MsgKind::Quote; out->deliver = true; DecodeQuote(appmsg, row, out); return; }
-    if (subtype == 62) { out->kind = MsgKind::System; return; }  // "拍了拍": an interaction tip, not a message
+    if (subtype == 62) { DecodePat(appmsg, self_id, out); return; }  // "拍了拍": who patted whom
 
     char title[1024] = {}, description[2048] = {}, url[2048] = {};
     XmlGetText(appmsg, "title", title, sizeof(title));
