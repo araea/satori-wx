@@ -458,10 +458,12 @@ void QuoteDisplayName(Store *store, const char *channel_id, QuoteRef &quote) {
     if (!quote.display[0]) snprintf(quote.display, sizeof(quote.display), "%s", quote.sender);
 }
 
-Response CreateMessages(const Request &request, Store *store) {
+// The messages one <message> part stands for. `already_sent` is what earlier parts of the same
+// request delivered (a failure reports the total); `tolerate_blank` lets a part with nothing to send
+// (whitespace, an <author/> alone) pass as an empty list instead of failing the whole request.
+Response CreateOne(const Request &request, Store *store, const char *content, size_t already_sent, bool tolerate_blank) {
     if (!store) return {503, nullptr};
     const char *channel_id = Text(request, "channel_id");
-    const char *content = Text(request, "content");
     if (!*channel_id || !*content) return {400, nullptr};
     const bool group = strstr(channel_id, "@chatroom") != nullptr;
     // <quote id="..."/> turns the first text of the request into a reply to that message. WeChat's
@@ -562,12 +564,15 @@ Response CreateMessages(const Request &request, Store *store) {
         text.blank = !*text.plain;
         if (!text.blank) ++sendable;
     }
-    if (!sendable) { free(texts); return {400, nullptr}; }
+    if (!sendable) {
+        free(texts);
+        return tolerate_blank ? Response{200, cJSON_CreateArray()} : Response{400, nullptr};
+    }
 
     cJSON *list = cJSON_CreateArray();
     if (!list) { free(texts); return {500, nullptr}; }
     const long long deadline = NowMs() + kRequestBudgetMs;
-    size_t sent_count = 0;
+    size_t sent_count = already_sent;
     for (size_t i = 0; i < segment_count; ++i) {
         cJSON *message = nullptr;
         const Segment &segment = segments[i];
@@ -691,6 +696,46 @@ Response CreateMessages(const Request &request, Store *store) {
     free(texts);
     // Satori's `message.create` returns a Message[]; official clients call `.map()` on it.
     return {200, list};
+}
+
+// `<message>` is Satori's container for "this is one message": what precedes and follows it is sent
+// separately, so a request may carry several. Each part goes through the same pipeline (its own
+// text and media split, its own <quote>) and the replies are returned in order. Merge forwarding
+// (`<message forward>`) has no WeChat counterpart, and sending its contents as separate messages
+// would silently be something else, so it is refused.
+constexpr size_t kParts = 16;
+
+Response CreateMessages(const Request &request, Store *store) {
+    const char *content = Text(request, "content");
+    if (!store) return {503, nullptr};
+    if (!*Text(request, "channel_id") || !*content) return {400, nullptr};
+    MessagePart parts[kParts + 1];
+    bool forward = false;
+    const size_t count = MessageParts(content, parts, kParts + 1, &forward);
+    if (forward) return BadRequest("forward_unsupported", "WeChat cannot merge-forward messages");
+    if (count > kParts) return BadRequest("too_many_messages", "at most 16 <message> parts per message.create");
+    if (count <= 1 && !strstr(content, "<message")) return CreateOne(request, store, content, 0, false);
+    cJSON *all = cJSON_CreateArray();
+    if (!all) return {500, nullptr};
+    size_t delivered = 0;
+    for (size_t i = 0; i < count; ++i) {
+        char *slice = static_cast<char *>(malloc(parts[i].end - parts[i].begin + 1));
+        if (!slice) { cJSON_Delete(all); return {500, nullptr}; }
+        memcpy(slice, content + parts[i].begin, parts[i].end - parts[i].begin);
+        slice[parts[i].end - parts[i].begin] = 0;
+        Response part = CreateOne(request, store, slice, delivered, true);
+        free(slice);
+        if (part.status != 200 || !part.body) { cJSON_Delete(all); return part; }
+        // Move the part's messages into the combined reply.
+        while (part.body->child) {
+            cJSON *message = cJSON_DetachItemFromArray(part.body, 0);
+            cJSON_AddItemToArray(all, message);
+            ++delivered;
+        }
+        cJSON_Delete(part.body);
+    }
+    if (!delivered) { cJSON_Delete(all); return {400, nullptr}; }
+    return {200, all};
 }
 
 Response Call(void *, const Request &request) {

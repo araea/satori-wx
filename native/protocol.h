@@ -50,6 +50,13 @@ size_t ImageSpans(const char *content, ImageSpan *out, size_t max);
 // are ignored, so `<file src=".."></file>` counts once.
 struct MediaSpan { size_t begin, end; char kind; };
 size_t MediaSpans(const char *content, MediaSpan *out, size_t max);
+// Where a content string divides into the messages it stands for: every <message> container,
+// self-closing <message/> separator or </message> is a boundary, and each non-empty stretch
+// between boundaries is one message. Content with no <message> tag is a single part. `forward`
+// is set when a <message> asks to be forwarded (`forward` attribute in any spelling): merge
+// forwarding is not something every platform has, so the caller decides what to do with it.
+struct MessagePart { size_t begin, end; };
+size_t MessageParts(const char *content, MessagePart *out, size_t max, bool *forward);
 // The first element called `name` (case-insensitive, opening tags only) in `content`.
 bool FirstTag(const char *content, const char *name, ImageSpan *out);
 // The value of `name` inside the tag [begin, end) of `content`, entity-decoded, or false.

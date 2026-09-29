@@ -78,7 +78,7 @@ void AddBackendStatus(cJSON *object, bool capabilities) {
     // What message.create understands, so a client can pick its elements without trial and error:
     // each media element is its own WeChat message; a <video> that is not an MP4 or an <audio> that
     // WeChat cannot play as a voice message goes out as a file (the returned Message says so).
-    static const char *const kElements[] = {"text", "at", "a", "br", "quote", "img", "video", "audio", "file"};
+    static const char *const kElements[] = {"text", "at", "a", "br", "p", "message", "quote", "img", "video", "audio", "file"};
     cJSON *elements = cJSON_CreateArray();
     if (elements) {
         cJSON_AddItemToObject(object, "message_elements", elements);
@@ -90,6 +90,7 @@ void AddBackendStatus(cJSON *object, bool capabilities) {
         cJSON_AddNumberToObject(limits, "upload_bytes", static_cast<double>(1ull << 30));       // upload.create, streamed to disk
         cJSON_AddNumberToObject(limits, "inline_media_bytes", static_cast<double>(12u << 20));  // data: / base64:// non-picture media
         cJSON_AddNumberToObject(limits, "inline_image_bytes", static_cast<double>(8u << 20));
+        cJSON_AddNumberToObject(limits, "messages_per_request", 16);  // <message> parts
         cJSON_AddNumberToObject(limits, "media_per_message", 8);
         cJSON_AddNumberToObject(limits, "images_per_message", 4);
         cJSON_AddNumberToObject(limits, "voice_max_seconds", 60);   // longer <audio> goes out as a file

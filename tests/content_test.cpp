@@ -118,6 +118,44 @@ int main() {
         Check(!strcmp(out, "x"), "PlainText still drops mentions");
     }
 
+    // ---- <p> is a paragraph: a line break between it and its neighbours ------------------------------
+    Eq("<p>a</p><p>b</p>", "a\nb\n", "paragraphs are lines");
+    Eq("x<p>y</p>z", "x\ny\nz", "a paragraph breaks away from the text around it");
+    Eq("a<br/><p>b</p>", "a\nb\n", "no doubled break after a <br/>");
+
+    // ---- MessageParts: <message> divides a request into messages -------------------------------------------
+    {
+        auto Parts = [](const char *content, const char *expected, bool want_forward, const char *what) {
+            satori::MessagePart parts[8];
+            bool forward = true;
+            const size_t count = satori::MessageParts(content, parts, 8, &forward);
+            char joined[512] = {};
+            for (size_t i = 0; i < count; ++i) {
+                if (i) strcat(joined, "|");
+                strncat(joined, content + parts[i].begin, parts[i].end - parts[i].begin);
+            }
+            if (strcmp(joined, expected) || forward != want_forward) {
+                fprintf(stderr, "FAIL: %s\n  in:  %s\n  got: %s (forward=%d)\n  want: %s (forward=%d)\n", what, content, joined, forward, expected, want_forward);
+                ++failures;
+            }
+        };
+        Parts("hello", "hello", false, "no container is one part");
+        Parts("", "", false, "empty content has no part");
+        Parts("<message>a</message><message>b</message>", "a|b", false, "containers are messages");
+        Parts("a<message/>b", "a|b", false, "a self-closing <message/> is a separator");
+        Parts("前<message>中</message>后", "前|中|后", false, "text around a container is a message too");
+        Parts("<message><author id=\"1\" name=\"A\"/>hi</message>", "<author id=\"1\" name=\"A\"/>hi", false, "the author stays inside its part");
+        Parts("<message forward><message>x</message></message>", "x", true, "a bare forward attribute");
+        Parts("<message id=\"9\" forward=\"true\"/>", "", true, "forward with a value");
+        Parts("<MESSAGE FORWARD/>", "", true, "spelling case does not matter");
+        Parts("<message forward=\"false\">t</message>", "t", false, "forward=false is not forwarding");
+        Parts("<message id=\"forward\">t</message>", "t", false, "the word inside a value is not the attribute");
+        Parts("<messages>a</messages>", "<messages>a</messages>", false, "only the message element counts");
+        Parts("a<message", "a<message", false, "an unterminated tag is no boundary (the text flattener drops its tail)");
+        satori::MessagePart bounded[2];
+        Check(satori::MessageParts("a<message/>b<message/>c", bounded, 2, nullptr) == 2, "parts are bounded");
+    }
+
     // ---- ImageSpans / TagAttribute / Base64Decode -----------------------------------------------------------
     {
         const char *content = "看<img src=\"a&amp;b\"/>中<IMG width=\"1\" src='c'>末<image src=\"no\"/>";

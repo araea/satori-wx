@@ -445,6 +445,46 @@ int main() {
               "a video then a file arrive as two messages in that order");
         cJSON_Delete(ordered.body);
 
+        // <message> is the container for "one message": each part goes through the pipeline of its
+        // own and the replies come back in order, whatever the part holds.
+        g_call_count = 0;
+        snprintf(content, sizeof(content), "<message><file src=\"internal:wechat/self_wxid/_tmp/%s\" title=\"a.pdf\"/></message>"
+                 "<message> </message><message><video src=\"internal:wechat/self_wxid/_tmp/%s\"/></message>", pdf_name, video_name);
+        Outcome containers = Create(content);
+        Check(containers.status == 200 && cJSON_GetArraySize(containers.body) == 2 && g_call_count == 2 &&
+                  g_calls[0].kind == 'f' && g_calls[1].kind == 'v', "two <message> parts are two sends in order, a blank part is skipped");
+        cJSON_Delete(containers.body);
+        g_call_count = 0;
+        snprintf(content, sizeof(content), "<file src=\"internal:wechat/self_wxid/_tmp/%s\" title=\"a.pdf\"/><message/>"
+                 "<file src=\"internal:wechat/self_wxid/_tmp/%s\" title=\"b.pdf\"/>", pdf_name, pdf_name);
+        Outcome separator = Create(content);
+        Check(separator.status == 200 && cJSON_GetArraySize(separator.body) == 2 && g_call_count == 2 &&
+                  !strcmp(g_calls[1].title, "b.pdf"), "a self-closing <message/> separates two messages");
+        cJSON_Delete(separator.body);
+        {
+            g_call_count = 0;
+            const Outcome forward = Create("<message forward><message id=\"1\"/><message id=\"2\"/></message>");
+            Check(forward.status == 400 && !strcmp(Code(forward), "forward_unsupported") && g_call_count == 0,
+                  "merge forwarding is refused before anything is sent");
+            cJSON_Delete(forward.body);
+            const Outcome quoted_forward = Create("<message id=\"9\" forward/>");
+            Check(quoted_forward.status == 400 && !strcmp(Code(quoted_forward), "forward_unsupported"), "forwarding one message by id is refused too");
+            cJSON_Delete(quoted_forward.body);
+            const Outcome nothing = Create("<message> </message><message><at id=\"x\"/></message>");
+            Check(nothing.status == 400, "containers with nothing to send are an empty message");
+            cJSON_Delete(nothing.body);
+        }
+        {
+            // A part's failure reports what the earlier parts already delivered.
+            g_call_count = 0;
+            g_status = 5;
+            snprintf(content, sizeof(content), "<message><file src=\"internal:wechat/self_wxid/_tmp/%s\" title=\"a.pdf\"/></message>", pdf_name);
+            Outcome failing = Create(content);
+            Check(failing.status == 502 && !strcmp(Code(failing), "upload_failed"), "a failing part fails the request");
+            cJSON_Delete(failing.body);
+            g_status = 2;
+        }
+
         // A refused upload is a failure the caller hears about; a slow one is not.
         g_status = 5;
         snprintf(content, sizeof(content), "<file src=\"internal:wechat/self_wxid/_tmp/%s\" title=\"a.pdf\"/>", pdf_name);

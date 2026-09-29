@@ -223,6 +223,42 @@ bool Attribute(const char *begin, const char *end, const char *name, char *out, 
     }
     return false;
 }
+// A boolean attribute the way Satori writes it: bare (`forward`) or with a value (`forward="true"`);
+// the value "false" turns it off. Only attribute names count, never text inside a value.
+bool Flag(const char *begin, const char *end, const char *name) {
+    const size_t want = strlen(name);
+    const char *p = begin;
+    while (p < end) {
+        while (p < end && (*p == ' ' || *p == '\t' || *p == '/' || *p == '\n' || *p == '\r')) ++p;
+        const char *key = p;
+        while (p < end && TagChar(*p)) ++p;
+        const size_t key_size = static_cast<size_t>(p - key);
+        if (!key_size) { if (p < end) ++p; continue; }
+        while (p < end && (*p == ' ' || *p == '\t')) ++p;
+        const char *value = p;
+        size_t value_size = 0;
+        bool has_value = false;
+        if (p < end && *p == '=') {
+            has_value = true;
+            ++p;
+            while (p < end && (*p == ' ' || *p == '\t')) ++p;
+            if (p < end && (*p == '"' || *p == '\'')) {
+                const char delimiter = *p++;
+                value = p;
+                while (p < end && *p != delimiter) ++p;
+                value_size = static_cast<size_t>(p - value);
+                if (p < end) ++p;
+            } else {
+                value = p;
+                while (p < end && *p != ' ' && *p != '\t' && *p != '/') ++p;
+                value_size = static_cast<size_t>(p - value);
+            }
+        }
+        if (key_size == want && !strncasecmp(key, name, want))
+            return !(has_value && value_size == 5 && !strncasecmp(value, "false", 5));
+    }
+    return false;
+}
 } // namespace
 
 namespace {
@@ -281,6 +317,8 @@ size_t OutgoingText(const char *content, char *out, size_t capacity, OutgoingMen
                                (*end >= '0' && *end <= '9') || *end == '-' || *end == '_' || *end == ':')) ++end;
             const size_t name_size = static_cast<size_t>(end - name);
             if (!closing && name_size == 2 && (name[0] == 'b' || name[0] == 'B') && (name[1] == 'r' || name[1] == 'R')) keep('\n');
+            // <p> keeps a line break between itself and whatever sits next to it.
+            if (name_size == 1 && (name[0] == 'p' || name[0] == 'P') && used > 0 && out[used - 1] != '\n') keep('\n');
             if (!closing && name_size == 2 && !strncasecmp(name, "at", 2) && mentions && mention_count && *mention_count < max_mentions) {
                 char id[96] = {}, mention_name[96] = {}, type[16] = {};
                 Attribute(end, q, "id", id, sizeof(id));
@@ -451,6 +489,41 @@ size_t MediaSpans(const char *content, MediaSpan *out, size_t max) {
         }
         p = q + 1;
     }
+    return count;
+}
+
+size_t MessageParts(const char *content, MessagePart *out, size_t max, bool *forward) {
+    if (forward) *forward = false;
+    if (!out || !max) return 0;
+    if (!content) content = "";
+    const size_t total = strlen(content);
+    size_t count = 0, cursor = 0;
+    auto flush = [&](size_t stop) {
+        if (stop > cursor && count < max) { out[count].begin = cursor; out[count].end = stop; ++count; }
+    };
+    for (const char *p = content; *p;) {
+        if (*p != '<') { ++p; continue; }
+        const char *q = p + 1;
+        char quote = 0;
+        for (; *q; ++q) {
+            if (quote) { if (*q == quote) quote = 0; continue; }
+            if (*q == '"' || *q == '\'') { quote = *q; continue; }
+            if (*q == '>') break;
+        }
+        if (!*q) break;  // Unterminated tag: nothing trustworthy follows.
+        const char *name = p + 1;
+        const bool closing = *name == '/';
+        if (closing) ++name;
+        const char *name_end = name;
+        while (name_end < q && TagChar(*name_end)) ++name_end;
+        if (static_cast<size_t>(name_end - name) == 7 && !strncasecmp(name, "message", 7)) {
+            if (!closing && forward && Flag(name_end, q, "forward")) *forward = true;
+            flush(static_cast<size_t>(p - content));
+            cursor = static_cast<size_t>(q + 1 - content);
+        }
+        p = q + 1;
+    }
+    flush(total);
     return count;
 }
 
