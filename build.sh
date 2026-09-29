@@ -20,7 +20,7 @@ FLAGS=(-std=c++20 -O2 -fPIC -fvisibility=hidden -fno-exceptions -fno-rtti
     -c "$R/native/vendor/cjson/cJSON.c" -o "$WORK/cjson.o"
 "$CXX" "${FLAGS[@]}" -shared "$R/native/module.cpp" "$R/native/server.cpp" "$R/native/protocol.cpp" "$R/native/multipart.cpp" "$R/native/upload_stream.cpp" \
     "$R/native/tempstore.cpp" "$R/native/webhook.cpp" "$R/native/wx_account.cpp" "$R/native/wx_adapter.cpp" "$R/native/wx_live.cpp" "$R/native/wx_watch.cpp" \
-    "$R/native/wx_store.cpp" "$R/native/wx_backend.cpp" "$R/native/wx_capabilities.cpp" "$R/native/wx_send.cpp" "$R/native/wx_send_media.cpp" "$R/native/mp4_probe.cpp" \
+    "$R/native/wx_store.cpp" "$R/native/wx_backend.cpp" "$R/native/wx_capabilities.cpp" "$R/native/wx_send.cpp" "$R/native/wx_send_media.cpp" "$R/native/mp4_probe.cpp" "$R/native/wx_voice.cpp" "$R/native/audio_pcm.cpp" \
     "$R/native/wx_room.cpp" "$R/native/wx_pat.cpp" "$R/native/wx_message.cpp" "$R/native/wx_events.cpp" "$R/native/wx_media.cpp" "$R/native/media.cpp" "$R/native/xml_lite.cpp" \
     "$R/native/wx_keepalive.cpp" \
     "$R/native/wx_key.cpp" "$R/native/wcdb.cpp" "$WORK/cjson.o" \

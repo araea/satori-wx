@@ -10,6 +10,7 @@
 #include "wx_live.h"
 #include "wx_room.h"
 #include "wx_send.h"
+#include "wx_voice.h"
 #include "wx_keepalive.h"
 #include "protocol.h"
 #include "tempstore.h"
@@ -24,6 +25,8 @@ int g_status = 2;
 struct SentCall { char kind; char talker[64]; char path[1200]; char title[300]; char poster[1200]; int duration; };
 SentCall g_calls[16];
 int g_call_count = 0;
+satori::VoicePrep g_voice_result = satori::VoicePrep::Failed;   // what the (stubbed) audio conversion answers
+unsigned g_voice_ms = 2500;
 satori::QuoteRef g_last_quote;
 char g_last_reply[300];
 char g_last_reply_mentions[100];
@@ -37,6 +40,25 @@ bool StoreFindSentImage(Store *, const char *, long long, long long *) { return 
 bool StoreFindStalledImage(Store *, const char *, long long, long long *) { return false; }
 // A video row that appears at once, and a status the test can flip to "failed".
 bool StoreFindSentVideo(Store *, const char *, long long, long long *id) { *id = ++::g_next_row; return true; }
+bool StoreFindSentVoice(Store *, const char *, long long, long long *id) { *id = ++::g_next_row; return true; }
+VoicePrep VoicePrepare(const char *in_path, char *out_path, size_t capacity, unsigned *duration_ms, char *, size_t) {
+    *duration_ms = 0;
+    if (::g_voice_result != VoicePrep::Ready) return ::g_voice_result;
+    snprintf(out_path, capacity, "%s", in_path);
+    *duration_ms = ::g_voice_ms;
+    return VoicePrep::Ready;
+}
+SendResult SendVoice(const char *talker, const char *path, int duration_ms) {
+    SentCall &call = ::g_calls[::g_call_count++ % 16];
+    call = {};
+    call.kind = 'a';
+    snprintf(call.talker, sizeof(call.talker), "%s", talker);
+    snprintf(call.path, sizeof(call.path), "%s", path);
+    call.duration = duration_ms;
+    SendResult result{};
+    result.ok = true;
+    return result;
+}
 bool StoreFindSentQuote(Store *, const char *, long long, long long *id) { *id = ++::g_next_row; return true; }
 bool StoreSentStatus(Store *, long long, int *status) { *status = ::g_status; return true; }
 // The message being quoted: any id except "404" exists.
@@ -346,10 +368,36 @@ int main() {
 
         // Audio that WeChat cannot play as a voice message is a file too.
         g_call_count = 0;
+        g_voice_result = satori::VoicePrep::Failed;
         snprintf(content, sizeof(content), "<audio src=\"internal:wechat/self_wxid/_tmp/%s\"/>", mp3_name);
         Outcome audio = Create(content);
         Check(audio.status == 200 && g_calls[0].kind == 'f' && !strcmp(g_calls[0].title, "song.mp3"), "an mp3 is sent as a file under its own name");
         cJSON_Delete(audio.body);
+
+        // Audio that converts becomes a voice message, with the length the conversion found.
+        g_call_count = 0;
+        g_voice_result = satori::VoicePrep::Ready;
+        g_voice_ms = 2500;
+        Outcome voice = Create(content);
+        Check(voice.status == 200 && g_call_count == 1 && g_calls[0].kind == 'a' && g_calls[0].duration == 2500, "audio that converts is sent as a voice message with its length");
+        Check(strstr(message_content(voice, 0), "<audio ") != nullptr && strstr(message_content(voice, 0), "duration=\"2.500\"") != nullptr, "and the reply is an <audio> with that duration");
+        cJSON_Delete(voice.body);
+        // A clip past WeChat's limit, or one that cannot be read, is a file (never lost).
+        g_voice_result = satori::VoicePrep::TooLong;
+        g_call_count = 0;
+        Outcome long_clip = Create(content);
+        Check(long_clip.status == 200 && g_calls[0].kind == 'f' && !strcmp(g_calls[0].title, "song.mp3"), "audio past the voice limit goes out as a file");
+        cJSON_Delete(long_clip.body);
+        g_voice_result = satori::VoicePrep::Failed;
+        // ...and a voice message is text-mixable like any media element.
+        g_voice_result = satori::VoicePrep::Ready;
+        g_call_count = 0;
+        snprintf(content, sizeof(content), "<audio src=\"internal:wechat/self_wxid/_tmp/%s\"/><file src=\"internal:wechat/self_wxid/_tmp/%s\" title=\"a.pdf\"/>", mp3_name, pdf_name);
+        Outcome both = Create(content);
+        Check(both.status == 200 && cJSON_GetArraySize(both.body) == 2 && g_calls[0].kind == 'a' && g_calls[1].kind == 'f', "a voice message and a file arrive as two messages in that order");
+        cJSON_Delete(both.body);
+        g_voice_result = satori::VoicePrep::Failed;
+        snprintf(content, sizeof(content), "<audio src=\"internal:wechat/self_wxid/_tmp/%s\"/>", mp3_name);
 
         // Files: the title wins, then the upload's own name, then a name made from the content.
         g_call_count = 0;

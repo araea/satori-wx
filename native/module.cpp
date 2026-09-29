@@ -92,6 +92,7 @@ void AddBackendStatus(cJSON *object, bool capabilities) {
         cJSON_AddNumberToObject(limits, "inline_image_bytes", static_cast<double>(8u << 20));
         cJSON_AddNumberToObject(limits, "media_per_message", 8);
         cJSON_AddNumberToObject(limits, "images_per_message", 4);
+        cJSON_AddNumberToObject(limits, "voice_max_seconds", 60);   // longer <audio> goes out as a file
         cJSON_AddNumberToObject(limits, "upload_ttl_seconds", 300);
     }
     size_t unsupported_count = 0;

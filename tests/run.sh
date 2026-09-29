@@ -39,6 +39,9 @@ clang++ -std=c++20 -O1 -g -fno-exceptions -fno-rtti -nostdinc++ -nostdlib++ \
     -Wall -Wextra -Werror -I "$R/native" "$R/tests/mp4_test.cpp" "$R/native/mp4_probe.cpp" -o "$R/build/tests/mp4-test"
 SATORI_FIXTURES="$R/tests/fixtures" "$R/build/tests/mp4-test"
 clang++ -std=c++20 -O1 -g -fno-exceptions -fno-rtti -nostdinc++ -nostdlib++ \
+    -Wall -Wextra -Werror -I "$R/native" "$R/tests/audio_test.cpp" "$R/native/audio_pcm.cpp" -o "$R/build/tests/audio-test"
+SATORI_TMPROOT="$R/build/tests/tmp" "$R/build/tests/audio-test"
+clang++ -std=c++20 -O1 -g -fno-exceptions -fno-rtti -nostdinc++ -nostdlib++ \
     -Wall -Wextra -Werror -I "$R/native" "$R/tests/message_test.cpp" "$R/native/wx_message.cpp" "$R/native/media.cpp" \
     "$R/native/xml_lite.cpp" -o "$R/build/tests/message-test"
 "$R/build/tests/message-test"

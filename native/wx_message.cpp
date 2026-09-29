@@ -345,6 +345,14 @@ void DecodeMessage(const MessageRow &row, const char *self_id, Decoded *out) {
         out->kind = MsgKind::Voice;
         char length[16] = {};
         XmlGetAttribute(root, "msg/voicemsg", "voicelength", length, sizeof(length));
+        if (!*length) {
+            // A voice we sent ourselves is stored as "<wxid>:<milliseconds>:<flag>" until WeChat rewrites it.
+            const char *own = row.content ? row.content : "";
+            const char *colon = *own == '<' ? nullptr : strchr(own, ':');
+            char *end = nullptr;
+            const long ms = colon ? strtol(colon + 1, &end, 10) : 0;
+            if (colon && end != colon + 1 && *end == ':' && ms > 0) snprintf(length, sizeof(length), "%ld", ms);
+        }
         char attrs[48] = {}, seconds[24];
         if (*length) { Seconds(atoll(length), seconds, sizeof(seconds)); snprintf(attrs, sizeof(attrs), "duration=\"%s\"", seconds); }
         MediaElement(text, "audio", "voice", row, self_id, "[语音]", attrs);

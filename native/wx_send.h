@@ -59,6 +59,12 @@ SendResult SendVideo(const char *talker, const char *path, const char *thumb_pat
 // returns and does not hand its id back: `local_id` is -1 (unless it did), and the caller finds the
 // row with StoreFindSentQuote.
 SendResult SendQuote(const char *talker, const char *text, const QuoteRef &quote, const char *mention_ids);
+// Sends a SILK voice file (WeChat's own voice format: "\x02#!SILK_V3" followed by length-prefixed 20 ms
+// packets) as a voice message, through the code the recorder's "stop" and the forward-voice action
+// share: WeChat's VoiceLogic registers the voice file, inserts the message row and hands it to its own
+// uploader. `duration_ms` is the length shown on the bubble. The row exists when this returns; the
+// upload finishes on its own (poll the row's status).
+SendResult SendVoice(const char *talker, const char *silk_path, int duration_ms);
 // Recalls one of our own messages by its local id (the id message.create returned, decimal
 // string). Uses WeChat's own NetSceneRevokeMsg scene. Refused for
 // messages the account did not send.

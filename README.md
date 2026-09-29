@@ -1,6 +1,6 @@
 # 知言（satori-wx）
 
-微信的 Satori v1 实现端：通过 Zygisk 注入把微信暴露为统一接口——收消息（文本、图片、语音、视频、表情、链接、回复、@）、事件（撤回、入退群、好友）、发文本 / 群内 @ / 引用回复 / 图片 / 视频 / 文件
+微信的 Satori v1 实现端：通过 Zygisk 注入把微信暴露为统一接口——收消息（文本、图片、语音、视频、表情、链接、回复、@）、事件（撤回、入退群、好友）、发文本 / 群内 @ / 引用回复 / 图片 / 视频 / 语音 / 文件
 
 [![GitHub](https://img.shields.io/badge/GitHub-araea%2Fsatori--wx-181717?logo=github&logoColor=white)](https://github.com/araea/satori-wx)
 
@@ -56,7 +56,7 @@ HTTP 使用 `Authorization: Bearer <token>`：缺失 token 返回 401，错误 t
 
 - 读侧 13：`message.get/list`、`user.get`、`friend.list`、`guild.get/list`、`guild.member.get/list`、`guild.role.list`、`guild.member.role.list`、`channel.get/list`、`user.channel.create`
 - 资源 1：`upload.create`
-- 写侧 6：`message.create`（文本 / @ / 引用回复 / 图片 / 视频 / 音频 / 文件）、`message.delete`、`channel.delete`（退群）、`guild.member.kick`、`guild.member.role.set/unset`
+- 写侧 6：`message.create`（文本 / @ / 引用回复 / 图片 / 视频 / 语音 / 文件）、`message.delete`、`channel.delete`（退群）、`guild.member.kick`、`guild.member.role.set/unset`
 - 账号 1：`login.get`
 
 其余标准方法返回 404。WebSocket 按 Satori 的 `op=3` + `body.token` 鉴权，成功后 `op=4`，`op=1` 心跳回复 `op=2`，每 10 秒发送一次 PING，连续 30 秒无响应则断开；支持掩码、文本分片、控制帧交错、TCP 分包 / 合包与关闭握手，64 条有界历史，登录事件不参与回放，窗口外序号用 4009 拒绝恢复。资源限制：8 个并发连接、8 KiB HTTP 头、16 KiB 请求体 / WS 消息（`message.create` 可到 16 MiB，`upload.create` 流式收到 1 GiB，都先验令牌）、单条事件 128 KiB；HTTP 每次响应后关闭连接，暂不支持 TLS、chunked 请求体。
@@ -66,7 +66,7 @@ HTTP 使用 `Authorization: Bearer <token>`：缺失 token 返回 401，错误 t
 - 发送：文本、群内 `@`（`<at id name/>` / `<at type="all"/>`）、引用回复（`<quote id/>`）、图片、视频、文件，全部真机验证。每个媒体元素单独成一条微信消息，按书写顺序发；先全部解析核对再动手，坏一个整条 400。`src` 只认 `upload.create` 的链接、`data:` URI 与 `base64://`（远程 URL 没有 HTTP 客户端，会 400 并提示先上传）。
   - `<video>`：MP4 / MOV 且真有视频轨才发成可点播的视频气泡（时长取自文件，`poster` 可选，缺省由微信抽帧）；MKV / WebM / FLV 这类微信不能内联播放的，作为文件发出。
   - `<file>`：文件名取 `title`，其次是上传时的文件名，再次按内容猜扩展名。
-  - `<audio>`：微信只有语音条，没有「音频消息」；目前作为文件发出（回执里是 `<file>`），语音条（SILK / AMR）没做。
+  - `<audio>`：发成语音条。任何 Android 能解码的音频（MP3、M4A/AAC、OGG/Opus、AMR、FLAC、WAV…）都会转成微信的 SILK（用微信自己的编码器，模块不带编解码器），已经是微信 SILK 的原样发；回执里是 `<audio duration>`。超过微信的 60 秒上限、短于 0.2 秒或读不出来的，作为文件发出，不会丢。
   - `<quote id>`：`id` 是本地消息 id 或 svrid，找不到被引用的消息就退成普通文本；微信的回复只带文字，所以引用挂在请求里第一段文字上，只有媒体时引用被忽略。
   - 视频、文件的上传由微信自己完成：回执在库里出现该行并等到「发送中」结束（最多几秒）才回，慢的上传不算失败，失败（微信标为失败）回 502 `upload_failed`（见[发送各类消息](docs/wechat-send-types.md)）。
 - 收到的图片多半只有缩略图，原图是微信私有的 `wxgf` 容器；语音是 SILK，不转码（见[消息内容](docs/wechat-content.md)）。

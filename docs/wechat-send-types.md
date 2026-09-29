@@ -1,6 +1,6 @@
 # 微信发送各类消息的逆向记录
 
-文本、群内 @、引用回复、图片、视频、文件能发（语音条没做，`<audio>` 作为文件发出）。图片走聊天界面自己的 `rj()` 管线，视频走微信的视频发送服务，文件与回复走 `AppMsgLogic`，见下文；转发路径那条死路也记在下面。
+文本、群内 @、引用回复、图片、视频、文件能发（`<audio>` 转成 SILK 发语音条，超长或读不出来的作为文件）。图片走聊天界面自己的 `rj()` 管线，视频走微信的视频发送服务，文件与回复走 `AppMsgLogic`，见下文；转发路径那条死路也记在下面。
 
 微信 8.0.78 / versionCode 671108664。工具见 `tools/dex*.py`（`dexmethodsig.py` / `dexinvokes.py` / `dexmethodstrings.py` 最常用；`dexfindclass.py`、`dexrefs.py` 有误报，别单独信）。**结论性事实要落到「某个类的某个字段 / 方法」上，并且能和 App 自己的调用点对上。**
 
@@ -13,6 +13,7 @@
 | 图片 | `ph5.n0.c(kt.d1)`（`ha0.w`）`.rj(da0.g)` | 见下文；异步，库里出现 `type=3` 的行才算发出 |
 | 文件 | `pluginsdk.model.app.k0.I(dx0.r, "", "", talker, 附件路径, null)` | 见下文「文件」；行同步入库，上传随后由微信自己做 |
 | 视频 | `ph5.n0.c(ab5.s)`（运行时类 `qi0.l2`）`.cj(qi0.w2, talker)` | 见下文「视频」；异步，行几乎立刻出现（status 1），上传完成后 status 2 |
+| 语音 | `v61.d1.h` → 写文件 → `d1.u` → `v61.v0.dj().e()`；编码 `MediaRecorder.SilkDoEnc` | 见下文「语音」；行同步入库，微信自己的语音上传服务随后上传 |
 | 引用回复 | `dx0.r`（`f` 标题、`i`=57、`x2`=`MsgQuoteItem`）+ `k0.I` | 见下文「回复」；新发送管线，回 `(0, null)`，行随后出现 |
 | 撤回 | `com.tencent.mm.modelsimple.d1.<init>(e9,String,String)` + `doScene` | cgi `revokemsg` |
 | 群管理 | `qn.p` / `qn.b` / `qn.e` | 见 [群管理写操作](wechat-room.md) |
@@ -141,6 +142,37 @@ svc.cj(w2, talker)                                        // boolean：任务已
 - 异步：`cj` 返回时 `message` 表里已经有一行 `type=43 isSend=1`（content 是 `<msg><videomsg playlength="N"></videomsg></msg>` 的空壳，status 1）；微信压缩、上传完成后行被改写成带 `cdnvideourl` 的完整 XML，status 变 2。40 MB 的视频真机实测 20 秒到几分钟不等（取决于网络），所以 `message.create` 只等行出现（≤ 6 秒）再等 status 离开 1（≤ 8 秒，按体积给），慢的照样回 200。
 - 源文件路径要在整个压缩、上传期间可读：模块先硬链接到 `send/` 子目录（6 小时后清理），临时文件 5 分钟过期不影响。
 - 微信的视频管线能压缩就压（`newmd5` 与 `md5` 不同就是压过），压不了原样发；MP4 之外的容器（MKV / WebM / FLV）没让它试，模块直接当文件发。
+
+## 语音（v0.12.1）
+
+微信语音条是一个 SILK 流：`0x02` + `#!SILK_V3`，后面是若干包，每包 `uint16 小端长度 + 载荷`，一包 20 ms；行是 `type=34`，本地存成 `<wxid>:<毫秒>:0`，`voiceformat="4"` 的 XML 由上传时的 `voiceinfo` 记录生成。
+
+发送用录音「停止」与转发语音共用的那段（`v61.d1`，日志标签 `MicroMsg.VoiceLogic`）：
+
+```java
+name = v61.d1.h(talker, "amr_")                   // 登记一个新的语音文件，回它的名字（所有语音文件都叫 amr_…，SILK 也是）
+dest = rn3.u0.Fj(ou5.x.j, name, false, true)      // 那个名字对应的路径；只算名字，目录要自己建
+写文件(dest)                                      // 目录 voice2/xx/yy/ 自己 mkdir -p
+v61.d1.u(name, 毫秒, 0, null, null)               // 「停止」：建消息行（status 1）、记 voiceinfo
+v61.v0.dj().e()                                   // 唤醒语音上传服务 —— 录音停止后紧跟的那一句；漏了行会一直停在 status 1
+```
+
+`yl.x0.stop`（录音停止）就是 `d1.u(...)` 加 `v0.dj().e()`；`d1.s` 是转发语音的整套（复制文件、`h`、`u`），入口在 `MsgRetransmitUI`。真机验证：行 `type=34`、status 2、`voiceinfo` 有 TotalLen 与 VoiceLength。上传失败时 `d1.t(name)` 把登记的语音标成错误，别留一条「录音中」。
+
+**编码用微信自己的 SILK 编码器，不带编解码器。**微信 8.0.78 本身录 Opus，再转成 SILK 兼容（`v61.w`，日志 `MicroMM.OpusToSilkConverter`）：
+
+```java
+h = MediaRecorder.SilkEncInit(16000, 16000, 4, 0)                    // com.tencent.mm.modelvoice.MediaRecorder（JNI 在 libwechatvoicesilk.so）
+每 640 字节 = 320 个 16 位单声道样本（20 ms）:
+  MediaRecorder.SilkDoEnc(pcm640, 640, out[1280], short[1] 长度, false, h)  // 返回 0；out[0..长度) 原样写文件，第一包自带 0x02#!SILK_V3
+MediaRecorder.SilkEncUnInit(h)
+```
+
+输入侧模块自己做：WAV 直接读（`native/audio_pcm.cpp`，8/16/24/32 位整数与 32 位浮点、任意声道与采样率），其它格式用 Android 的 `MediaExtractor` + `MediaCodec` 解成 PCM（JNI，`native/wx_voice.cpp`，20 秒预算），再用加窗 sinc 重采样到 16 kHz 单声道（缩小时先低通，不会把 12 kHz 折叠成 4 kHz）。已经是合法微信 SILK 的文件原样发（缺 `0x02` 就补上）。
+
+验证：把模块产出的 `.silk` 用微信自己的 `SKP_Silk_SDK_Decode` 解回来（`tools/dev/silk-check.c`）——440 Hz 3 秒接 660 Hz 2 秒的测试音，两种输入路径（WAV 与 MediaCodec 解的 MP3）都得到 250 包 / 5.00 秒、音高与电平对得上。M4A、OGG/Opus、AMR 都通过。
+
+规则：≤ 60 秒（微信语音上限）且 ≥ 0.2 秒才发语音条；超长、太短、读不出来（比如图片当 `<audio>`）作为文件发，回执里是 `<file>`。`message.create` 等库里出现 `type=34` 的行，再等 status 离开「发送中」，与文件同一套预算。
 
 ## 回复（`<quote>`，v0.12.0）
 

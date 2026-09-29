@@ -112,6 +112,14 @@ void *Control(void *) {
                     satori::SendResult r = satori::SendVideo(talker, path, thumb, 3);
                     snprintf(reply, sizeof(reply), "{\"ok\":%d,\"detail\":\"%s\"}\n", r.ok ? 1 : 0, r.detail);
                 }
+            } else if (verb && !strcmp(verb, "voice")) {
+                // voice <talker> <silk path> <duration ms>
+                const char *talker = strsep(&cursor, " ");
+                const char *path = strsep(&cursor, " ");
+                if (talker && path && cursor) {
+                    satori::SendResult r = satori::SendVoice(talker, path, atoi(cursor));
+                    snprintf(reply, sizeof(reply), "{\"ok\":%d,\"detail\":\"%s\"}\n", r.ok ? 1 : 0, r.detail);
+                }
             } else if (verb && !strcmp(verb, "quote")) {
                 // quote <talker> <svrid> <localid> <sender> <text...>
                 const char *talker = strsep(&cursor, " ");

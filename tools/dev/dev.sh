@@ -20,7 +20,7 @@ FLAGS=(-std=c++20 -O2 -fPIC -fvisibility=hidden -fno-exceptions -fno-rtti -fno-t
 [ -x "$OUT/inject" ] && [ "$OUT/inject" -nt "$R/tools/dev/inject.c" ] || "$CC" -O2 -Wall -o "$OUT/inject" "$R/tools/dev/inject.c"
 SRC=(server protocol multipart upload_stream tempstore webhook wx_account wx_adapter wx_live wx_watch wx_store wx_backend wx_capabilities
      wx_send wx_room wx_pat wx_message wx_events wx_media media xml_lite wx_keepalive wcdb)
-SRC+=(wx_send_media mp4_probe)
+SRC+=(wx_send_media mp4_probe wx_voice audio_pcm)
 FILES=("$R/tools/dev/dev_entry.cpp"); for s in "${SRC[@]}"; do FILES+=("$R/native/$s.cpp"); done
 "$CXX" "${FLAGS[@]}" -shared "${FILES[@]}" "$OUT/cjson.o" -Wl,--no-undefined,-z,relro,-z,now -llog -ldl -o "$OUT/satori-wx-dev.so"
 echo $GEN > "$GEN_FILE"

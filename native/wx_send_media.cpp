@@ -86,6 +86,17 @@ void AppendEscaped(char *out, size_t capacity, size_t *used, const char *text) {
     out[*used] = 0;
 }
 
+// mkdir -p for the directories above `path`.
+void MakeParents(const char *path) {
+    char copy[1200];
+    snprintf(copy, sizeof(copy), "%s", path);
+    for (char *slash = strchr(copy + 1, '/'); slash; slash = strchr(slash + 1, '/')) {
+        *slash = 0;
+        mkdir(copy, 0700);
+        *slash = '/';
+    }
+}
+
 // Hard link, else copy: the destination is WeChat's, so the caller's temporary can expire.
 bool LinkOrCopy(const char *from, const char *to, char *detail, size_t size) {
     if (link(from, to) == 0) return true;
@@ -206,11 +217,7 @@ SendResult SendFile(const char *talker, const char *path, const char *title) {
     snprintf(attach_path, sizeof(attach_path), "%s", target);
     env->ReleaseStringUTFChars(destination, target);
     // WeChat creates its directories lazily; make sure this one exists before linking into it.
-    for (char *slash = strchr(attach_path + 1, '/'); slash; slash = strchr(slash + 1, '/')) {
-        *slash = 0;
-        mkdir(attach_path, 0700);
-        *slash = '/';
-    }
+    MakeParents(attach_path);
     if (!LinkOrCopy(path, attach_path, result.detail, sizeof(result.detail))) return result;
 
     // The content WeChat parses back into its AppMessage: a plain file, type 6.
@@ -450,6 +457,99 @@ SendResult SendQuote(const char *talker, const char *text, const QuoteRef &quote
     result.local_id = local_id > 0 ? local_id : -1;
 
     __android_log_print(ANDROID_LOG_INFO, "SatoriWx", "reply to %lld handed to WeChat for %s (local id %lld)", quote.svr_id, talker, static_cast<long long>(result.local_id));
+    return result;
+}
+
+namespace {
+// A registered voice file that never became a message would sit in WeChat's voice table as a recording
+// in progress; mark it failed the way the recorder does when it gives up (VoiceLogic.setError).
+void AbandonVoice(JNIEnv *env, jclass logic, jstring name) {
+    jmethodID set_error = StaticMethod(env, logic, "t", "(Ljava/lang/String;)Z");
+    if (!set_error) return;
+    env->CallStaticBooleanMethod(logic, set_error, name);
+    if (env->ExceptionCheck()) env->ExceptionClear();
+}
+} // namespace
+
+SendResult SendVoice(const char *talker, const char *silk_path, int duration_ms) {
+    SendResult result{};
+    result.local_id = -1;
+    result.net_id = -1;
+    if (!talker || !*talker || !silk_path || !*silk_path || duration_ms <= 0) {
+        Detail(result.detail, sizeof(result.detail), "empty target or path, or no duration");
+        return result;
+    }
+    struct stat info{};
+    if (stat(silk_path, &info) || !S_ISREG(info.st_mode) || info.st_size <= 0) {
+        result.rejected = true;
+        Detail(result.detail, sizeof(result.detail), "the voice file is missing or empty");
+        return result;
+    }
+    JNIEnv *env = static_cast<JNIEnv *>(ReflectEnv());
+    if (!env) { Detail(result.detail, sizeof(result.detail), "JavaVM unavailable"); return result; }
+    if (!ReflectResolve(result.detail, sizeof(result.detail))) return result;
+    Locals locals(env);
+    jclass logic = locals.keep(static_cast<jclass>(ReflectLoad("v61.d1")));
+    jclass n0 = locals.keep(static_cast<jclass>(ReflectLoad("ph5.n0")));
+    jclass paths_interface = locals.keep(static_cast<jclass>(ReflectLoad("rn3.u0")));
+    jclass kind_class = locals.keep(static_cast<jclass>(ReflectLoad("ou5.x")));
+    jclass message_class = locals.keep(static_cast<jclass>(ReflectLoad("com.tencent.mm.storage.e9")));
+    if (env->ExceptionCheck()) env->ExceptionClear();
+    jmethodID start = StaticMethod(env, logic, "h", "(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;");
+    jmethodID finish = StaticMethod(env, logic, "u", "(Ljava/lang/String;IILcom/tencent/mm/storage/e9;Ljava/lang/String;)Z");
+    jmethodID lookup = StaticMethod(env, n0, "c", "(Ljava/lang/Class;)Lph5/m;");
+    jclass subcore = locals.keep(static_cast<jclass>(ReflectLoad("v61.v0")));
+    jclass uploader_class = locals.keep(static_cast<jclass>(ReflectLoad("yl.y0")));
+    if (env->ExceptionCheck()) env->ExceptionClear();
+    jmethodID uploader_of = StaticMethod(env, subcore, "dj", "()Lyl/y0;");
+    jmethodID uploader_run = Method(env, uploader_class, "e", "()V");
+    jfieldID legacy = kind_class ? env->GetStaticFieldID(kind_class, "j", "Lou5/x;") : nullptr;
+    if (env->ExceptionCheck()) env->ExceptionClear();
+    const struct { const char *name; const void *found; } needed[] = {
+        {"v61.d1", logic}, {"ph5.n0", n0}, {"rn3.u0", paths_interface}, {"ou5.x", kind_class}, {"e9", message_class},
+        {"d1.h", start}, {"d1.u", finish}, {"n0.c", lookup}, {"ou5.x.j", legacy}, {"v0.dj", uploader_of}, {"y0.e", uploader_run},
+    };
+    for (const auto &entry : needed) {
+        if (!entry.found) {
+            Detail(result.detail, sizeof(result.detail), "voice classes not found (version mismatch?): %s", entry.name);
+            return result;
+        }
+    }
+    jobject paths = locals.keep(env->CallStaticObjectMethod(n0, lookup, paths_interface));
+    if (env->ExceptionCheck()) { env->ExceptionClear(); paths = nullptr; }
+    jclass paths_class = paths ? locals.keep(env->GetObjectClass(paths)) : nullptr;
+    jmethodID voice_path = paths_class ? Method(env, paths_class, "Fj", "(Lou5/x;Ljava/lang/String;ZZ)Ljava/lang/String;") : nullptr;
+    if (!voice_path) { Detail(result.detail, sizeof(result.detail), "voice path service unavailable"); return result; }
+    jobject kind = locals.keep(env->GetStaticObjectField(kind_class, legacy));
+
+    // 1) WeChat registers a new voice file for this conversation and hands back its name.
+    jstring jtalker = locals.keep(env->NewStringUTF(talker));
+    jstring jprefix = locals.keep(env->NewStringUTF("amr_"));   // every voice file WeChat writes is named amr_…, SILK included
+    jstring name = locals.keep(static_cast<jstring>(env->CallStaticObjectMethod(logic, start, jtalker, jprefix)));
+    if (env->ExceptionCheck()) { env->ExceptionClear(); name = nullptr; }
+    if (!name) { Detail(result.detail, sizeof(result.detail), "WeChat would not register a voice file"); return result; }
+    // 2) The file goes where WeChat keeps voice files for that name.
+    jstring destination = locals.keep(static_cast<jstring>(env->CallObjectMethod(paths, voice_path, kind, name, JNI_FALSE, JNI_TRUE)));
+    if (env->ExceptionCheck()) { env->ExceptionClear(); destination = nullptr; }
+    const char *target = destination ? env->GetStringUTFChars(destination, nullptr) : nullptr;
+    if (!target || !*target) { Detail(result.detail, sizeof(result.detail), "voice file path unavailable"); return result; }
+    char path[1200];
+    snprintf(path, sizeof(path), "%s", target);
+    env->ReleaseStringUTFChars(destination, target);
+    // Both the directories and the file are ours to create: the path service only computes the name.
+    MakeParents(path);
+    if (!LinkOrCopy(silk_path, path, result.detail, sizeof(result.detail))) { AbandonVoice(env, logic, name); return result; }
+    // 3) The recorder's "stop": builds the message row and lets WeChat's uploader take it.
+    const jboolean ok = env->CallStaticBooleanMethod(logic, finish, name, static_cast<jint>(duration_ms), static_cast<jint>(0),
+                                                     static_cast<jobject>(nullptr), static_cast<jstring>(nullptr));
+    if (env->ExceptionCheck()) { env->ExceptionClear(); Detail(result.detail, sizeof(result.detail), "WeChat's voice send threw"); unlink(path); AbandonVoice(env, logic, name); return result; }
+    if (!ok) { Detail(result.detail, sizeof(result.detail), "WeChat refused the voice file"); unlink(path); AbandonVoice(env, logic, name); return result; }
+    // ...and, as the recorder does right after, wake the voice uploader so it picks the file up now.
+    jobject uploader = locals.keep(env->CallStaticObjectMethod(subcore, uploader_of));
+    if (uploader) env->CallVoidMethod(uploader, uploader_run);
+    if (env->ExceptionCheck()) env->ExceptionClear();
+    result.ok = true;
+    __android_log_print(ANDROID_LOG_INFO, "SatoriWx", "voice (%d ms) handed to WeChat for %s", duration_ms, talker);
     return result;
 }
 } // namespace satori

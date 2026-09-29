@@ -101,6 +101,13 @@ int main() {
     Eq(d.content, expected, "voice with the ': ' header and duration in seconds");
     satori::DecodeMessage(Row(4016, 34, "wxid_f", "<msg><voicemsg voicelength=\"5000\" /></msg>"), kSelf, &d);
     Check(Contains(d.content, "duration=\"5\""), "whole seconds have no decimals");
+    // A voice we sent ourselves is stored as "<wxid>:<milliseconds>:<flag>" until WeChat rewrites it.
+    MessageRow own = Row(4468, 34, "filehelper", "wxid_me:4746:0\n");
+    own.is_send = true;
+    satori::DecodeMessage(own, kSelf, &d);
+    satori::MediaLink(kSelf, "voice", "4468", link, sizeof(link));
+    snprintf(expected, sizeof(expected), "<audio src=\"%s\" duration=\"4.746\"/>", link);
+    Eq(d.content, expected, "our own voice row carries its length too");
 
     // Video: "sender:<seconds>:<flag>" and no body at all.
     char poster[256];

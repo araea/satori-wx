@@ -104,6 +104,8 @@ bool StoreFindStalledImage(Store *store, const char *talker, long long since, lo
 // The first video message (type 43) this account sent to `talker` after row `since`. WeChat's video
 // pipeline inserts the row at the start (status 1) and fills it in when the upload finishes.
 bool StoreFindSentVideo(Store *store, const char *talker, long long since, long long *local_id);
+// The first voice message (type 34) this account sent to `talker` after row `since`.
+bool StoreFindSentVoice(Store *store, const char *talker, long long since, long long *local_id);
 // The first reply (quote appmsg, row type 822083633) this account sent to `talker` after row `since`.
 bool StoreFindSentQuote(Store *store, const char *talker, long long since, long long *local_id);
 // The send status of one of our own rows: 1 sending, 2 sent, 5 failed (other values as WeChat

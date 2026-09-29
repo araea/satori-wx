@@ -3,6 +3,7 @@
 #include "wx_live.h"
 #include "wx_room.h"
 #include "wx_send.h"
+#include "wx_voice.h"
 #include "wx_store.h"
 #include "media.h"
 #include "mp4_probe.h"
@@ -131,7 +132,7 @@ enum class Kind { Text, Image, Video, Audio, File };
 // What is actually sent. A <video> that is not an MP4 family container, or an <audio> in a format
 // WeChat cannot play as a voice message, goes out as a file: still delivered, still playable by
 // the recipient, and the returned Message says so (it holds a <file>).
-enum class Route { Text, Image, Video, File };
+enum class Route { Text, Image, Video, Voice, File };
 
 struct Segment {
     Kind kind = Kind::Text;
@@ -140,7 +141,8 @@ struct Segment {
     char path[1200] = {};          // media: the local file
     char poster[1200] = {};        // video: optional JPEG poster
     char title[256] = {};          // file: the name the recipient sees
-    int duration_s = 0;            // video: play length
+    int duration_s = 0;            // video: play length in seconds
+    unsigned duration_ms = 0;      // voice: length in milliseconds
     long long size = 0;            // media: bytes
 };
 
@@ -321,6 +323,21 @@ const char *Classify(Segment &segment, const char *tag_title, const char *origin
         return nullptr;
     }
     segment.route = Route::File;
+    if (segment.kind == Kind::Audio) {
+        // WeChat plays SILK. Anything Android can decode is converted (or, when it already is
+        // WeChat's format, used as is); a clip past WeChat's 60 second limit, or one that cannot be
+        // read, is sent as a file instead so it is never lost.
+        char silk[1200] = {}, why[160] = {};
+        unsigned ms = 0;
+        if (VoicePrepare(segment.path, silk, sizeof(silk), &ms, why, sizeof(why)) == VoicePrep::Ready) {
+            snprintf(segment.path, sizeof(segment.path), "%s", silk);
+            segment.route = Route::Voice;
+            segment.duration_ms = ms;
+            struct stat silk_info{};
+            if (!stat(silk, &silk_info)) segment.size = static_cast<long long>(silk_info.st_size);
+            return nullptr;
+        }
+    }
     if (segment.kind == Kind::Video) {
         Mp4Info mp4;
         if (Mp4Probe(segment.path, &mp4) && mp4.container && mp4.has_video) {
@@ -363,12 +380,14 @@ cJSON *SentMediaMessage(Store *store, const char *channel_id, long long local_id
     if (cJSON *stored = StoreMessageGet(store, channel_id, id)) return stored;
     char content[900] = {};
     char link[300] = {};
-    const char *kind = segment.route == Route::Image ? "image" : segment.route == Route::Video ? "video" : "file";
+    const char *kind = segment.route == Route::Image ? "image" : segment.route == Route::Video ? "video" : segment.route == Route::Voice ? "voice" : "file";
     const bool linked = MediaLink(StoreSelfId(store), kind, id, link, sizeof(link));
     if (segment.route == Route::Image) {
         snprintf(content, sizeof(content), "<img src=\"%s\"/>", linked ? link : "");
     } else if (segment.route == Route::Video) {
         snprintf(content, sizeof(content), "<video src=\"%s\" duration=\"%d\"/>", linked ? link : "", segment.duration_s);
+    } else if (segment.route == Route::Voice) {
+        snprintf(content, sizeof(content), "<audio src=\"%s\" duration=\"%.3f\"/>", linked ? link : "", segment.duration_ms / 1000.0);
     } else {
         char title[600];
         EscapeAttribute(segment.title, title, sizeof(title));
@@ -575,11 +594,25 @@ Response CreateMessages(const Request &request, Store *store) {
             }
             StoreNoteSent(store, local_id);
             message = SentMediaMessage(store, channel_id, local_id, segment);
-        } else if (segment.route == Route::File || segment.route == Route::Video) {
+        } else if (segment.route == Route::File || segment.route == Route::Video || segment.route == Route::Voice) {
             const bool video = segment.route == Route::Video;
-            const char *what = video ? "video" : "file";
+            const bool voice = segment.route == Route::Voice;
+            const char *what = video ? "video" : voice ? "voice message" : "file";
             long long local_id = 0;
-            if (video) {
+            if (voice) {
+                const long long before = StoreWatermark(store);
+                SendResult sent = SendVoice(channel_id, segment.path, static_cast<int>(segment.duration_ms));
+                if (!sent.ok) { cJSON_Delete(list); free(texts); return FailureAfter("send_failed", sent.detail, sent.rejected, sent_count); }
+                bool found = false;
+                for (int waited = 0; waited < kRowWaitMs && !found; waited += 50) {
+                    found = StoreFindSentVoice(store, channel_id, before, &local_id);
+                    if (!found) Pause(50);
+                }
+                if (!found) {
+                    cJSON_Delete(list); free(texts);
+                    return FailureAfter("voice_unconfirmed", "WeChat did not record the voice message within 6 seconds; it may still be sent", false, sent_count);
+                }
+            } else if (video) {
                 const long long before = StoreWatermark(store);
                 SendResult sent = SendVideo(channel_id, segment.path, segment.poster, segment.duration_s);
                 if (!sent.ok) { cJSON_Delete(list); free(texts); return FailureAfter("send_failed", sent.detail, sent.rejected, sent_count); }
