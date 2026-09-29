@@ -1,5 +1,6 @@
 #pragma once
 #include <stddef.h>
+#include "wx_quote.h"
 
 // Reflection-based WeChat message sender.
 //
@@ -51,6 +52,13 @@ SendResult SendFile(const char *talker, const char *path, const char *title);
 // The video is hard-linked (or copied) to a staging name first, so it survives the caller's own
 // temporary expiring while WeChat is still compressing and uploading it.
 SendResult SendVideo(const char *talker, const char *path, const char *thumb_path, int duration_s);
+// Sends `text` as a reply to `quote`: WeChat's "引用" message (appmsg type 57 with a <refermsg>),
+// built the way the chat UI's own quote-reply is, through AppMsgLogic. The recipient sees the
+// quoted line above the text. `mention_ids` (comma-separated wxids, may be null) makes the "@name"
+// occurrences in a group reply real mentions. WeChat inserts the reply's row a moment after this
+// returns and does not hand its id back: `local_id` is -1 (unless it did), and the caller finds the
+// row with StoreFindSentQuote.
+SendResult SendQuote(const char *talker, const char *text, const QuoteRef &quote, const char *mention_ids);
 // Recalls one of our own messages by its local id (the id message.create returned, decimal
 // string). Uses WeChat's own NetSceneRevokeMsg scene. Refused for
 // messages the account did not send.

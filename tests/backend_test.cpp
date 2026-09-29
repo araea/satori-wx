@@ -24,6 +24,10 @@ int g_status = 2;
 struct SentCall { char kind; char talker[64]; char path[1200]; char title[300]; char poster[1200]; int duration; };
 SentCall g_calls[16];
 int g_call_count = 0;
+satori::QuoteRef g_last_quote;
+char g_last_reply[300];
+char g_last_reply_mentions[100];
+int g_reply_count = 0;
 
 // ---- stubs for the WeChat-side collaborators (none of them run in this process) ----------
 namespace satori {
@@ -33,7 +37,20 @@ bool StoreFindSentImage(Store *, const char *, long long, long long *) { return 
 bool StoreFindStalledImage(Store *, const char *, long long, long long *) { return false; }
 // A video row that appears at once, and a status the test can flip to "failed".
 bool StoreFindSentVideo(Store *, const char *, long long, long long *id) { *id = ++::g_next_row; return true; }
+bool StoreFindSentQuote(Store *, const char *, long long, long long *id) { *id = ++::g_next_row; return true; }
 bool StoreSentStatus(Store *, long long, int *status) { *status = ::g_status; return true; }
+// The message being quoted: any id except "404" exists.
+bool StoreQuoteTarget(Store *, const char *talker, const char *id, QuoteRef *out) {
+    if (!strcmp(id, "404")) return false;
+    *out = {};
+    out->local_id = 55;
+    out->svr_id = 5555;
+    out->created_s = 1790000000;
+    snprintf(out->talker, sizeof(out->talker), "%s", talker);
+    snprintf(out->sender, sizeof(out->sender), "wxid_quoted");
+    snprintf(out->text, sizeof(out->text), "the quoted line");
+    return true;
+}
 int LiveLoginSn() { return 1; }
 bool StartLiveStore(const char *, EventBus *, int) { return false; }
 const char *StoreSelfId(Store *) { return "self_wxid"; }
@@ -71,6 +88,16 @@ SendResult SendFile(const char *talker, const char *path, const char *title) {
     SendResult result{};
     result.ok = true;
     result.local_id = 9000 + ::g_call_count;
+    return result;
+}
+SendResult SendQuote(const char *, const char *text, const QuoteRef &quote, const char *mention_ids) {
+    ::g_last_quote = quote;
+    snprintf(::g_last_reply, sizeof(::g_last_reply), "%s", text);
+    snprintf(::g_last_reply_mentions, sizeof(::g_last_reply_mentions), "%s", mention_ids ? mention_ids : "");
+    ++::g_reply_count;
+    SendResult result{};
+    result.ok = true;
+    result.local_id = -1;   // like WeChat's own pipeline: the row is found in the store afterwards
     return result;
 }
 SendResult SendVideo(const char *talker, const char *path, const char *poster, int duration_s) {
@@ -128,7 +155,7 @@ int main() {
     // refuses after the flattening step: that is the proof the text path was taken and not
     // some earlier refusal.
     {
-        const Outcome outcome = Create("a &amp; b<br/>c <at id=\"7\"/><quote id=\"8\"/>");
+        const Outcome outcome = Create("a &amp; b<br/>c <at id=\"7\"/><quote id=\"404\"/>");
         Check(outcome.status == 502 && !strcmp(Code(outcome), "send_failed"),
               "text content reaches the sender (flattened, elements dropped)");
         cJSON_Delete(outcome.body);
@@ -224,6 +251,41 @@ int main() {
         Check(many.status == 400 && !strcmp(Code(many), "too_many_images"), "more than four pictures");
         cJSON_Delete(many.body);
     }
+    // ---- replies (<quote>) ------------------------------------------------------------------------
+    {
+        g_reply_count = 0;
+        Outcome reply = Create("<quote id=\"123\"/>好的，收到");
+        Check(reply.status == 200 && g_reply_count == 1 && !strcmp(g_last_reply, "好的，收到"), "a quoted text goes out as a reply");
+        Check(g_last_quote.svr_id == 5555 && !strcmp(g_last_quote.sender, "wxid_quoted") && !strcmp(g_last_quote.display, "wxid_quoted"),
+              "the reply carries the quoted message and, without a better name, the sender's id");
+        const cJSON *first = cJSON_GetArrayItem(reply.body, 0);
+        const cJSON *body = first ? cJSON_GetObjectItemCaseSensitive(first, "content") : nullptr;
+        Check(cJSON_IsString(body) && !strcmp(body->valuestring, "<quote id=\"123\"/>好的，收到"), "the reply's content says what it quoted");
+        cJSON_Delete(reply.body);
+
+        // A quoted message that cannot be found leaves an ordinary message (here that reaches the
+        // real text sender, which has no JavaVM).
+        g_reply_count = 0;
+        Outcome missing_target = Create("<quote id=\"404\"/>还是要说");
+        Check(missing_target.status == 502 && !strcmp(Code(missing_target), "send_failed") && g_reply_count == 0, "an unknown quoted message falls back to plain text");
+        cJSON_Delete(missing_target.body);
+
+        // Only the first text carries the quote; a quote with no text has nothing to attach to.
+        g_reply_count = 0;
+        Outcome nothing = Create("<quote id=\"123\"/>");
+        Check(nothing.status == 400 && g_reply_count == 0, "a quote with nothing to say is empty");
+        cJSON_Delete(nothing.body);
+        Outcome mentioned = CreateIn("123@chatroom", "<quote id=\"123\"/><at id=\"wxid_a\" name=\"甲\"/> 看这里");
+        Check(mentioned.status == 200 && !strcmp(g_last_reply_mentions, "wxid_a") && strstr(g_last_reply, "@甲") != nullptr, "a group reply keeps its mentions");
+        cJSON_Delete(mentioned.body);
+        char quoted_media[600];
+        snprintf(quoted_media, sizeof(quoted_media), "<quote id=\"123\"/><img src=\"internal:wechat/self_wxid/_tmp/%s\"/>", jpeg_name);
+        g_reply_count = 0;
+        Outcome with_picture = Create(quoted_media);
+        Check(with_picture.status == 502 && !strcmp(Code(with_picture), "send_failed") && g_reply_count == 0, "a quote next to a picture leaves the picture alone (no reply is sent)");
+        cJSON_Delete(with_picture.body);
+    }
+
     // ---- files, videos and audio ------------------------------------------------------------------
     // The senders are stubs here; what matters is which one the backend picks, with what.
     {

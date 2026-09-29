@@ -337,4 +337,119 @@ SendResult SendVideo(const char *talker, const char *path, const char *thumb_pat
     __android_log_print(ANDROID_LOG_INFO, "SatoriWx", "video handed to WeChat for %s", talker);
     return result;
 }
+
+SendResult SendQuote(const char *talker, const char *text, const QuoteRef &quote, const char *mention_ids) {
+    SendResult result{};
+    result.local_id = -1;
+    result.net_id = -1;
+    if (!talker || !*talker || !text || !*text || quote.svr_id <= 0 || !*quote.sender) {
+        result.rejected = true;
+        Detail(result.detail, sizeof(result.detail), "empty target or text, or nothing to quote");
+        return result;
+    }
+    JNIEnv *env = static_cast<JNIEnv *>(ReflectEnv());
+    if (!env) { Detail(result.detail, sizeof(result.detail), "JavaVM unavailable"); return result; }
+    if (!ReflectResolve(result.detail, sizeof(result.detail))) return result;
+    Locals locals(env);
+    jclass k0 = locals.keep(static_cast<jclass>(ReflectLoad("com.tencent.mm.pluginsdk.model.app.k0")));
+    jclass content_class = locals.keep(static_cast<jclass>(ReflectLoad("dx0.r")));
+    jclass item_class = locals.keep(static_cast<jclass>(ReflectLoad("com.tencent.mm.plugin.msgquote.model.MsgQuoteItem")));
+    jclass pair_class = locals.keep(env->FindClass("android/util/Pair"));
+    jclass integer_class = locals.keep(env->FindClass("java/lang/Integer"));
+    jclass long_class = locals.keep(env->FindClass("java/lang/Long"));
+    jclass prepare_class = locals.keep(static_cast<jclass>(ReflectLoad("com.tencent.mm.pluginsdk.ui.tools.p0")));
+    if (env->ExceptionCheck()) env->ExceptionClear();
+    jmethodID send_app = StaticMethod(env, k0, "I",
+        "(Ldx0/r;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;[B)Landroid/util/Pair;");
+    jmethodID content_ctor = Method(env, content_class, "<init>", "()V");
+    jmethodID item_ctor = Method(env, item_class, "<init>", "()V");
+    jfieldID title = Field(env, content_class, "f", "Ljava/lang/String;");
+    jfieldID kind = Field(env, content_class, "i", "I");
+    jfieldID quote_field = Field(env, content_class, "x2", "Lcom/tencent/mm/plugin/msgquote/model/MsgQuoteItem;");
+    jfieldID item_type = Field(env, item_class, "d", "I");
+    jfieldID item_svr = Field(env, item_class, "e", "J");
+    jfieldID item_from = Field(env, item_class, "f", "Ljava/lang/String;");
+    jfieldID item_chat = Field(env, item_class, "g", "Ljava/lang/String;");
+    jfieldID item_name = Field(env, item_class, "h", "Ljava/lang/String;");
+    jfieldID item_source = Field(env, item_class, "i", "Ljava/lang/String;");
+    jfieldID item_content = Field(env, item_class, "m", "Ljava/lang/String;");
+    jfieldID item_merged = Field(env, item_class, "n", "Ljava/lang/String;");
+    jfieldID item_strid = Field(env, item_class, "p", "Ljava/lang/String;");
+    jfieldID item_created = Field(env, item_class, "q", "J");
+    jfieldID pair_first = Field(env, pair_class, "first", "Ljava/lang/Object;");
+    jfieldID pair_second = Field(env, pair_class, "second", "Ljava/lang/Object;");
+    jmethodID int_value = Method(env, integer_class, "intValue", "()I");
+    jmethodID long_value = Method(env, long_class, "longValue", "()J");
+    jmethodID prepare = StaticMethod(env, prepare_class, "a", "()V");
+    const struct { const char *name; const void *found; } needed[] = {
+        {"k0", k0}, {"dx0.r", content_class}, {"MsgQuoteItem", item_class}, {"Pair", pair_class}, {"k0.I", send_app},
+        {"dx0.r.<init>", content_ctor}, {"MsgQuoteItem.<init>", item_ctor}, {"dx0.r.f", title}, {"dx0.r.i", kind},
+        {"dx0.r.x2", quote_field}, {"item.d", item_type}, {"item.e", item_svr}, {"item.f", item_from},
+        {"item.g", item_chat}, {"item.h", item_name}, {"item.i", item_source}, {"item.m", item_content},
+        {"item.n", item_merged}, {"item.p", item_strid}, {"item.q", item_created}, {"Pair.first", pair_first},
+        {"Pair.second", pair_second}, {"Integer.intValue", int_value}, {"Long.longValue", long_value},
+    };
+    for (const auto &entry : needed) {
+        if (!entry.found) {
+            Detail(result.detail, sizeof(result.detail), "quote classes not found (version mismatch?): %s", entry.name);
+            return result;
+        }
+    }
+    if (prepare) { env->CallStaticVoidMethod(prepare_class, prepare); if (env->ExceptionCheck()) env->ExceptionClear(); }
+
+    // What a reply carries about the quoted line, as the chat UI fills it. The quoted content is text
+    // (the store turns anything else into a "[图片]"-style line), so the type is 1 whatever it was.
+    jobject item = locals.keep(env->NewObject(item_class, item_ctor));
+    jobject content = locals.keep(env->NewObject(content_class, content_ctor));
+    if (env->ExceptionCheck()) { env->ExceptionClear(); item = content = nullptr; }
+    if (!item || !content) { Detail(result.detail, sizeof(result.detail), "quote objects could not be built"); return result; }
+    char merged[2400] = {};
+    if (mention_ids && *mention_ids) snprintf(merged, sizeof(merged), "<msgsource><atuserlist><![CDATA[%s]]></atuserlist></msgsource>", mention_ids);
+    jstring jtext = locals.keep(env->NewStringUTF(text));
+    jstring jtalker = locals.keep(env->NewStringUTF(quote.talker));
+    jstring jsender = locals.keep(env->NewStringUTF(quote.sender));
+    jstring jname = locals.keep(env->NewStringUTF(quote.display[0] ? quote.display : quote.sender));
+    jstring jquoted = locals.keep(env->NewStringUTF(quote.text));
+    jstring jempty = locals.keep(env->NewStringUTF(""));
+    jstring jmerged = locals.keep(env->NewStringUTF(merged));
+    jstring jtarget = locals.keep(env->NewStringUTF(talker));
+    if (env->ExceptionCheck()) { env->ExceptionClear(); Detail(result.detail, sizeof(result.detail), "string allocation failed"); return result; }
+    env->SetIntField(item, item_type, 1);
+    env->SetLongField(item, item_svr, static_cast<jlong>(quote.svr_id));
+    env->SetObjectField(item, item_from, jtalker);
+    env->SetObjectField(item, item_chat, jsender);
+    env->SetObjectField(item, item_name, jname);
+    env->SetObjectField(item, item_source, jempty);
+    env->SetObjectField(item, item_content, jquoted);
+    env->SetObjectField(item, item_merged, jmerged);
+    env->SetObjectField(item, item_strid, jempty);
+    env->SetLongField(item, item_created, static_cast<jlong>(quote.created_s));
+    env->SetObjectField(content, title, jtext);
+    env->SetIntField(content, kind, 57);
+    env->SetObjectField(content, quote_field, item);
+
+    jobject pair = locals.keep(env->CallStaticObjectMethod(k0, send_app, content, jempty, jempty, jtarget, jempty, static_cast<jbyteArray>(nullptr)));
+    if (env->ExceptionCheck()) { env->ExceptionClear(); pair = nullptr; Detail(result.detail, sizeof(result.detail), "WeChat's reply send threw"); }
+    if (!pair) {
+        if (!result.detail[0]) Detail(result.detail, sizeof(result.detail), "WeChat's reply send returned nothing");
+        return result;
+    }
+    jobject first = locals.keep(env->GetObjectField(pair, pair_first));
+    jobject second = locals.keep(env->GetObjectField(pair, pair_second));
+    const jint code = first ? env->CallIntMethod(first, int_value) : -1;
+    // A reply goes through WeChat's newer send pipeline, which answers (0, null): accepted, with the
+    // row inserted a moment later and its id not handed back. The caller finds the row in the store.
+    const jlong local_id = second ? env->CallLongMethod(second, long_value) : -1;
+    if (env->ExceptionCheck()) env->ExceptionClear();
+    result.net_id = static_cast<int>(code);
+    if (code != 0) {
+        Detail(result.detail, sizeof(result.detail), "WeChat refused the reply (code %d)", static_cast<int>(code));
+        return result;
+    }
+    result.ok = true;
+    result.local_id = local_id > 0 ? local_id : -1;
+
+    __android_log_print(ANDROID_LOG_INFO, "SatoriWx", "reply to %lld handed to WeChat for %s (local id %lld)", quote.svr_id, talker, static_cast<long long>(result.local_id));
+    return result;
+}
 } // namespace satori

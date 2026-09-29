@@ -50,6 +50,8 @@ size_t ImageSpans(const char *content, ImageSpan *out, size_t max);
 // are ignored, so `<file src=".."></file>` counts once.
 struct MediaSpan { size_t begin, end; char kind; };
 size_t MediaSpans(const char *content, MediaSpan *out, size_t max);
+// The first element called `name` (case-insensitive, opening tags only) in `content`.
+bool FirstTag(const char *content, const char *name, ImageSpan *out);
 // The value of `name` inside the tag [begin, end) of `content`, entity-decoded, or false.
 bool TagAttribute(const char *content, const ImageSpan &tag, const char *name, char *out, size_t capacity);
 // RFC 4648 base64 (whitespace ignored, padding optional). Returns the decoded size, or -1 on a

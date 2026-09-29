@@ -425,12 +425,36 @@ int SettleLimit(long long bytes) {
     return limit > kSettleMs ? kSettleMs : static_cast<int>(limit);
 }
 
+// The quoted sender's name the way the conversation shows it: their group nickname in a group, their
+// own name otherwise; the wxid when nothing better is known.
+void QuoteDisplayName(Store *store, const char *channel_id, QuoteRef &quote) {
+    quote.display[0] = 0;
+    if (strstr(channel_id, "@chatroom") && MentionName(const_cast<char *>(channel_id), quote.sender, quote.display, sizeof(quote.display))) return;
+    if (cJSON *user = StoreUserGet(store, quote.sender)) {
+        const cJSON *nick = cJSON_GetObjectItemCaseSensitive(user, "nick");
+        const cJSON *name = cJSON_GetObjectItemCaseSensitive(user, "name");
+        const char *chosen = cJSON_IsString(nick) && *nick->valuestring ? nick->valuestring : cJSON_IsString(name) ? name->valuestring : "";
+        snprintf(quote.display, sizeof(quote.display), "%s", chosen);
+        cJSON_Delete(user);
+    }
+    if (!quote.display[0]) snprintf(quote.display, sizeof(quote.display), "%s", quote.sender);
+}
+
 Response CreateMessages(const Request &request, Store *store) {
     if (!store) return {503, nullptr};
     const char *channel_id = Text(request, "channel_id");
     const char *content = Text(request, "content");
     if (!*channel_id || !*content) return {400, nullptr};
     const bool group = strstr(channel_id, "@chatroom") != nullptr;
+    // <quote id="..."/> turns the first text of the request into a reply to that message. WeChat's
+    // reply carries text only, so a request with no text has nothing to attach it to, and a quoted
+    // message that cannot be found just leaves an ordinary message.
+    char quote_id[40] = {};
+    {
+        ImageSpan quote_tag;
+        if (FirstTag(content, "quote", &quote_tag)) TagAttribute(content, quote_tag, "id", quote_id, sizeof(quote_id));
+    }
+    bool quote_pending = quote_id[0] != 0;
     // Rows this request makes are ours, not the owner's typing: the event poller asks the store.
     struct SendWindow {
         Store *store; const char *talker;
@@ -586,10 +610,45 @@ Response CreateMessages(const Request &request, Store *store) {
             }
             message = SentMediaMessage(store, channel_id, local_id, segment);
         } else if (!texts[i].blank) {
-            SendResult sent = SendText(channel_id, texts[i].plain, texts[i].ids);
+            SendResult sent{};
+            bool quoted = false;
+            if (quote_pending) {
+                quote_pending = false;
+                QuoteRef target;
+                if (StoreQuoteTarget(store, channel_id, quote_id, &target)) {
+                    QuoteDisplayName(store, channel_id, target);
+                    const long long before = StoreWatermark(store);
+                    sent = SendQuote(channel_id, texts[i].plain, target, texts[i].ids);
+                    quoted = sent.ok;
+                    if (quoted && sent.local_id <= 0) {
+                        // WeChat's send pipeline takes the reply and inserts its row a moment later.
+                        long long local_id = 0;
+                        bool found = false;
+                        for (int waited = 0; waited < kRowWaitMs && !found; waited += 50) {
+                            found = StoreFindSentQuote(store, channel_id, before, &local_id);
+                            if (!found) Pause(50);
+                        }
+                        if (!found) {
+                            cJSON_Delete(list); free(texts);
+                            return FailureAfter("send_unconfirmed", "WeChat did not record the reply within 6 seconds; it may still be sent", false, sent_count);
+                        }
+                        sent.local_id = local_id;
+                    }
+                }
+            }
+            if (!quoted) sent = SendText(channel_id, texts[i].plain, texts[i].ids);
             if (!sent.ok) { cJSON_Delete(list); free(texts); return FailureAfter("send_failed", sent.detail, sent.rejected, sent_count); }
             StoreNoteSent(store, sent.local_id);
             message = SentMessage(store, channel_id, texts[i].plain, sent.local_id);
+            if (message && quoted) {
+                // The reply's content is the quote element followed by its text, as Satori writes it.
+                cJSON *field = cJSON_GetObjectItemCaseSensitive(message, "content");
+                char escaped_id[80];
+                EscapeAttribute(quote_id, escaped_id, sizeof(escaped_id));
+                char combined[kOutgoingMax + 200];
+                snprintf(combined, sizeof(combined), "<quote id=\"%s\"/>%s", escaped_id, cJSON_IsString(field) ? field->valuestring : "");
+                cJSON_ReplaceItemInObjectCaseSensitive(message, "content", cJSON_CreateString(combined));
+            }
         } else {
             continue;
         }

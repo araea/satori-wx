@@ -391,6 +391,32 @@ size_t ImageSpans(const char *content, ImageSpan *out, size_t max) {
     return count;
 }
 
+bool FirstTag(const char *content, const char *name, ImageSpan *out) {
+    if (!content || !name || !out) return false;
+    const size_t wanted = strlen(name);
+    for (const char *p = content; *p;) {
+        if (*p != '<') { ++p; continue; }
+        const char *q = p + 1;
+        char quote = 0;
+        for (; *q; ++q) {
+            if (quote) { if (*q == quote) quote = 0; continue; }
+            if (*q == '"' || *q == '\'') { quote = *q; continue; }
+            if (*q == '>') break;
+        }
+        if (!*q) return false;
+        const char *tag = p + 1;
+        const char *tag_end = tag;
+        while (tag_end < q && TagChar(*tag_end)) ++tag_end;
+        if (*tag != '/' && static_cast<size_t>(tag_end - tag) == wanted && !strncasecmp(tag, name, wanted)) {
+            out->begin = static_cast<size_t>(p - content);
+            out->end = static_cast<size_t>(q + 1 - content);
+            return true;
+        }
+        p = q + 1;
+    }
+    return false;
+}
+
 size_t MediaSpans(const char *content, MediaSpan *out, size_t max) {
     if (!out || !max) return 0;
     size_t count = 0;

@@ -25,6 +25,7 @@
 #include <jni.h>
 #include <pthread.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
@@ -110,6 +111,24 @@ void *Control(void *) {
                 if (talker && path) {
                     satori::SendResult r = satori::SendVideo(talker, path, thumb, 3);
                     snprintf(reply, sizeof(reply), "{\"ok\":%d,\"detail\":\"%s\"}\n", r.ok ? 1 : 0, r.detail);
+                }
+            } else if (verb && !strcmp(verb, "quote")) {
+                // quote <talker> <svrid> <localid> <sender> <text...>
+                const char *talker = strsep(&cursor, " ");
+                const char *svr = strsep(&cursor, " ");
+                const char *local = strsep(&cursor, " ");
+                const char *sender = strsep(&cursor, " ");
+                if (talker && svr && local && sender && cursor) {
+                    satori::QuoteRef ref{};
+                    ref.svr_id = atoll(svr);
+                    ref.local_id = atoll(local);
+                    ref.created_s = time(nullptr) - 100;
+                    snprintf(ref.talker, sizeof(ref.talker), "%s", talker);
+                    snprintf(ref.sender, sizeof(ref.sender), "%s", sender);
+                    snprintf(ref.display, sizeof(ref.display), "%s", "测试");
+                    snprintf(ref.text, sizeof(ref.text), "%s", "被引用的一行");
+                    satori::SendResult r = satori::SendQuote(talker, cursor, ref, nullptr);
+                    snprintf(reply, sizeof(reply), "{\"ok\":%d,\"id\":%lld,\"net\":%d,\"detail\":\"%s\"}\n", r.ok ? 1 : 0, r.local_id, r.net_id, r.detail);
                 }
             } else if (verb && !strcmp(verb, "file")) {
                 const char *talker = strsep(&cursor, " ");

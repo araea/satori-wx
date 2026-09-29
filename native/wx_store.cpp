@@ -1524,11 +1524,106 @@ bool StoreFindStalledImage(Store *store, const char *talker, long long since, lo
     return true;
 }
 
+namespace {
+struct QuoteQuery { QuoteRef *out; const char *self; bool found; int type; char content[16384]; int is_send; };
+bool QuoteTargetRow(Wcdb *db, void *stmt, void *context) {
+    auto *q = static_cast<QuoteQuery *>(context);
+    q->out->local_id = WcdbInt(db, stmt, 0);
+    q->out->svr_id = WcdbInt(db, stmt, 1);
+    q->type = static_cast<int>(WcdbInt(db, stmt, 2));
+    q->is_send = static_cast<int>(WcdbInt(db, stmt, 3));
+    q->out->created_s = WcdbInt(db, stmt, 4) / 1000;
+    const char *content = WcdbText(db, stmt, 5);
+    snprintf(q->content, sizeof(q->content), "%s", content ? content : "");
+    q->found = true;
+    return false;
+}
+void Summary(int type, const char *body, char *out, size_t capacity) {
+    const int low = type & 0xFFFF;
+    const char *label = nullptr;
+    if (low == 1) { snprintf(out, capacity, "%s", body); return; }
+    if (low == 3) label = "[图片]";
+    else if (low == 34) label = "[语音]";
+    else if (low == 43 || low == 62) label = "[视频]";
+    else if (low == 47) label = "[动画表情]";
+    else if (low == 48) label = "[位置]";
+    else if (low == 42) label = "[名片]";
+    else if (low == 49) {
+        XmlSlice appmsg;
+        char kind[16] = {}, title[512] = {};
+        const XmlSlice document = XmlDocument(body);
+        if (XmlPath(document, "msg/appmsg", &appmsg)) {
+            XmlGetText(appmsg, "type", kind, sizeof(kind));
+            XmlGetText(appmsg, "title", title, sizeof(title));
+        }
+        if (!*title) label = "[消息]";
+        else if (!strcmp(kind, "6")) { snprintf(out, capacity, "[文件] %s", title); return; }
+        else if (!strcmp(kind, "57")) { snprintf(out, capacity, "%s", title); return; }
+        else { snprintf(out, capacity, "[链接] %s", title); return; }
+    }
+    snprintf(out, capacity, "%s", label ? label : "[消息]");
+}
+} // namespace
+
+bool StoreQuoteTarget(Store *store, const char *talker, const char *id, QuoteRef *out) {
+    if (!store || !store->db || !SafeSql(talker) || !id || !*id || !out || strlen(id) > 20) return false;
+    for (const char *p = id; *p; ++p) if (*p < '0' || *p > '9') return false;
+    *out = {};
+    auto *query = static_cast<QuoteQuery *>(calloc(1, sizeof(QuoteQuery)));
+    if (!query) return false;
+    query->out = out;
+    char sql[400];
+    snprintf(sql, sizeof(sql),
+             "SELECT msgId, msgSvrId, type, isSend, createTime, content FROM message WHERE talker = '%s' AND (msgId = %s OR msgSvrId = %s) LIMIT 1",
+             talker, id, id);
+    pthread_mutex_lock(&store->mutex);
+    WcdbQuery(store->db, sql, QuoteTargetRow, query);
+    pthread_mutex_unlock(&store->mutex);
+    bool ok = query->found && out->svr_id > 0;
+    if (ok) {
+        snprintf(out->talker, sizeof(out->talker), "%s", talker);
+        const char *body = query->content;
+        const bool group = strstr(talker, "@chatroom") != nullptr;
+        if (query->is_send == 1) {
+            snprintf(out->sender, sizeof(out->sender), "%s", StoreSelfId(store));
+        } else if (group) {
+            // A group message reads "wxid:\nbody".
+            const char *colon = strstr(body, ":\n");
+            if (colon && static_cast<size_t>(colon - body) < sizeof(out->sender)) {
+                memcpy(out->sender, body, static_cast<size_t>(colon - body));
+                out->sender[colon - body] = 0;
+                body = colon + 2;
+            }
+        } else {
+            snprintf(out->sender, sizeof(out->sender), "%s", talker);
+        }
+        if (!*out->sender) ok = false;
+        else Summary(query->type, body, out->text, sizeof(out->text));
+    }
+    free(query);
+    return ok;
+}
+
 bool StoreFindSentVideo(Store *store, const char *talker, long long since, long long *local_id) {
     if (!store || !store->db || !SafeSql(talker) || !local_id) return false;
     char sql[300];
     snprintf(sql, sizeof(sql),
              "SELECT msgId FROM message WHERE talker = '%s' AND isSend = 1 AND type = 43 AND msgId > %lld ORDER BY msgId LIMIT 1",
+             talker, since);
+    long long found = 0;
+    pthread_mutex_lock(&store->mutex);
+    WcdbQuery(store->db, sql, LocalIdRow, &found);
+    pthread_mutex_unlock(&store->mutex);
+    if (found <= 0) return false;
+    *local_id = found;
+    return true;
+}
+
+bool StoreFindSentQuote(Store *store, const char *talker, long long since, long long *local_id) {
+    if (!store || !store->db || !SafeSql(talker) || !local_id) return false;
+    char sql[300];
+    snprintf(sql, sizeof(sql),
+             "SELECT msgId FROM message WHERE talker = '%s' AND isSend = 1 AND type = 822083633 AND msgId > %lld ORDER BY msgId LIMIT 1",
              talker, since);
     long long found = 0;
     pthread_mutex_lock(&store->mutex);

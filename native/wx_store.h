@@ -1,6 +1,7 @@
 #pragma once
 #include <stddef.h>
 #include "vendor/cjson/cJSON.h"
+#include "wx_quote.h"
 
 // Read-only WeChat message store built on native/wcdb.
 //
@@ -103,9 +104,14 @@ bool StoreFindStalledImage(Store *store, const char *talker, long long since, lo
 // The first video message (type 43) this account sent to `talker` after row `since`. WeChat's video
 // pipeline inserts the row at the start (status 1) and fills it in when the upload finishes.
 bool StoreFindSentVideo(Store *store, const char *talker, long long since, long long *local_id);
+// The first reply (quote appmsg, row type 822083633) this account sent to `talker` after row `since`.
+bool StoreFindSentQuote(Store *store, const char *talker, long long since, long long *local_id);
 // The send status of one of our own rows: 1 sending, 2 sent, 5 failed (other values as WeChat
 // writes them). False when the row does not exist.
 bool StoreSentStatus(Store *store, long long local_id, int *status);
+// The message a reply quotes, found by local id or server id in `talker`'s conversation. Everything
+// but `display` is filled; false when there is no such row.
+bool StoreQuoteTarget(Store *store, const char *talker, const char *id, QuoteRef *out);
 // Satori User / Guild objects for event payloads; a bare {"id"} when the contact is unknown.
 cJSON *StoreUserObject(Store *store, const char *id);
 cJSON *StoreGuildObject(Store *store, const char *id);
