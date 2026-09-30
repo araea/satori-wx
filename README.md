@@ -1,6 +1,6 @@
 # 知言（satori-wx）
 
-微信的 Satori v1 实现端：通过 Zygisk 注入把微信暴露为统一接口——收消息（文本、图片、语音、视频、表情、链接、回复、合并转发、@）、事件（撤回、入退群、好友）、发文本 / 群内 @ / 引用回复 / 图片 / 视频 / 语音 / 文件 / 合并转发
+微信的 Satori v1 实现端：通过 Zygisk 注入把微信暴露为统一接口。收消息（文本、图片、语音、视频、表情、链接、回复、合并转发、@）、事件（撤回、入退群、好友）、发文本 / 群内 @ / 引用回复 / 图片 / 视频 / 语音 / 文件 / 合并转发
 
 [![GitHub](https://img.shields.io/badge/GitHub-araea%2Fsatori--wx-181717?logo=github&logoColor=white)](https://github.com/araea/satori-wx)
 
@@ -77,7 +77,7 @@ HTTP 使用 `Authorization: Bearer <token>`：缺失 token 返回 401，错误 t
 - 只在 arm64 上构建与运行。
 - 写操作没有开关，成功表示「已交给微信派发」而非投递确认；破坏性动作不伪造成功，风控责任在调用方。
 
-## 链接
+## 必要链接
 
 - [ZygiskNext](https://github.com/LSPosed/ZygiskNext)
 - [标准 Zygisk 模块接口](https://github.com/topjohnwu/zygisk-module-sample)

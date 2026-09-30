@@ -88,7 +88,7 @@ svc.rj(gVar);                                         // 丢弃返回的进度�
 
 **异步意味着「返回了」不等于「发出了」。** `rj` 返回时消息行还没有。`message.create` 的做法：发之前记下库的水位，`rj` 之后最多 6 秒、每 40 毫秒查一次 `type=3 AND isSend=1 AND talker=<会话> AND msgId>水位 AND length(content)>20` 的行（`StoreFindSentImage`，content 要已带 CDN XML 才算数）；查到才回 200 并带上真实的消息 id，查不到回 502 `image_unconfirmed`。查不到时再看有没有 content 空壳的行（`StoreFindStalledImage`）：有 = 微信收下了但管线卡死、图发不出去；没有 = 图片可能仍会发出。说明白而不是假报成功。等的时候占着服务线程，所以 6 秒是上限；实际管线在几百毫秒内入库。
 
-**退化尺寸的图发不出去。** 微信自己的图片管线对 1x1 这类图会把行插成 `type=3 isSend=1` 但 `content` 恒为 `<msg></msg>`、`status` 恒为 5，之后不再推进——观察上是「收下了但永远在转圈」。8x8 及以上正常（真机实测 8 / 16 / 32 / 64 px 与正常图片全部 `status=2` 带 CDN XML）。这不是反射调用特有的坑，微信自己面对退化图也发不出。
+**退化尺寸的图发不出去。** 微信自己的图片管线对 1x1 这类图会把行插成 `type=3 isSend=1` 但 `content` 恒为 `<msg></msg>`、`status` 恒为 5，之后不再推进。观察上是「收下了但永远在转圈」。8x8 及以上正常（真机实测 8 / 16 / 32 / 64 px 与正常图片全部 `status=2` 带 CDN XML）。这不是反射调用特有的坑，微信自己面对退化图也发不出。
 
 `message.create` 的内容按 `<img>` / `<video>` / `<audio>` / `<file>` 切成有序的文本 / 媒体消息序列（图片规则如下，视频、文件、音频见各自章节；每个媒体元素单独成条，一次最多 8 个媒体元素、其中图片最多 4 张）：
 
@@ -155,7 +155,7 @@ name = v61.d1.h(talker, "amr_")                   // 登记一个新的语音文
 dest = rn3.u0.Fj(ou5.x.j, name, false, true)      // 那个名字对应的路径；只算名字，目录要自己建
 写文件(dest)                                      // 目录 voice2/xx/yy/ 自己 mkdir -p
 v61.d1.u(name, 毫秒, 0, null, null)               // 「停止」：建消息行（status 1）、记 voiceinfo
-v61.v0.dj().e()                                   // 唤醒语音上传服务 —— 录音停止后紧跟的那一句；漏了行会一直停在 status 1
+v61.v0.dj().e()                                   // 唤醒语音上传服务。录音停止后紧跟的那一句；漏了行会一直停在 status 1
 ```
 
 `yl.x0.stop`（录音停止）就是 `d1.u(...)` 加 `v0.dj().e()`；`d1.s` 是转发语音的整套（复制文件、`h`、`u`），入口在 `MsgRetransmitUI`。真机验证：行 `type=34`、status 2、`voiceinfo` 有 TotalLen 与 VoiceLength。上传失败时 `d1.t(name)` 把登记的语音标成错误，别留一条「录音中」。
@@ -171,7 +171,7 @@ MediaRecorder.SilkEncUnInit(h)
 
 输入侧模块自己做：WAV 直接读（`native/audio_pcm.cpp`，8/16/24/32 位整数与 32 位浮点、任意声道与采样率），其它格式用 Android 的 `MediaExtractor` + `MediaCodec` 解成 PCM（JNI，`native/wx_voice.cpp`，20 秒预算），再用加窗 sinc 重采样到 16 kHz 单声道（缩小时先低通，不会把 12 kHz 折叠成 4 kHz）。已经是合法微信 SILK 的文件原样发（缺 `0x02` 就补上）。
 
-验证：把模块产出的 `.silk` 用微信自己的 `SKP_Silk_SDK_Decode` 解回来（`tools/dev/silk-check.c`）——440 Hz 3 秒接 660 Hz 2 秒的测试音，两种输入路径（WAV 与 MediaCodec 解的 MP3）都得到 250 包 / 5.00 秒、音高与电平对得上。M4A、OGG/Opus、AMR 都通过。
+验证：把模块产出的 `.silk` 用微信自己的 `SKP_Silk_SDK_Decode` 解回来（`tools/dev/silk-check.c`）。440 Hz 3 秒接 660 Hz 2 秒的测试音，两种输入路径（WAV 与 MediaCodec 解的 MP3）都得到 250 包 / 5.00 秒、音高与电平对得上。M4A、OGG/Opus、AMR 都通过。
 
 规则：≤ 60 秒（微信语音上限）且 ≥ 0.2 秒才发语音条；超长、太短、读不出来（比如图片当 `<audio>`）作为文件发，回执里是 `<file>`。`message.create` 等库里出现 `type=34` 的行，再等 status 离开「发送中」，与文件同一套预算。
 
@@ -213,7 +213,7 @@ k0.I(r, "", "", talker, "", null)
 
 模块侧的规则（`native/wx_forward.cpp` + `wx_send_media.cpp`）：
 
-- 卡片标题取容器的非标准 `title` 属性；没有时按微信自己的口径来——「群聊的聊天记录」（群）、「A与B的聊天记录」（两人）、「Alice的聊天记录」（一人）。
+- 卡片标题取容器的非标准 `title` 属性；没有时按微信自己的口径来。「群聊的聊天记录」（群）、「A与B的聊天记录」（两人）、「Alice的聊天记录」（一人）。
 - 每行的 `<author id name avatar>` 决定发言人；缺的按会话从联系人补（群里补群名片），一个都没有时算自己。`avatar` 只收 http(s)。
 - 内嵌 `<message id="…"/>` 表示引用同一会话已有的一条**文本**消息（带它的发言人、时间与 svrId）；媒体还不行，回 `forward_media_unsupported`。id 找不到回 `forward_message_not_found`。
 - 限额对齐微信自己的多选上限：一张卡 ≤ 100 行、单行正文 ≤ 4000 字节、`<recordinfo>` ≤ 256 KiB。

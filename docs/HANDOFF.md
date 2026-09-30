@@ -154,7 +154,7 @@ MsgInfo = ex0.k0.F0.k(talker, localId)          // ex0.j0，按 talker+本地 ms
 
 群管理写操作：`channel.delete`（退群）/ `guild.member.kick` 用 `qn.p`（cgi `delchatroommember`）复用发送路径的 `doScene(派发器, y2)`；`guild.member.role.set/unset` 用 `qn.b` / `qn.e`（cgi `add/delchatroomadmin`），经 `com.tencent.mm.modelbase.z2.d(o, null, false)` 交给微信自带 Cgi 运行器。详情、参数与未做的方法见 [群管理写操作](wechat-room.md)。
 
-拍一戳（v0.11.5，`/v1/internal/pat`）：微信双击头像的流程是两步，都可反射达成——`nv3.l` 单例（服务定位器 `ph5.n0.c(ov3.j.class)`）的 `nj(会话, 发起者, 被拍者, 模板, 时间秒, svrId)` 先插本地互动行（type 922746929，返回 `Pair(msgId, createTime)`，不可拍时返回 (0,0)），再 `new qv3.b(pair, 会话, 被拍者, 0)`（cgi `/cgi-bin/micromsg-bin/sendpat`，构造器自己拼 `uin_msgId_createTime` 指针串）走 `doScene(派发器, y2)`。scene int 0 是普通拍一戳，1 是「改拍一拍后缀」；直派不走中央 runner，所以 849 回调（svrId 回填、失败 Toast）都不会发生，本地记录的 svrId 停在 0，纯展示问题。`nj` 拒绝时 `PatSend` 直接 rejected，不派发。
+拍一戳（v0.11.5，`/v1/internal/pat`）：微信双击头像的流程是两步，都可反射达成。`nv3.l` 单例（服务定位器 `ph5.n0.c(ov3.j.class)`）的 `nj(会话, 发起者, 被拍者, 模板, 时间秒, svrId)` 先插本地互动行（type 922746929，返回 `Pair(msgId, createTime)`，不可拍时返回 (0,0)），再 `new qv3.b(pair, 会话, 被拍者, 0)`（cgi `/cgi-bin/micromsg-bin/sendpat`，构造器自己拼 `uin_msgId_createTime` 指针串）走 `doScene(派发器, y2)`。scene int 0 是普通拍一戳，1 是「改拍一拍后缀」；直派不走中央 runner，所以 849 回调（svrId 回填、失败 Toast）都不会发生，本地记录的 svrId 停在 0，纯展示问题。`nj` 拒绝时 `PatSend` 直接 rejected，不派发。
 
 资源路由：`upload.create` 由 `native/tempstore.cpp` 落盘，返回 `internal:wechat/<user>/_tmp/<name>`（5 分钟）；收到的消息媒体是 `internal:wechat/<user>/_msg/<kind>/<id>/<签名>`（见 [消息内容](wechat-content.md)）。`/v1/proxy/{url}` 在 `server.cpp` 里：`internal:` 解析登录号后流式回文件（`_tmp` 直接查，`_msg` 交给已登记的解析器，先验签）；http(s) 前缀未登记则 403；非法 400；未知登录 / 验签失败 404；带 CORS，不需 Satori 登录头。`proxy_urls` 仍为空（微信没有公网资源 URL）。
 
@@ -220,7 +220,7 @@ ME=wxid_8zxjsghrk8vz41
 api() { local body=${2:-'{}'}; curl -s -X POST "http://127.0.0.1:5601/v1/$1" -H "Authorization: Bearer $T" \
   -H "Satori-Platform: wechat" -H "Satori-User-ID: $ME" -H 'Content-Type: application/json' -d "$body"; echo; }
 
-# 0) v0.11.0：events.watching 必须是 true，然后量延迟——http 几十毫秒、event 也是几十毫秒（旧轮询是 200–1900ms 均匀分布）
+# 0) v0.11.0：events.watching 必须是 true，然后量延迟。http 几十毫秒、event 也是几十毫秒（旧轮询是 200–1900ms 均匀分布）
 api internal/status | head -c 600
 python3 tools/latency-probe.py -n 10
 
@@ -250,7 +250,7 @@ api message.create '{"channel_id":"filehelper","content":"<img src=\"internal:we
 #   send.last_error 与 send.media 计数
 api message.create '{"channel_id":"filehelper","content":"先文字<img src=\"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAIAAABLbSncAAAAiElEQVR4nA3JIQ7EIBRFUUxDUkENCJIfzDOEBPExmJqa2f8C7mKGY08IgXiRbsqDZVQZDRchXMSb9FAyVlFjCO8nbuJDypSKNSRGx+eJh5hJldIwoc6Y+DqRiZXUKMI6moyF7xOV2EiidGyixdj4e6IRReqUiS20GS/+nRCxkyZlYRu9jA//8QdJnkXhUZzNAgAAAABJRU5ErkJggg==\"/>再文字"}'
 #   期望：三条消息（文字、图、文字），顺序对；坏链接（远程 URL）整条 400、什么都没发出去
-#   样图是 8x8 PNG；不要换成 1x1——微信图片管线对退化尺寸会把行卡在 status=5、content 空壳
+#   样图是 8x8 PNG；不要换成 1x1。微信图片管线对退化尺寸会把行卡在 status=5、content 空壳
 
 # 5) 事件（另开一个终端跑着，再做 6、7）
 python3 tools/events-tail.py --token "$T"
@@ -276,7 +276,7 @@ api internal/capabilities   # message_elements 与 limits
 # 7) 收消息：让别人给你发图片 / 语音 / 引用回复 / 在群里 @ 你，events-tail 里对应看到
 #    <img>/<audio>、<quote id=…/>、<at id="wxid_8zxjsghrk8vz41" …/>
 
-# 8) 拍一戳（v0.11.5）：真机验证一条——发到自己文件助手会 rejected（filehelper 不可拍），
+# 8) 拍一戳（v0.11.5）：真机验证一条。发到自己文件助手会 rejected（filehelper 不可拍），
 #    在真群里拍一个成员应当 200；本机微信聊天页出现「你拍了拍…」，对方收到拍一戳提示。
 api internal/pat '{"channel_id":"filehelper","user_id":"wxid_8zxjsghrk8vz41"}'   # 期望 502 rejected:true
 api internal/pat '{"channel_id":"<群id>@chatroom","user_id":"<群成员wxid>"}'      # 期望 200 {"ok":true}
