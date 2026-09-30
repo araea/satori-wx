@@ -13,6 +13,7 @@
 //            (AppMsgLogic.sendAppMsg: builds the AppAttachInfo, inserts the message row, starts the
 //             upload; the same call the app's own qs5.v5.dj() ends in)
 #include "wx_send.h"
+#include "textbuf.h"
 #include <errno.h>
 #include <fcntl.h>
 #include <jni.h>
@@ -457,6 +458,91 @@ SendResult SendQuote(const char *talker, const char *text, const QuoteRef &quote
     result.local_id = local_id > 0 ? local_id : -1;
 
     __android_log_print(ANDROID_LOG_INFO, "SatoriWx", "reply to %lld handed to WeChat for %s (local id %lld)", quote.svr_id, talker, static_cast<long long>(result.local_id));
+    return result;
+}
+
+SendResult SendForward(const char *talker, const char *title, const char *desc, const char *record_info) {
+    SendResult result{};
+    result.local_id = -1;
+    result.net_id = -1;
+    if (!talker || !*talker || !title || !*title || !record_info || !*record_info) {
+        result.rejected = true;
+        Detail(result.detail, sizeof(result.detail), "empty target or nothing to forward");
+        return result;
+    }
+    JNIEnv *env = static_cast<JNIEnv *>(ReflectEnv());
+    if (!env) { Detail(result.detail, sizeof(result.detail), "JavaVM unavailable"); return result; }
+    if (!ReflectResolve(result.detail, sizeof(result.detail))) return result;
+    Locals locals(env);
+    jclass k0 = locals.keep(static_cast<jclass>(ReflectLoad("com.tencent.mm.pluginsdk.model.app.k0")));
+    jclass content_class = locals.keep(static_cast<jclass>(ReflectLoad("dx0.r")));
+    jclass pair_class = locals.keep(env->FindClass("android/util/Pair"));
+    jclass integer_class = locals.keep(env->FindClass("java/lang/Integer"));
+    jclass long_class = locals.keep(env->FindClass("java/lang/Long"));
+    jclass prepare_class = locals.keep(static_cast<jclass>(ReflectLoad("com.tencent.mm.pluginsdk.ui.tools.p0")));
+    if (env->ExceptionCheck()) env->ExceptionClear();
+    jmethodID send_app = StaticMethod(env, k0, "I",
+        "(Ldx0/r;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;[B)Landroid/util/Pair;");
+    jmethodID parse = StaticMethod(env, content_class, "v", "(Ljava/lang/String;)Ldx0/r;");
+    jfieldID pair_first = Field(env, pair_class, "first", "Ljava/lang/Object;");
+    jfieldID pair_second = Field(env, pair_class, "second", "Ljava/lang/Object;");
+    jmethodID int_value = Method(env, integer_class, "intValue", "()I");
+    jmethodID long_value = Method(env, long_class, "longValue", "()J");
+    jmethodID prepare = StaticMethod(env, prepare_class, "a", "()V");
+    if (!k0 || !content_class || !pair_class || !send_app || !parse || !pair_first || !pair_second || !int_value || !long_value) {
+        Detail(result.detail, sizeof(result.detail), "forward classes not found (version mismatch?)");
+        return result;
+    }
+    if (prepare) { env->CallStaticVoidMethod(prepare_class, prepare); if (env->ExceptionCheck()) env->ExceptionClear(); }
+
+    // The appmsg WeChat parses back into its AppMessage: type 19, the records in <recorditem>. The
+    // <url> is the page WeChat shows on a client too old to open a record. The records are XML
+    // that is itself inside this XML, so they travel as CDATA (the record escapes its own '>', a
+    // "]]>" cannot occur in it).
+    TextBuf xml;
+    xml.Append("<msg><appmsg appid=\"\" sdkver=\"0\"><title>");
+    xml.Text(title);
+    xml.Append("</title><des>");
+    xml.Text(desc ? desc : "");
+    xml.Append("</des><action>view</action><type>19</type><showtype>0</showtype><content></content>"
+               "<url>https://support.weixin.qq.com/cgi-bin/mmsupport-bin/readtemplate?t=page/favorite_record__w_unsupport&amp;from=singlemessage&amp;isappinstalled=0</url>"
+               "<dataurl></dataurl><lowurl></lowurl><lowdataurl></lowdataurl><recorditem><![CDATA[");
+    xml.Append(record_info);
+    xml.Append("]]></recorditem><thumburl></thumburl><messageaction></messageaction><extinfo></extinfo>"
+               "<sourceusername></sourceusername><sourcedisplayname></sourcedisplayname><commenturl></commenturl>"
+               "<appattach><totallen>0</totallen><attachid></attachid><emoticonmd5></emoticonmd5><fileext></fileext><aeskey></aeskey></appattach>"
+               "</appmsg><fromusername></fromusername><scene>0</scene><appinfo><version>1</version><appname></appname></appinfo>"
+               "<commenturl></commenturl></msg>");
+    if (xml.failed || !xml.data) { Detail(result.detail, sizeof(result.detail), "out of memory"); return result; }
+    jstring jxml = locals.keep(env->NewStringUTF(xml.data));
+    jobject content = jxml ? locals.keep(env->CallStaticObjectMethod(content_class, parse, jxml)) : nullptr;
+    if (env->ExceptionCheck()) { env->ExceptionClear(); content = nullptr; }
+    if (!content) { Detail(result.detail, sizeof(result.detail), "WeChat could not parse the chat record"); return result; }
+
+    jstring jtalker = locals.keep(env->NewStringUTF(talker));
+    jstring jempty = locals.keep(env->NewStringUTF(""));
+    jobject pair = jtalker && jempty
+        ? locals.keep(env->CallStaticObjectMethod(k0, send_app, content, jempty, jempty, jtalker, jempty, static_cast<jbyteArray>(nullptr)))
+        : nullptr;
+    if (env->ExceptionCheck()) { env->ExceptionClear(); pair = nullptr; Detail(result.detail, sizeof(result.detail), "WeChat's chat-record send threw"); }
+    if (!pair) {
+        if (!result.detail[0]) Detail(result.detail, sizeof(result.detail), "WeChat's chat-record send returned nothing");
+        return result;
+    }
+    jobject first = locals.keep(env->GetObjectField(pair, pair_first));
+    jobject second = locals.keep(env->GetObjectField(pair, pair_second));
+    const jint code = first ? env->CallIntMethod(first, int_value) : -1;
+    // The classic path answers (0, local id); the newer pipeline answers (0, null) and inserts the row later.
+    const jlong local_id = second ? env->CallLongMethod(second, long_value) : -1;
+    if (env->ExceptionCheck()) env->ExceptionClear();
+    result.net_id = static_cast<int>(code);
+    if (code != 0) {
+        Detail(result.detail, sizeof(result.detail), "WeChat refused the chat record (code %d)", static_cast<int>(code));
+        return result;
+    }
+    result.ok = true;
+    result.local_id = local_id > 0 ? local_id : -1;
+    __android_log_print(ANDROID_LOG_INFO, "SatoriWx", "chat record handed to WeChat for %s (local id %lld)", talker, static_cast<long long>(result.local_id));
     return result;
 }
 

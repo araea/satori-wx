@@ -1,6 +1,6 @@
 # 微信发送各类消息的逆向记录
 
-文本、群内 @、引用回复、图片、视频、文件能发（`<audio>` 转成 SILK 发语音条，超长或读不出来的作为文件）。图片走聊天界面自己的 `rj()` 管线，视频走微信的视频发送服务，文件与回复走 `AppMsgLogic`，见下文；转发路径那条死路也记在下面。
+文本、群内 @、引用回复、图片、视频、文件能发（`<audio>` 转成 SILK 发语音条，超长或读不出来的作为文件），合并转发能发成「聊天记录」卡片。图片走聊天界面自己的 `rj()` 管线，视频走微信的视频发送服务，文件、回复与合并转发走 `AppMsgLogic`，见下文；转发路径那条死路也记在下面。
 
 微信 8.0.78 / versionCode 671108664。工具见 `tools/dex*.py`（`dexmethodsig.py` / `dexinvokes.py` / `dexmethodstrings.py` 最常用；`dexfindclass.py`、`dexrefs.py` 有误报，别单独信）。**结论性事实要落到「某个类的某个字段 / 方法」上，并且能和 App 自己的调用点对上。**
 
@@ -15,6 +15,7 @@
 | 视频 | `ph5.n0.c(ab5.s)`（运行时类 `qi0.l2`）`.cj(qi0.w2, talker)` | 见下文「视频」；异步，行几乎立刻出现（status 1），上传完成后 status 2 |
 | 语音 | `v61.d1.h` → 写文件 → `d1.u` → `v61.v0.dj().e()`；编码 `MediaRecorder.SilkDoEnc` | 见下文「语音」；行同步入库，微信自己的语音上传服务随后上传 |
 | 引用回复 | `dx0.r`（`f` 标题、`i`=57、`x2`=`MsgQuoteItem`）+ `k0.I` | 见下文「回复」；新发送管线，回 `(0, null)`，行随后出现 |
+| 合并转发 | `dx0.r.v(appmsg XML)` + `k0.I` | 见下文「合并转发」；卡片是一行 `type=49`（appmsg 19），`<recorditem>` 里带全部记录 |
 | 撤回 | `com.tencent.mm.modelsimple.d1.<init>(e9,String,String)` + `doScene` | cgi `revokemsg` |
 | 群管理 | `qn.p` / `qn.b` / `qn.e` | 见 [群管理写操作](wechat-room.md) |
 
@@ -197,6 +198,30 @@ k0.I(r, "", "", talker, "", null)
 - 群里带 `<at>` 的回复，`q.n` 填 `<msgsource><atuserlist><![CDATA[wxid,…]]></atuserlist></msgsource>`，`@` 是真提及。
 - **`k0.I` 对回复回 `(0, null)`**：走的是 `k0.U(s0)` 那条「新发送管线」，行随后才出现，id 不回。模块记水位，轮询 `message` 表里 `type=822083633 AND isSend=1` 的新行拿到 id。`MsgQuote` 表的行（回复 → 被引用）也是微信自己的管线写的，模块不用再插（曾经自己插过一次，多余）。
 - 真机验证：`filehelper` 里引用自己的一条消息，行 `type=822083633 status=2`，`<refermsg>` 内容齐全，`MsgQuote` 有配对行，`message.get` 读回 `<quote id="…"/>正文`。
+
+## 合并转发（`<message forward>`，v0.14.0）
+
+Satori 的 `<message forward>`（内嵌若干 `<message>`）对应微信的「聊天记录」卡片：一条 `type=49`（appmsg 子类型 19）的消息，全部记录装在 `<recorditem>` 里。发送与引用回复同路，入口是 `k0.I`，内容用 `dx0.r.v(xml)` 解析：
+
+```java
+r = dx0.r.v(xml)          // <msg><appmsg …><title>卡片标题</title><des>预览</des><type>19</type>
+                          // <recorditem><![CDATA[<recordinfo>…]]></recorditem>…</appmsg>…
+k0.I(r, "", "", talker, "", null)
+```
+
+`<recordinfo>` 的格式拿库里真实的聊天记录行对过（`<datalist>` → 每行一个 `<dataitem>` → `<data>`（`datasize/datatype=1/datadesc` 正文）+ `<sourceinfo>`（`displayname` 发言人）+ `<delivertime>`）。
+
+模块侧的规则（`native/wx_forward.cpp` + `wx_send_media.cpp`）：
+
+- 卡片标题取容器的非标准 `title` 属性；没有时按微信自己的口径来——「群聊的聊天记录」（群）、「A与B的聊天记录」（两人）、「Alice的聊天记录」（一人）。
+- 每行的 `<author id name avatar>` 决定发言人；缺的按会话从联系人补（群里补群名片），一个都没有时算自己。`avatar` 只收 http(s)。
+- 内嵌 `<message id="…"/>` 表示引用同一会话已有的一条**文本**消息（带它的发言人、时间与 svrId）；媒体还不行，回 `forward_media_unsupported`。id 找不到回 `forward_message_not_found`。
+- 限额对齐微信自己的多选上限：一张卡 ≤ 100 行、单行正文 ≤ 4000 字节、`<recordinfo>` ≤ 256 KiB。
+- 一条请求里的卡片**全部先建好再发第一条**：某一行的内容有问题就让整个请求失败，不发半截。
+- `k0.I` 在新管线上回 `(0, null)`，行随后才出现：模块记水位轮询拿 id（6 秒预算），再等 status 落定。拿不到 id 回 `send_unconfirmed`。
+- `<message id="…" forward/>`（按 id 转发单条）微信没有保持原样的对应物，再发一遍正文等于发成别的东西，仍然拒绝（`forward_unsupported`），提示放进 `<message forward>` 合并转发。
+
+真机验证（v0.14.0，dev 热注入）：`filehelper` 收到卡片，行 `type=49 status=2`、msgSvrId 已回，`<appmsg>` 全文与微信自己发的卡片同构；屏幕上卡片渲染正确（标题、预览行数）；`message.get` 读回 `<message forward title="群聊的聊天记录">`，三行的发言人、头像、正文（含转义与换行）都在。
 
 ## jadx 字段名的坑
 

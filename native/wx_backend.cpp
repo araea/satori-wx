@@ -1,6 +1,7 @@
 #include "wx_backend.h"
 #include "wx_keepalive.h"
 #include "wx_live.h"
+#include "wx_forward.h"
 #include "wx_room.h"
 #include "wx_send.h"
 #include "wx_voice.h"
@@ -371,6 +372,24 @@ void EscapeAttribute(const char *text, char *out, size_t capacity) {
     out[used] = 0;
 }
 
+// A Message for something we just sent whose `content` is already Satori markup (unlike SentMessage,
+// which escapes plain text).
+cJSON *SentEnvelope(Store *store, const char *channel_id, const char *id, const char *content) {
+    cJSON *message = cJSON_CreateObject();
+    cJSON *channel = cJSON_CreateObject();
+    cJSON *user = cJSON_CreateObject();
+    if (!message || !channel || !user) { cJSON_Delete(message); cJSON_Delete(channel); cJSON_Delete(user); return nullptr; }
+    cJSON_AddItemToObject(message, "channel", channel);
+    cJSON_AddItemToObject(message, "user", user);
+    cJSON_AddStringToObject(message, "id", id);
+    cJSON_AddStringToObject(message, "content", content);
+    cJSON_AddNumberToObject(message, "created_at", static_cast<double>(time(nullptr)) * 1000);
+    cJSON_AddStringToObject(channel, "id", channel_id);
+    cJSON_AddNumberToObject(channel, "type", strstr(channel_id, "@chatroom") ? 0 : 1);
+    cJSON_AddStringToObject(user, "id", StoreSelfId(store));
+    return message;
+}
+
 // The Message for a media row we just sent. The store's own decoding is the most faithful (signed
 // links, duration, poster); when it cannot read the row back, a message built from what we sent.
 cJSON *SentMediaMessage(Store *store, const char *channel_id, long long local_id, const Segment &segment) {
@@ -392,19 +411,7 @@ cJSON *SentMediaMessage(Store *store, const char *channel_id, long long local_id
         EscapeAttribute(segment.title, title, sizeof(title));
         snprintf(content, sizeof(content), "<file src=\"%s\" title=\"%s\"/>", linked ? link : "", title);
     }
-    cJSON *message = cJSON_CreateObject();
-    cJSON *channel = cJSON_CreateObject();
-    cJSON *user = cJSON_CreateObject();
-    if (!message || !channel || !user) { cJSON_Delete(message); cJSON_Delete(channel); cJSON_Delete(user); return nullptr; }
-    cJSON_AddItemToObject(message, "channel", channel);
-    cJSON_AddItemToObject(message, "user", user);
-    cJSON_AddStringToObject(message, "id", id);
-    cJSON_AddStringToObject(message, "content", content);
-    cJSON_AddNumberToObject(message, "created_at", static_cast<double>(time(nullptr)) * 1000);
-    cJSON_AddStringToObject(channel, "id", channel_id);
-    cJSON_AddNumberToObject(channel, "type", strstr(channel_id, "@chatroom") ? 0 : 1);
-    cJSON_AddStringToObject(user, "id", StoreSelfId(store));
-    return message;
+    return SentEnvelope(store, channel_id, id, content);
 }
 
 // A failure partway through a multi-message request says how much had already gone out.
@@ -698,11 +705,115 @@ Response CreateOne(const Request &request, Store *store, const char *content, si
     return {200, list};
 }
 
+// ---- merge forward -------------------------------------------------------------------------------
+// `<message forward>` holding `<message>`s is WeChat's "聊天记录" card: one message of type 19 that
+// carries the records inside it. Each inner `<message>` is a line of the card, written by its
+// `<author>` (this account when it has none); an inner `<message id="…"/>` embeds a text message of
+// the same conversation. Everything is resolved and built before the first message of the request is
+// sent, so a bad line fails the request instead of leaving half of it delivered.
+
+// The author's name and avatar the way the conversation shows them, for whatever the caller left out.
+void ResolveAuthor(Store *store, const char *channel_id, ForwardEntry &entry) {
+    if (!entry.author_id[0]) return;
+    cJSON *user = StoreUserGet(store, entry.author_id);
+    if (!entry.author_name[0]) {
+        if (strstr(channel_id, "@chatroom")) MentionName(const_cast<char *>(channel_id), entry.author_id, entry.author_name, sizeof(entry.author_name));
+        if (!entry.author_name[0] && user) {
+            const cJSON *nick = cJSON_GetObjectItemCaseSensitive(user, "nick");
+            const cJSON *name = cJSON_GetObjectItemCaseSensitive(user, "name");
+            const char *chosen = cJSON_IsString(nick) && *nick->valuestring ? nick->valuestring : cJSON_IsString(name) ? name->valuestring : "";
+            snprintf(entry.author_name, sizeof(entry.author_name), "%s", chosen);
+        }
+        if (!entry.author_name[0]) snprintf(entry.author_name, sizeof(entry.author_name), "%s", entry.author_id);
+    }
+    if (!entry.author_avatar[0] && user) {
+        const cJSON *avatar = cJSON_GetObjectItemCaseSensitive(user, "avatar");
+        if (cJSON_IsString(avatar) && strlen(avatar->valuestring) < sizeof(entry.author_avatar)) snprintf(entry.author_avatar, sizeof(entry.author_avatar), "%s", avatar->valuestring);
+    }
+    cJSON_Delete(user);
+}
+
+struct PreparedForward {
+    ForwardCard card;
+    char *reply;   // the Message.content to answer with
+};
+
+// Reads the container [part) of `content`, resolves its lines against the store and builds the card.
+// Success is {200, null}; anything else is the response to give.
+Response PrepareForward(const Request &request, Store *store, const char *content, const MessagePart &part, PreparedForward *out) {
+    const char *channel_id = Text(request, "channel_id");
+    const bool group = strstr(channel_id, "@chatroom") != nullptr;
+    auto *entries = static_cast<ForwardEntry *>(calloc(kForwardMax, sizeof(ForwardEntry)));
+    if (!entries) return {500, nullptr};
+    char title[200];
+    ForwardError error{};
+    const int count = ForwardParse(content, part.begin, part.end, entries, kForwardMax, title, sizeof(title), &error);
+    if (count < 0) { free(entries); return BadRequest(error.code, error.detail); }
+    for (int i = 0; i < count; ++i) {
+        ForwardEntry &entry = entries[i];
+        if (entry.ref_id[0]) {
+            QuoteRef target;
+            if (!StoreQuoteTarget(store, channel_id, entry.ref_id, &target)) {
+                free(entries);
+                char detail[120];
+                snprintf(detail, sizeof(detail), "there is no message %s in this conversation to put in the merged forward", entry.ref_id);
+                return BadRequest("forward_message_not_found", detail);
+            }
+            if (target.row_type != 1) {
+                free(entries);
+                char detail[120];
+                snprintf(detail, sizeof(detail), "message %s is not a text message; only text can be put in a merged forward yet", entry.ref_id);
+                return BadRequest("forward_media_unsupported", detail);
+            }
+            if (strlen(target.text) > kForwardText) { free(entries); return BadRequest("content_too_long", "an embedded message is longer than 4000 bytes"); }
+            snprintf(entry.text, sizeof(entry.text), "%s", target.text);
+            snprintf(entry.author_id, sizeof(entry.author_id), "%s", target.sender);
+            entry.created_s = target.created_s;
+            entry.svr_id = target.svr_id;
+        } else if (!entry.author_id[0] && !entry.author_name[0]) {
+            snprintf(entry.author_id, sizeof(entry.author_id), "%s", StoreSelfId(store));
+        }
+        ResolveAuthor(store, channel_id, entry);
+    }
+    ForwardCard card{};
+    if (!ForwardBuild(entries, static_cast<size_t>(count), title, group, time(nullptr), &card, &error)) {
+        free(entries);
+        return !strcmp(error.code, "internal_error") ? Response{500, nullptr} : BadRequest(error.code, error.detail);
+    }
+    out->card = card;
+    out->reply = ForwardContent(entries, static_cast<size_t>(count), title);
+    free(entries);
+    if (!out->reply) { free(card.record); out->card.record = nullptr; return {500, nullptr}; }
+    return {200, nullptr};
+}
+
+// Sends one prepared card and answers with its Message.
+Response SendPreparedForward(const Request &request, Store *store, const PreparedForward &forward, size_t already_sent) {
+    const char *channel_id = Text(request, "channel_id");
+    const long long before = StoreWatermark(store);
+    SendResult sent = SendForward(channel_id, forward.card.title, forward.card.desc, forward.card.record);
+    if (!sent.ok) return FailureAfter("send_failed", sent.detail, sent.rejected, already_sent);
+    long long local_id = sent.local_id;
+    // WeChat's newer pipeline inserts the row a moment after it takes the message and does not say which.
+    for (int waited = 0; local_id <= 0 && waited < kRowWaitMs; waited += 50) {
+        if (!StoreFindSentRecord(store, channel_id, before, &local_id)) Pause(50);
+    }
+    if (local_id <= 0) return FailureAfter("send_unconfirmed", "WeChat did not record the chat record within 6 seconds; it may still be sent", false, already_sent);
+    StoreNoteSent(store, local_id);
+    if (WaitSettled(store, local_id, kSettleMs, NowMs() + kSettleMs) == 5)
+        return FailureAfter("send_failed", "WeChat could not send the chat record (its send status is failed)", false, already_sent);
+    char id[32];
+    snprintf(id, sizeof(id), "%lld", local_id);
+    cJSON *message = SentEnvelope(store, channel_id, id, forward.reply);
+    return message ? Response{200, message} : Response{500, nullptr};
+}
+
 // `<message>` is Satori's container for "this is one message": what precedes and follows it is sent
 // separately, so a request may carry several. Each part goes through the same pipeline (its own
-// text and media split, its own <quote>) and the replies are returned in order. Merge forwarding
-// (`<message forward>`) has no WeChat counterpart, and sending its contents as separate messages
-// would silently be something else, so it is refused.
+// text and media split, its own <quote>) and the replies are returned in order. A `forward` container
+// is one part that becomes one card (above); forwarding a single message by id has no WeChat
+// counterpart that keeps what it is, and sending its text again would silently be something else, so
+// that is refused.
 constexpr size_t kParts = 16;
 
 Response CreateMessages(const Request &request, Store *store) {
@@ -710,30 +821,62 @@ Response CreateMessages(const Request &request, Store *store) {
     if (!store) return {503, nullptr};
     if (!*Text(request, "channel_id") || !*content) return {400, nullptr};
     MessagePart parts[kParts + 1];
-    bool forward = false;
-    const size_t count = MessageParts(content, parts, kParts + 1, &forward);
-    if (forward) return BadRequest("forward_unsupported", "WeChat cannot merge-forward messages");
+    const size_t count = MessageParts(content, parts, kParts + 1);
     if (count > kParts) return BadRequest("too_many_messages", "at most 16 <message> parts per message.create");
+    for (size_t i = 0; i < count; ++i)
+        if (parts[i].kind == 'r') return BadRequest("forward_unsupported", "forwarding a single message by id is not supported; put it inside a <message forward> to merge-forward");
     if (count <= 1 && !strstr(content, "<message")) return CreateOne(request, store, content, 0, false);
+
+    // Build every card first: a bad line fails the request before anything is sent.
+    PreparedForward prepared[kParts] = {};
+    auto release = [&]() { for (size_t i = 0; i < count; ++i) { free(prepared[i].card.record); free(prepared[i].reply); } };
+    for (size_t i = 0; i < count; ++i) {
+        if (parts[i].kind != 'm') continue;
+        Response ready = PrepareForward(request, store, content, parts[i], &prepared[i]);
+        if (ready.status != 200) { release(); return ready; }
+    }
+
+    const char *channel_id = Text(request, "channel_id");
+    struct SendWindow {
+        Store *store; const char *talker;
+        SendWindow(Store *s, const char *t) : store(s), talker(t) { StoreSendBegin(store, talker); }
+        ~SendWindow() { StoreSendEnd(store, talker); }
+    } send_window(store, channel_id);
     cJSON *all = cJSON_CreateArray();
-    if (!all) return {500, nullptr};
+    if (!all) { release(); return {500, nullptr}; }
     size_t delivered = 0;
     for (size_t i = 0; i < count; ++i) {
-        char *slice = static_cast<char *>(malloc(parts[i].end - parts[i].begin + 1));
-        if (!slice) { cJSON_Delete(all); return {500, nullptr}; }
-        memcpy(slice, content + parts[i].begin, parts[i].end - parts[i].begin);
-        slice[parts[i].end - parts[i].begin] = 0;
-        Response part = CreateOne(request, store, slice, delivered, true);
-        free(slice);
-        if (part.status != 200 || !part.body) { cJSON_Delete(all); return part; }
-        // Move the part's messages into the combined reply.
-        while (part.body->child) {
-            cJSON *message = cJSON_DetachItemFromArray(part.body, 0);
-            cJSON_AddItemToArray(all, message);
-            ++delivered;
+        Response part;
+        if (parts[i].kind == 'm') {
+            part = SendPreparedForward(request, store, prepared[i], delivered);
+            if (part.status == 200 && part.body) {
+                cJSON_AddItemToArray(all, part.body);
+                ++delivered;
+                continue;
+            }
+        } else {
+            char *slice = static_cast<char *>(malloc(parts[i].end - parts[i].begin + 1));
+            if (!slice) { cJSON_Delete(all); release(); return {500, nullptr}; }
+            memcpy(slice, content + parts[i].begin, parts[i].end - parts[i].begin);
+            slice[parts[i].end - parts[i].begin] = 0;
+            part = CreateOne(request, store, slice, delivered, true);
+            free(slice);
+            if (part.status == 200 && part.body) {
+                // Move the part's messages into the combined reply.
+                while (part.body->child) {
+                    cJSON *message = cJSON_DetachItemFromArray(part.body, 0);
+                    cJSON_AddItemToArray(all, message);
+                    ++delivered;
+                }
+                cJSON_Delete(part.body);
+                continue;
+            }
         }
-        cJSON_Delete(part.body);
+        cJSON_Delete(all);
+        release();
+        return part;
     }
+    release();
     if (!delivered) { cJSON_Delete(all); return {400, nullptr}; }
     return {200, all};
 }

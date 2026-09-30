@@ -246,6 +246,90 @@ void DecodePat(XmlSlice appmsg, const char *self_id, Decoded *out) {
     snprintf(out->sender, sizeof(out->sender), "%s", first_sender);
 }
 
+// A merged-forward card ("聊天记录", appmsg 19) carries its lines in <recorditem>: a <recordinfo> whose
+// <datalist> holds one <dataitem> per line. Satori writes that as a `forward` message holding one
+// `<message>` per line, each with its <author>. A line that is not text (WeChat keeps its media on
+// the CDN, which this module cannot fetch) reads as its "[图片]"-style label; a record inside a record
+// nests once more.
+constexpr size_t kRecordMax = 96 * 1024;   // an event has to fit the bus
+constexpr int kRecordDepth = 2;
+
+const char *ItemLabel(int datatype) {
+    switch (datatype) {
+        case 2: return "[图片]";
+        case 3: return "[语音]";
+        case 4: return "[视频]";
+        case 5: return "[链接]";
+        case 6: return "[位置]";
+        case 7: return "[音乐]";
+        case 8: return "[文件]";
+        case 17: return "[聊天记录]";
+        case 19: return "[小程序]";
+        default: return "[消息]";
+    }
+}
+
+void AppendRecord(TextBuf &out, XmlSlice info, int depth) {
+    char title[256] = {};
+    XmlGetText(info, "title", title, sizeof(title));
+    out.Append("<message forward");
+    if (*title) { out.Append(" title=\""); out.Attr(title); out.Append("\""); }
+    out.Append(">");
+    XmlSlice list;
+    if (XmlPath(info, "datalist", &list)) {
+        for (int i = 0; i < 200 && out.size < kRecordMax; ++i) {
+            XmlSlice item, attrs;
+            if (!XmlChildAt(list, "dataitem", i, &item, &attrs)) break;
+            char type_text[16] = {}, name[256] = {}, avatar[512] = {}, text[8192] = {};
+            XmlAttribute(attrs, "datatype", type_text, sizeof(type_text));
+            const int datatype = atoi(type_text);
+            XmlGetText(item, "sourcename", name, sizeof(name));
+            XmlGetText(item, "sourceheadurl", avatar, sizeof(avatar));
+            out.Append("<message>");
+            if (*name || SafeUrl(avatar)) {
+                out.Append("<author");
+                if (*name) { out.Append(" name=\""); out.Attr(name); out.Append("\""); }
+                if (SafeUrl(avatar)) { out.Append(" avatar=\""); out.Attr(avatar); out.Append("\""); }
+                out.Append("/>");
+            }
+            XmlSlice nested;
+            if (datatype == 1) {
+                XmlGetText(item, "datadesc", text, sizeof(text));
+                out.Text(text);
+            } else if (datatype == 17 && depth < kRecordDepth && XmlPath(item, "recordxml/recordinfo", &nested)) {
+                AppendRecord(out, nested, depth + 1);
+            } else {
+                // The label, then whatever name the line has (a file's name, a link's title).
+                out.Text(ItemLabel(datatype));
+                if (datatype == 2 || datatype == 3 || datatype == 4) { /* nothing more to say */ }
+                else if (XmlGetText(item, "datatitle", text, sizeof(text)) && *text) { out.Append(' '); out.Text(text); }
+            }
+            out.Append("</message>");
+        }
+    }
+    out.Append("</message>");
+}
+
+bool DecodeRecord(XmlSlice appmsg, Decoded *out) {
+    XmlSlice raw;
+    if (!XmlPath(appmsg, "recorditem", &raw) || !raw.Size()) return false;
+    char *info = static_cast<char *>(malloc(raw.Size() + 1));
+    if (!info) return false;
+    XmlText(raw, info, raw.Size() + 1);
+    XmlSlice record;
+    TextBuf text;
+    const bool ok = XmlPath(XmlDocument(info), "recordinfo", &record) && XmlPath(record, "datalist", &record);
+    if (ok) {
+        XmlPath(XmlDocument(info), "recordinfo", &record);
+        AppendRecord(text, record, 0);
+        out->kind = MsgKind::Other;
+        out->deliver = true;
+        out->content = text.Take();
+    }
+    free(info);
+    return ok && out->content;
+}
+
 void DecodeAppMsg(const MessageRow &row, const char *body, const char *self_id, Decoded *out) {
     out->deliver = false;  // each branch below opts in once it has something to say
     XmlSlice root = XmlDocument(body);
@@ -263,6 +347,7 @@ void DecodeAppMsg(const MessageRow &row, const char *body, const char *self_id, 
     const int subtype = atoi(type_text);
     if (subtype == 57) { out->kind = MsgKind::Quote; out->deliver = true; DecodeQuote(appmsg, row, out); return; }
     if (subtype == 62) { DecodePat(appmsg, self_id, out); return; }  // "拍了拍": who patted whom
+    if (subtype == 19 && DecodeRecord(appmsg, out)) return;            // 聊天记录: a merged forward
 
     char title[1024] = {}, description[2048] = {}, url[2048] = {};
     XmlGetText(appmsg, "title", title, sizeof(title));

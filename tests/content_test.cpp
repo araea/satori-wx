@@ -125,35 +125,75 @@ int main() {
 
     // ---- MessageParts: <message> divides a request into messages -------------------------------------------
     {
-        auto Parts = [](const char *content, const char *expected, bool want_forward, const char *what) {
+        // Parts are joined with "|"; a merge-forward container shows as "[m:...]" and a forward of one
+        // message by id as "[r:...]" (the whole element / tag).
+        auto Parts = [](const char *content, const char *expected, const char *what) {
             satori::MessagePart parts[8];
-            bool forward = true;
-            const size_t count = satori::MessageParts(content, parts, 8, &forward);
+            const size_t count = satori::MessageParts(content, parts, 8);
             char joined[512] = {};
             for (size_t i = 0; i < count; ++i) {
                 if (i) strcat(joined, "|");
+                if (parts[i].kind) { strcat(joined, "["); strncat(joined, &parts[i].kind, 1); strcat(joined, ":"); }
                 strncat(joined, content + parts[i].begin, parts[i].end - parts[i].begin);
+                if (parts[i].kind) strcat(joined, "]");
             }
-            if (strcmp(joined, expected) || forward != want_forward) {
-                fprintf(stderr, "FAIL: %s\n  in:  %s\n  got: %s (forward=%d)\n  want: %s (forward=%d)\n", what, content, joined, forward, expected, want_forward);
+            if (strcmp(joined, expected)) {
+                fprintf(stderr, "FAIL: %s\n  in:  %s\n  got: %s\n  want: %s\n", what, content, joined, expected);
                 ++failures;
             }
         };
-        Parts("hello", "hello", false, "no container is one part");
-        Parts("", "", false, "empty content has no part");
-        Parts("<message>a</message><message>b</message>", "a|b", false, "containers are messages");
-        Parts("a<message/>b", "a|b", false, "a self-closing <message/> is a separator");
-        Parts("前<message>中</message>后", "前|中|后", false, "text around a container is a message too");
-        Parts("<message><author id=\"1\" name=\"A\"/>hi</message>", "<author id=\"1\" name=\"A\"/>hi", false, "the author stays inside its part");
-        Parts("<message forward><message>x</message></message>", "x", true, "a bare forward attribute");
-        Parts("<message id=\"9\" forward=\"true\"/>", "", true, "forward with a value");
-        Parts("<MESSAGE FORWARD/>", "", true, "spelling case does not matter");
-        Parts("<message forward=\"false\">t</message>", "t", false, "forward=false is not forwarding");
-        Parts("<message id=\"forward\">t</message>", "t", false, "the word inside a value is not the attribute");
-        Parts("<messages>a</messages>", "<messages>a</messages>", false, "only the message element counts");
-        Parts("a<message", "a<message", false, "an unterminated tag is no boundary (the text flattener drops its tail)");
+        Parts("hello", "hello", "no container is one part");
+        Parts("", "", "empty content has no part");
+        Parts("<message>a</message><message>b</message>", "a|b", "containers are messages");
+        Parts("a<message/>b", "a|b", "a self-closing <message/> is a separator");
+        Parts("前<message>中</message>后", "前|中|后", "text around a container is a message too");
+        Parts("<message><author id=\"1\" name=\"A\"/>hi</message>", "<author id=\"1\" name=\"A\"/>hi", "the author stays inside its part");
+        Parts("<message forward><message>x</message></message>", "[m:<message forward><message>x</message></message>]", "a merge-forward is one part, its messages nested");
+        Parts("<message forward><message>x</message><message><message>y</message></message></message>z",
+              "[m:<message forward><message>x</message><message><message>y</message></message></message>]|z", "nesting depth is balanced");
+        Parts("a<message forward><message>x</message></message>b", "a|[m:<message forward><message>x</message></message>]|b", "text around a forward is sent separately");
+        Parts("<message forward title=\"t\">x", "[m:<message forward title=\"t\">x]", "an unclosed forward runs to the end");
+        Parts("<message id=\"9\" forward=\"true\"/>", "[r:<message id=\"9\" forward=\"true\"/>]", "forward of one message by id");
+        Parts("<MESSAGE FORWARD/>", "[r:<MESSAGE FORWARD/>]", "spelling case does not matter");
+        Parts("<message forward=\"false\">t</message>", "t", "forward=false is not forwarding");
+        Parts("<message id=\"forward\">t</message>", "t", "the word inside a value is not the attribute");
+        Parts("<messages>a</messages>", "<messages>a</messages>", "only the message element counts");
+        Parts("a<message", "a<message", "an unterminated tag is no boundary (the text flattener drops its tail)");
         satori::MessagePart bounded[2];
-        Check(satori::MessageParts("a<message/>b<message/>c", bounded, 2, nullptr) == 2, "parts are bounded");
+        Check(satori::MessageParts("a<message/>b<message/>c", bounded, 2) == 2, "parts are bounded");
+    }
+
+    // A bare attribute does not swallow the attribute after it.
+    {
+        satori::ImageSpan tag;
+        char value[64];
+        const char *content = "<message forward title=\"周报\" id='7'>";
+        Check(satori::FirstTag(content, "message", &tag), "found the tag");
+        Check(satori::TagAttribute(content, tag, "title", value, sizeof(value)) && !strcmp(value, "周报"), "an attribute after a bare one");
+        Check(satori::TagAttribute(content, tag, "id", value, sizeof(value)) && !strcmp(value, "7"), "and the one after that");
+        Check(!satori::TagAttribute(content, tag, "forward", value, sizeof(value)), "a bare attribute has no value");
+    }
+
+    // ---- ForwardChildren: the <message>s directly inside a merge-forward ---------------------------------------
+    {
+        const char *content = "<message forward title=\"T\"><message id=\"5\"/> <message><author id=\"1\"/>hi</message><message>x</message></message>";
+        satori::MessagePart part[2];
+        Check(satori::MessageParts(content, part, 2) == 1 && part[0].kind == 'm', "one forward part");
+        satori::ForwardChild kids[8];
+        const size_t count = satori::ForwardChildren(content, part[0].begin, part[0].end, kids, 8);
+        Check(count == 3, "three children");
+        if (count == 3) {
+            Check(kids[0].self_closing && kids[0].inner_begin == kids[0].inner_end, "a self-closing child has no inner");
+            Check(!strncmp(content + kids[1].inner_begin, "<author id=\"1\"/>hi", kids[1].inner_end - kids[1].inner_begin) &&
+                      kids[1].inner_end - kids[1].inner_begin == strlen("<author id=\"1\"/>hi"), "the inner stops before </message>");
+            Check(!strncmp(content + kids[2].inner_begin, "x", 1) && kids[2].inner_end - kids[2].inner_begin == 1, "third child");
+        }
+        Check(satori::ForwardChildren(content, 0, 5, kids, 8) == 0, "not an element: no children");
+        const char *nested = "<message forward><message>a<message>b</message>c</message></message>";
+        satori::MessagePart nested_part[2];
+        satori::MessageParts(nested, nested_part, 2);
+        Check(satori::ForwardChildren(nested, nested_part[0].begin, nested_part[0].end, kids, 8) == 1, "a nested <message> stays inside its parent");
+        Check(satori::ForwardChildren(content, part[0].begin, part[0].end, kids, 2) == 2, "children are bounded");
     }
 
     // ---- ImageSpans / TagAttribute / Base64Decode -----------------------------------------------------------

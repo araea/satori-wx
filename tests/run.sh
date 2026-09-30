@@ -72,9 +72,13 @@ clang++ -std=c++20 -O1 -g -fno-exceptions -fno-rtti -nostdinc++ -nostdlib++ \
     "$R/native/multipart.cpp" "$R/native/tempstore.cpp" -o "$R/build/tests/upload-stream-test"
 SATORI_TMPROOT="$R/build/tests/tmp" "$R/build/tests/upload-stream-test"
 clang++ -std=c++20 -O1 -g -fno-exceptions -fno-rtti -nostdinc++ -nostdlib++ \
+    -Wall -Wextra -Werror -I "$R/native" "$R/tests/forward_test.cpp" "$R/native/wx_forward.cpp" "$R/native/protocol.cpp" \
+    "$R/native/media.cpp" "$R/native/xml_lite.cpp" "$R/build/tests/cjson.o" -o "$R/build/tests/forward-test"
+"$R/build/tests/forward-test"
+clang++ -std=c++20 -O1 -g -fno-exceptions -fno-rtti -nostdinc++ -nostdlib++ \
     -Wall -Wextra -Werror -I "$R/native" "$R/tests/backend_test.cpp" "$R/native/wx_backend.cpp" \
     "$R/native/wx_send.cpp" "$R/native/mp4_probe.cpp" "$R/native/wx_capabilities.cpp" "$R/native/protocol.cpp" \
-    "$R/native/tempstore.cpp" "$R/native/media.cpp" "$R/build/tests/cjson.o" -llog -o "$R/build/tests/backend-test"
+    "$R/native/tempstore.cpp" "$R/native/media.cpp" "$R/native/wx_forward.cpp" "$R/build/tests/cjson.o" -llog -o "$R/build/tests/backend-test"
 SATORI_FIXTURES="$R/tests/fixtures" SATORI_TMPROOT="$R/build/tests/tmp" "$R/build/tests/backend-test"
 python3 "$R/tests/account_e2e_test.py" "$R/build/tests/server"
 python3 "$R/tests/webhook_test.py" "$R/build/tests/server"

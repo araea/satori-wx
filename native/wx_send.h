@@ -59,6 +59,11 @@ SendResult SendVideo(const char *talker, const char *path, const char *thumb_pat
 // returns and does not hand its id back: `local_id` is -1 (unless it did), and the caller finds the
 // row with StoreFindSentQuote.
 SendResult SendQuote(const char *talker, const char *text, const QuoteRef &quote, const char *mention_ids);
+// Sends a merged-forward card (WeChat's "聊天记录": an appmsg of type 19) to `talker`. `record_info` is the
+// <recordinfo> XML the card carries (ForwardBuild), `title` and `desc` its headline and preview. WeChat's
+// AppMsgLogic inserts the row and sends it, as it does for a file; nothing is uploaded, the records travel
+// inside the message. The row exists when this returns (`local_id`); poll its status like a file's.
+SendResult SendForward(const char *talker, const char *title, const char *desc, const char *record_info);
 // Sends a SILK voice file (WeChat's own voice format: "\x02#!SILK_V3" followed by length-prefixed 20 ms
 // packets) as a voice message, through the code the recorder's "stop" and the forward-voice action
 // share: WeChat's VoiceLogic registers the voice file, inserts the message row and hands it to its own

@@ -195,9 +195,12 @@ bool Attribute(const char *begin, const char *end, const char *name, char *out, 
         const char *key = p;
         while (p < end && TagChar(*p)) ++p;
         const size_t key_size = static_cast<size_t>(p - key);
+        const char *after_key = p;
         while (p < end && (*p == ' ' || *p == '\t')) ++p;
         if (p >= end || *p != '=') {
-            while (p < end && *p != ' ' && *p != '\t') ++p;
+            // A bare attribute (`forward`): the next token is an attribute of its own, not part of this one.
+            p = after_key;
+            if (!key_size && p < end) ++p;  // a stray character: step over it
             continue;
         }
         ++p;
@@ -492,38 +495,118 @@ size_t MediaSpans(const char *content, MediaSpan *out, size_t max) {
     return count;
 }
 
-size_t MessageParts(const char *content, MessagePart *out, size_t max, bool *forward) {
-    if (forward) *forward = false;
+namespace {
+// One tag starting at `p` (which points at '<'): where it ends, its element name span, and whether it
+// closes an element, is self-closing or opens one. False for an unterminated tag.
+struct Tag { const char *end; const char *name; size_t length; bool closing, self_closing; };
+bool ReadTag(const char *p, Tag *tag) {
+    const char *q = p + 1;
+    char quote = 0;
+    for (; *q; ++q) {
+        if (quote) { if (*q == quote) quote = 0; continue; }
+        if (*q == '"' || *q == '\'') { quote = *q; continue; }
+        if (*q == '>') break;
+    }
+    if (!*q) return false;
+    tag->end = q;
+    tag->closing = p[1] == '/';
+    tag->name = p + 1 + (tag->closing ? 1 : 0);
+    const char *name_end = tag->name;
+    while (name_end < q && TagChar(*name_end)) ++name_end;
+    tag->length = static_cast<size_t>(name_end - tag->name);
+    tag->self_closing = !tag->closing && q > p + 1 && q[-1] == '/';
+    return true;
+}
+bool IsMessageTag(const Tag &tag) { return tag.length == 7 && !strncasecmp(tag.name, "message", 7); }
+
+// The end of the element opened by `opening` (a non-self-closing <message>): just past the </message>
+// that balances it, or the end of the content when it is never closed. `inner_end` (optional) gets
+// where that closing tag starts (the end of the content when there is none).
+const char *ElementEnd(const Tag &opening, const char **inner_end) {
+    int depth = 1;
+    const char *p = opening.end + 1;
+    while (*p) {
+        if (*p != '<') { ++p; continue; }
+        Tag tag;
+        if (!ReadTag(p, &tag)) break;
+        if (IsMessageTag(tag) && !tag.self_closing) {
+            if (tag.closing) {
+                if (--depth == 0) { if (inner_end) *inner_end = p; return tag.end + 1; }
+            } else {
+                ++depth;
+            }
+        }
+        p = tag.end + 1;
+    }
+    p += strlen(p);
+    if (inner_end) *inner_end = p;
+    return p;
+}
+} // namespace
+
+size_t MessageParts(const char *content, MessagePart *out, size_t max) {
     if (!out || !max) return 0;
     if (!content) content = "";
     const size_t total = strlen(content);
     size_t count = 0, cursor = 0;
     auto flush = [&](size_t stop) {
-        if (stop > cursor && count < max) { out[count].begin = cursor; out[count].end = stop; ++count; }
+        if (stop > cursor && count < max) { out[count].begin = cursor; out[count].end = stop; out[count].kind = 0; ++count; }
     };
     for (const char *p = content; *p;) {
         if (*p != '<') { ++p; continue; }
-        const char *q = p + 1;
-        char quote = 0;
-        for (; *q; ++q) {
-            if (quote) { if (*q == quote) quote = 0; continue; }
-            if (*q == '"' || *q == '\'') { quote = *q; continue; }
-            if (*q == '>') break;
-        }
-        if (!*q) break;  // Unterminated tag: nothing trustworthy follows.
-        const char *name = p + 1;
-        const bool closing = *name == '/';
-        if (closing) ++name;
-        const char *name_end = name;
-        while (name_end < q && TagChar(*name_end)) ++name_end;
-        if (static_cast<size_t>(name_end - name) == 7 && !strncasecmp(name, "message", 7)) {
-            if (!closing && forward && Flag(name_end, q, "forward")) *forward = true;
+        Tag tag;
+        if (!ReadTag(p, &tag)) break;  // Unterminated tag: nothing trustworthy follows.
+        if (IsMessageTag(tag)) {
             flush(static_cast<size_t>(p - content));
-            cursor = static_cast<size_t>(q + 1 - content);
+            const bool forward = !tag.closing && Flag(tag.name + tag.length, tag.end, "forward");
+            const char *after = tag.end + 1;
+            if (forward) {
+                // A forward is a part of its own: the whole element, however deeply it nests other <message>s.
+                if (!tag.self_closing) after = ElementEnd(tag, nullptr);
+                if (count < max) {
+                    out[count].begin = static_cast<size_t>(p - content);
+                    out[count].end = static_cast<size_t>(after - content);
+                    out[count].kind = tag.self_closing ? 'r' : 'm';
+                    ++count;
+                }
+            }
+            cursor = static_cast<size_t>(after - content);
+            p = after;
+            continue;
         }
-        p = q + 1;
+        p = tag.end + 1;
     }
     flush(total);
+    return count;
+}
+
+size_t ForwardChildren(const char *content, size_t begin, size_t end, ForwardChild *out, size_t max) {
+    if (!content || !out || !max || end <= begin) return 0;
+    Tag root;
+    if (!ReadTag(content + begin, &root) || !IsMessageTag(root) || root.closing || root.self_closing) return 0;
+    const char *stop = content + end;
+    size_t count = 0;
+    for (const char *p = root.end + 1; p < stop && *p;) {
+        if (*p != '<') { ++p; continue; }
+        Tag tag;
+        if (!ReadTag(p, &tag) || tag.end >= stop) break;
+        if (!IsMessageTag(tag) || tag.closing) { p = tag.end + 1; continue; }
+        const char *after = tag.end + 1;
+        const char *inner_end = after;
+        if (!tag.self_closing) after = ElementEnd(tag, &inner_end);
+        if (after > stop) after = stop;
+        if (inner_end > after) inner_end = after;
+        if (count < max) {
+            ForwardChild &child = out[count];
+            child.begin = static_cast<size_t>(p - content);
+            child.end = static_cast<size_t>(after - content);
+            child.inner_begin = static_cast<size_t>(tag.end + 1 - content);
+            child.inner_end = static_cast<size_t>(inner_end - content);
+            child.self_closing = tag.self_closing;
+            ++count;
+        }
+        p = after;
+    }
     return count;
 }
 

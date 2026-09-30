@@ -31,6 +31,11 @@ satori::QuoteRef g_last_quote;
 char g_last_reply[300];
 char g_last_reply_mentions[100];
 int g_reply_count = 0;
+struct ForwardCall { char talker[64]; char title[200]; char desc[400]; char *record; };
+ForwardCall g_forward;
+int g_forward_count = 0;
+long long g_forward_id = 9100;      // what the stub sender answers as the row's id (<= 0: the pipeline hides it)
+bool g_forward_ok = true;
 
 // ---- stubs for the WeChat-side collaborators (none of them run in this process) ----------
 namespace satori {
@@ -65,11 +70,12 @@ bool StoreSentStatus(Store *, long long, int *status) { *status = ::g_status; re
 bool StoreQuoteTarget(Store *, const char *talker, const char *id, QuoteRef *out) {
     if (!strcmp(id, "404")) return false;
     *out = {};
+    out->row_type = !strcmp(id, "300") ? 3 : 1;   // "300" is a picture
     out->local_id = 55;
     out->svr_id = 5555;
     out->created_s = 1790000000;
     snprintf(out->talker, sizeof(out->talker), "%s", talker);
-    snprintf(out->sender, sizeof(out->sender), "wxid_quoted");
+    snprintf(out->sender, sizeof(out->sender), !strcmp(id, "77") ? "known_wxid" : "wxid_quoted");
     snprintf(out->text, sizeof(out->text), "the quoted line");
     return true;
 }
@@ -83,7 +89,15 @@ void StoreNoteSent(Store *, long long) {}
 long long StorePoll(Store *, long long, int, bool (*)(void *, const char *), void *, bool *) { return 0; }
 cJSON *StoreMessageList(Store *, const char *, const char *, const char *, int, const char *) { return nullptr; }
 cJSON *StoreMessageGet(Store *, const char *, const char *) { return nullptr; }
-cJSON *StoreUserGet(Store *, const char *) { return nullptr; }
+// A known contact: "known_wxid" has a nickname and an avatar; everyone else is unknown.
+cJSON *StoreUserGet(Store *, const char *id) {
+    if (strcmp(id, "known_wxid")) return nullptr;
+    cJSON *user = cJSON_CreateObject();
+    cJSON_AddStringToObject(user, "id", id);
+    cJSON_AddStringToObject(user, "nick", "Known Nick");
+    cJSON_AddStringToObject(user, "avatar", "https://wx.example/known");
+    return user;
+}
 cJSON *StoreFriendList(Store *, const char *, int) { return nullptr; }
 cJSON *StoreGuildList(Store *, const char *, int) { return nullptr; }
 cJSON *StoreGuildGet(Store *, const char *) { return nullptr; }
@@ -122,6 +136,21 @@ SendResult SendQuote(const char *, const char *text, const QuoteRef &quote, cons
     result.local_id = -1;   // like WeChat's own pipeline: the row is found in the store afterwards
     return result;
 }
+SendResult SendForward(const char *talker, const char *title, const char *desc, const char *record_info) {
+    free(::g_forward.record);
+    ::g_forward = {};
+    snprintf(::g_forward.talker, sizeof(::g_forward.talker), "%s", talker);
+    snprintf(::g_forward.title, sizeof(::g_forward.title), "%s", title);
+    snprintf(::g_forward.desc, sizeof(::g_forward.desc), "%s", desc);
+    ::g_forward.record = strdup(record_info);
+    ++::g_forward_count;
+    SendResult result{};
+    result.ok = ::g_forward_ok;
+    result.local_id = ::g_forward_id;
+    if (!result.ok) snprintf(result.detail, sizeof(result.detail), "stub refused");
+    return result;
+}
+bool StoreFindSentRecord(Store *, const char *, long long, long long *id) { *id = ++::g_next_row; return true; }
 SendResult SendVideo(const char *talker, const char *path, const char *poster, int duration_s) {
     SentCall &call = ::g_calls[::g_call_count++ % 16];
     call = {};
@@ -462,13 +491,96 @@ int main() {
                   !strcmp(g_calls[1].title, "b.pdf"), "a self-closing <message/> separates two messages");
         cJSON_Delete(separator.body);
         {
+            // Merge forwarding: one card per <message forward>, built and checked before anything is sent.
             g_call_count = 0;
-            const Outcome forward = Create("<message forward><message id=\"1\"/><message id=\"2\"/></message>");
-            Check(forward.status == 400 && !strcmp(Code(forward), "forward_unsupported") && g_call_count == 0,
-                  "merge forwarding is refused before anything is sent");
-            cJSON_Delete(forward.body);
+            g_forward_count = 0;
+            Outcome card = Create("<message forward><message><author id=\"a1\" name=\"Alice\"/>hi</message>"
+                                  "<message><author id=\"known_wxid\"/>yo <at id=\"x\" name=\"X\"/></message></message>");
+            Check(card.status == 200 && cJSON_GetArraySize(card.body) == 1 && g_forward_count == 1, "a merged forward is one message");
+            if (card.status == 200 && cJSON_GetArraySize(card.body) == 1) {
+                const cJSON *message = cJSON_GetArrayItem(card.body, 0);
+                const cJSON *id = cJSON_GetObjectItemCaseSensitive(message, "id");
+                const cJSON *reply = cJSON_GetObjectItemCaseSensitive(message, "content");
+                Check(cJSON_IsString(id) && !strcmp(id->valuestring, "9100"), "with the row's id");
+                Check(cJSON_IsString(reply) && strstr(reply->valuestring, "<message forward>") == reply->valuestring &&
+                          strstr(reply->valuestring, "name=\"Known Nick\"") && strstr(reply->valuestring, "avatar=\"https://wx.example/known\""),
+                      "answered with the container, names and avatars filled in from the contacts");
+            }
+            Check(!strcmp(g_forward.talker, "filehelper") && !strcmp(g_forward.title, "Alice与Known Nick的聊天记录"), "headline from two speakers");
+            Check(strstr(g_forward.desc, "Alice: hi\nKnown Nick: yo @X") != nullptr, "preview lines");
+            Check(g_forward.record && strstr(g_forward.record, "<sourceheadurl>https://wx.example/known</sourceheadurl>") &&
+                      strstr(g_forward.record, "<datalist count=\"2\">"), "the record carries both lines");
+            cJSON_Delete(card.body);
+
+            // No author: this account writes the line. In a group the headline is the group's.
+            g_forward_count = 0;
+            card = CreateIn("123@chatroom", "<message forward title=\"周报\"><message>only me</message></message>");
+            Check(card.status == 200 && g_forward_count == 1 && !strcmp(g_forward.title, "周报"), "the title extension is used");
+            Check(g_forward.record && strstr(g_forward.record, "<sourcename>self_wxid</sourcename>"), "an authorless line is this account's");
+            cJSON_Delete(card.body);
+            card = CreateIn("123@chatroom", "<message forward><message><author name=\"A\"/>x</message></message>");
+            Check(card.status == 200 && !strcmp(g_forward.title, "群聊的聊天记录"), "a group gets the group headline");
+            cJSON_Delete(card.body);
+
+            // Text around a forward is sent separately, in order; the forward sits between.
+            g_call_count = 0;
+            g_forward_count = 0;
+            snprintf(content, sizeof(content), "<file src=\"internal:wechat/self_wxid/_tmp/%s\" title=\"a.pdf\"/>"
+                     "<message forward><message>x</message></message><file src=\"internal:wechat/self_wxid/_tmp/%s\" title=\"b.pdf\"/>", pdf_name, pdf_name);
+            card = Create(content);
+            Check(card.status == 200 && cJSON_GetArraySize(card.body) == 3 && g_call_count == 2 && g_forward_count == 1, "files around a forward: three messages");
+            cJSON_Delete(card.body);
+
+            // Embedding a message of the conversation by id.
+            g_forward_count = 0;
+            card = Create("<message forward><message id=\"77\"/><message><author name=\"B\"/>reply</message></message>");
+            Check(card.status == 200 && g_forward_count == 1, "an embedded message");
+            Check(g_forward.record && strstr(g_forward.record, "<datadesc>the quoted line</datadesc>") &&
+                      strstr(g_forward.record, "<sourcename>Known Nick</sourcename>") &&
+                      strstr(g_forward.record, "<srcMsgCreateTime>1790000000</srcMsgCreateTime>") &&
+                      strstr(g_forward.record, "<fromnewmsgid>5555</fromnewmsgid>"), "its text, author, time and server id come from the store");
+            cJSON_Delete(card.body);
+            g_forward_count = 0;
+            card = Create("<message forward><message id=\"404\"/></message>");
+            Check(card.status == 400 && !strcmp(Code(card), "forward_message_not_found") && g_forward_count == 0, "an unknown message id");
+            cJSON_Delete(card.body);
+            card = Create("<message forward><message id=\"300\"/></message>");
+            Check(card.status == 400 && !strcmp(Code(card), "forward_media_unsupported") && g_forward_count == 0, "a picture cannot be embedded yet");
+            cJSON_Delete(card.body);
+
+            // Refused before anything is sent.
+            g_call_count = 0;
+            card = Create("<file src=\"internal:wechat/self_wxid/_tmp/x\" title=\"a.pdf\"/><message forward><message><img src=\"x\"/></message></message>");
+            Check(card.status == 400 && !strcmp(Code(card), "forward_media_unsupported") && g_call_count == 0 && g_forward_count == 0,
+                  "a bad line fails the request before the earlier parts go out");
+            cJSON_Delete(card.body);
+            card = Create("<message forward></message>");
+            Check(card.status == 400 && !strcmp(Code(card), "forward_empty") && g_forward_count == 0, "an empty forward");
+            cJSON_Delete(card.body);
+            card = Create("<message forward><message>a<message forward><message>b</message></message></message></message>");
+            Check(card.status == 400 && !strcmp(Code(card), "forward_nested_unsupported"), "a forward inside a line");
+            cJSON_Delete(card.body);
+
+            // The row is found in the store when WeChat's pipeline does not hand its id back; a failing sender fails the request.
+            g_forward_id = -1;
+            card = Create("<message forward><message>x</message></message>");
+            Check(card.status == 200 && cJSON_GetArraySize(card.body) == 1, "a pipeline that hides the id is looked up in the store");
+            cJSON_Delete(card.body);
+            g_forward_id = 9100;
+            g_status = 5;
+            card = Create("<message forward><message>x</message></message>");
+            Check(card.status == 502 && !strcmp(Code(card), "send_failed"), "WeChat's failed status fails the request");
+            cJSON_Delete(card.body);
+            g_status = 2;
+            g_forward_ok = false;
+            card = Create("<message forward><message>x</message></message>");
+            Check(card.status == 502 && !strcmp(Code(card), "send_failed"), "a refused send fails the request");
+            cJSON_Delete(card.body);
+            g_forward_ok = true;
+
+            // Forwarding one message by id is a different thing and stays refused.
             const Outcome quoted_forward = Create("<message id=\"9\" forward/>");
-            Check(quoted_forward.status == 400 && !strcmp(Code(quoted_forward), "forward_unsupported"), "forwarding one message by id is refused too");
+            Check(quoted_forward.status == 400 && !strcmp(Code(quoted_forward), "forward_unsupported"), "forwarding one message by id is refused");
             cJSON_Delete(quoted_forward.body);
             const Outcome nothing = Create("<message> </message><message><at id=\"x\"/></message>");
             Check(nothing.status == 400, "containers with nothing to send are an empty message");

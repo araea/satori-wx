@@ -52,11 +52,17 @@ struct MediaSpan { size_t begin, end; char kind; };
 size_t MediaSpans(const char *content, MediaSpan *out, size_t max);
 // Where a content string divides into the messages it stands for: every <message> container,
 // self-closing <message/> separator or </message> is a boundary, and each non-empty stretch
-// between boundaries is one message. Content with no <message> tag is a single part. `forward`
-// is set when a <message> asks to be forwarded (`forward` attribute in any spelling): merge
-// forwarding is not something every platform has, so the caller decides what to do with it.
-struct MessagePart { size_t begin, end; };
-size_t MessageParts(const char *content, MessagePart *out, size_t max, bool *forward);
+// between boundaries is one message. Content with no <message> tag is a single part. A `forward`
+// message (attribute in any spelling) is a part of its own that is not a stretch of text: `kind` 'm'
+// marks a merge-forward container, [begin, end) being the whole element with the <message>s nested
+// in it; 'r' marks a self-closing forward of one message by id (`<message id="…" forward/>`), the
+// whole tag. Ordinary parts have kind 0.
+struct MessagePart { size_t begin, end; char kind; };
+size_t MessageParts(const char *content, MessagePart *out, size_t max);
+// The <message> elements directly inside a merge-forward container [begin, end) (the whole element,
+// as MessageParts reports it): each child's extent, and the stretch between its tags.
+struct ForwardChild { size_t begin, end, inner_begin, inner_end; bool self_closing; };
+size_t ForwardChildren(const char *content, size_t begin, size_t end, ForwardChild *out, size_t max);
 // The first element called `name` (case-insensitive, opening tags only) in `content`.
 bool FirstTag(const char *content, const char *name, ImageSpan *out);
 // The value of `name` inside the tag [begin, end) of `content`, entity-decoded, or false.

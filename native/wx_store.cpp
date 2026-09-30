@@ -1587,6 +1587,7 @@ bool StoreQuoteTarget(Store *store, const char *talker, const char *id, QuoteRef
     bool ok = query->found && out->svr_id > 0;
     if (ok) {
         snprintf(out->talker, sizeof(out->talker), "%s", talker);
+        out->row_type = query->type;
         const char *body = query->content;
         const bool group = strstr(talker, "@chatroom") != nullptr;
         if (query->is_send == 1) {
@@ -1629,6 +1630,21 @@ bool StoreFindSentVoice(Store *store, const char *talker, long long since, long 
     char sql[300];
     snprintf(sql, sizeof(sql),
              "SELECT msgId FROM message WHERE talker = '%s' AND isSend = 1 AND type = 34 AND msgId > %lld ORDER BY msgId LIMIT 1",
+             talker, since);
+    long long found = 0;
+    pthread_mutex_lock(&store->mutex);
+    WcdbQuery(store->db, sql, LocalIdRow, &found);
+    pthread_mutex_unlock(&store->mutex);
+    if (found <= 0) return false;
+    *local_id = found;
+    return true;
+}
+
+bool StoreFindSentRecord(Store *store, const char *talker, long long since, long long *local_id) {
+    if (!store || !store->db || !SafeSql(talker) || !local_id) return false;
+    char sql[360];
+    snprintf(sql, sizeof(sql),
+             "SELECT msgId FROM message WHERE talker = '%s' AND isSend = 1 AND msgId > %lld AND content LIKE '%%<type>19</type>%%' ORDER BY msgId LIMIT 1",
              talker, since);
     long long found = 0;
     pthread_mutex_lock(&store->mutex);

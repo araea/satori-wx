@@ -39,8 +39,9 @@
 | 链接、小程序、公众号推送（49，其余子类型） | `<a href="…">标题</a>`，摘要另起一行；只认 `http(s)` 链接 |
 | 文件（49 / type 6） | `<file src="…/file/…" title="文件名"/>` |
 | 回复（49 / type 57） | `<quote id="被引用的本地 id"/>回复正文`，另填 `message.quote` |
+| 合并转发（49 / type 19） | `<message forward title="…">`，`<recorditem>` 里的每个 `<dataitem>` 还原成一行 `<message><author name/>正文</message>`（发言人有头像就带 `avatar`） |
 | 转账、红包等（49 / 2000、2001…） | `[微信红包] 摘要`：里面的支付链接不外露 |
-| 其余（聊天记录、群公告、接龙…） | `[标题] 摘要` |
+| 其余（群公告、接龙…） | `[标题] 摘要` |
 | 系统提示（10000）、`<sysmsg>`、拍一拍、通话记录、邮件推送 | 不是消息：不发 `message-created`，`message.list/get` 里也没有 |
 | 撤回标记（268445456、285222674、10002） | 不是消息；改发 `message-deleted`，见 [事件](wechat-events.md) |
 

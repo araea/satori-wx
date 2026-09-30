@@ -108,6 +108,8 @@ bool StoreFindSentVideo(Store *store, const char *talker, long long since, long 
 bool StoreFindSentVoice(Store *store, const char *talker, long long since, long long *local_id);
 // The first reply (quote appmsg, row type 822083633) this account sent to `talker` after row `since`.
 bool StoreFindSentQuote(Store *store, const char *talker, long long since, long long *local_id);
+// The first merged-forward card (appmsg type 19) this account sent to `talker` after row `since`.
+bool StoreFindSentRecord(Store *store, const char *talker, long long since, long long *local_id);
 // The send status of one of our own rows: 1 sending, 2 sent, 5 failed (other values as WeChat
 // writes them). False when the row does not exist.
 bool StoreSentStatus(Store *store, long long local_id, int *status);
