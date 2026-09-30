@@ -8,7 +8,7 @@
 
 纯 native C++：无 DEX、无 Java 助手、无 ArtMethod 改写、无 hook 引擎。连发送都是纯反射调用微信自己的代码，不加载任何额外东西。
 
-当前版本 v0.14.0：合并转发——`message.create` 认得 `<message forward>`，发成微信「聊天记录」卡片（appmsg 19，`<recorditem>` 带全部记录，限额与微信自己的多选一致）；收到的卡片解码回 `<message forward>`，收发对称（见 [发送各类消息](wechat-send-types.md)「合并转发」）。v0.13.0：协议对齐——IDENTIFY 带旧 sn 不再 4009、事件遵守资源提升、消息时间统一 created_at、`<message>` 容器拆条。v0.12.1：语音条（`<audio>` 转成 SILK 发语音，见「语音」一节）。v0.12.0：`message.create` 认得视频、文件、音频与引用回复（见下文「发送」与 [发送各类消息](wechat-send-types.md)），`upload.create` 改为流式落盘（上限 1 GiB），新增 `tools/dev`——不重启手机就能把开发版注入运行中的微信真机验证。v0.11.6：自己账号的消息里，号主在微信里手发的那些事件带 `satori_wx.manual_self: true`，模块自己 `message.create` 发出去被读回来的不带（见 [事件](wechat-events.md)）——acumen 靠它区分「号主贴的链接」与「机器人自己的回声」。v0.11.5：`/v1/internal/pat` 发微信「拍一戳」（内部扩展端点，不是 Satori 方法），收到的拍一戳行（appmsg 62）解码为可投递消息。v0.11.4：`message.create` 的图片 `src` 额外接受 `base64://`（社区通用 scheme，无 mime，按魔数定格式）——知微发图片就是这种，此前被当远程 URL 拒掉。v0.11.3：唤醒锁默认开。v0.11.2 曾把常驻通知改成单行收起态，已整体撤回（通知仍是标题加一行、展开正文带在线时长的老样子）；v0.11.3 只改一处——用户唤醒锁默认开，开机后第一个 keeper tick 就持上不定时的 CPU + Wi-Fi 锁，按钮与 `POST /v1/internal/wakelock` 关掉只管本次开机。v0.11.0 之前读侧与事件侧补齐、发送侧有了群内 @ 与图片；v0.11.0 把新消息的到达从 1–2 秒一拍的轮询改成 inotify 驱动（毫秒级），把 wxguard 的解冻从 5 秒轮询改成 cgroup 事件驱动（几毫秒），撤掉发送开关（写方法始终在 features 里；旧配置里的 `send=` 仍被接受但不起作用），并整理了常驻通知（不再重复标题、不再显示唤醒锁与发送状态）；v0.11.1 修了图片发送的确认（空壳行不算发出）。
+当前版本 v0.14.0。合并转发已对称：`message.create` 认得 `<message forward>`，发成微信「聊天记录」卡片（appmsg 19，`<recorditem>` 带全部记录，限额与微信自己的多选一致）；收到的卡片解码回 `<message forward>`。其余能力见下文各节。
 
 - 收到的消息按 Satori 元素解码（图片 / 语音 / 视频 / 表情 / 链接 / 文件 / 回复 / 合并转发 / @），媒体是签名链接，由 `/v1/proxy` 流式回包，见 [消息内容](wechat-content.md)。
 - 事件：`message-created`（带 `guild` `member` 与头像）、`message-deleted`、`guild-member-added|removed`、`guild-added|removed`、`friend-added|removed`，见 [事件](wechat-events.md)。
@@ -49,7 +49,7 @@ port=5601
 token=<32-128 位字母数字-_>
 ```
 
-未知键、非法值会让 `ReadConfig` 失败，服务端不启动（fail-closed）。发送没有开关也没有实现端限速；`send=on|off` 与 `send_allow=` 是已退役的键，仍被接受（值必须是 on / off）但不起作用，好让旧配置文件继续能启动。`app/src/com/satori/wx/core/Conf.java` 必须与 `ReadConfig` 判得完全一致（`app/test.sh` 的 `ConfTest` 逐条比对）。
+未知键、非法值会让 `ReadConfig` 失败，服务端不启动（fail-closed）。发送没有开关也没有实现端限速；`send=on|off` 与 `send_allow=` 仍被接受（值必须是 on / off）但不起作用。`app/src/com/satori/wx/core/Conf.java` 必须与 `ReadConfig` 判得完全一致（`app/test.sh` 的 `ConfTest` 逐条比对）。
 
 ## 文件职责
 
@@ -108,13 +108,13 @@ token=<32-128 位字母数字-_>
 - 群消息 `content` = `wxid_xxx:\n正文`（发送者前缀需解析）
 - `message.type`：`1` 文本、`10000` 系统，其余（3 图片、34 语音）跳过不伪造
 - `rcontact.type`：`3`=好友，`1`=系统号，`33` / `gh_%`=公众号；群用 `username LIKE '%@chatroom'` 判定
-- `chatroom` 表（v0.6.4 起用于群成员 / 角色）：
+- `chatroom` 表（用于群成员 / 角色）：
   - `memberlist` = `wxid1;wxid2;…`（分号分隔）
   - `displayname` = 群内昵称，用 U+3001 `、`（UTF-8 `E38081`）分隔，与 memberlist 同序
   - `roomowner` = 群主 wxid；`memberCount` = 人数
-  - `roomdata` = 成员 protobuf：`ChatRoomData{ repeated ChatRoomMember member = 1 }`、`ChatRoomMember{ string userName = 1; …; int32 flag = 3 }`，`flag & 2048` = 管理员（v0.9.0 起读侧用它；成员顺序与 memberlist 不一定一致，按 wxid 查）
+  - `roomdata` = 成员 protobuf：`ChatRoomData{ repeated ChatRoomMember member = 1 }`、`ChatRoomMember{ string userName = 1; …; int32 flag = 3 }`，`flag & 2048` = 管理员（读侧用它；成员顺序与 memberlist 不一定一致，按 wxid 查）
   - 数量对不上时忽略群昵称、回落到 rcontact（已在 `wx_store.cpp` 处理）
-  - 微信没有自定义角色，角色只有合成的 `owner`（群主）/ `admin`（管理员）/ `member`（成员）；只有 `admin` 可被 `guild.member.role.set/unset` 变更（v0.8.0），读侧 v0.9.0 起同步
+  - 微信没有自定义角色，角色只有合成的 `owner`（群主）/ `admin`（管理员）/ `member`（成员）；只有 `admin` 可被 `guild.member.role.set/unset` 变更，读侧同步
 
 ## 发送（已打通）
 
@@ -132,7 +132,7 @@ token=<32-128 位字母数字-_>
 - 派发器要在构造场景之前拿到：构造器会写库，拿不到派发器时不该先落一条 SENDING 行
 - 没有开关；不限目标、不限速
 - 成功 = 已交给微信派发，不是投递确认；不伪造成功
-- 微信 `doScene` 会把库里所有待发（SENDING）消息一起派发，历史遗留的孤儿行会跟着出去
+- 微信 `doScene` 会把库里所有待发（SENDING）消息一起派发，残留的孤儿行会跟着出去
 
 `message.create` 的 `content` 按媒体元素（`<img>` / `<video>` / `<audio>` / `<file>`）切成有序的文本 / 媒体消息，下面先说文本与图片，视频、文件、引用回复见 [发送各类消息](wechat-send-types.md)：
 
@@ -140,7 +140,7 @@ token=<32-128 位字母数字-_>
 - 图片走 `ha0.w.rj()`（聊天界面自己的图片管线）：异步，库里出现 `type=3` 的新行才回 200 并带真实消息 id，6 秒内没有回 502 `image_unconfirmed`（行插入但 content 空壳 = 管线卡死，退化图如 1x1 会这样）。真机已验证。`src` 只认 `upload.create` 的 `internal:` 链接、`data:image/…;base64` 与 `base64://`（社区通用 scheme，知微发的就是这种；无 mime，按魔数定格式），远程 URL 拒绝；所有图片先解析、核对魔数，坏一张整条 400，不发半条。
 - 拍平后没有文本也没有媒体：400。视频 / 文件 / 音频的规则见 [发送各类消息](wechat-send-types.md)：`src` 同样只认 `internal:` 链接、`data:` 与 `base64://`（非图片内联上限 12 MiB，更大的走 `upload.create`）；`title` 决定文件名，`poster` 是视频封面；非 MP4 的视频与所有音频作为文件发出，回执里是 `<file>`。
 
-`tests/content_test.cpp`、`tests/backend_test.cpp` 覆盖拍平、@、链接、`ImageSpans`、base64，以及每一种被拒的请求；真正的 JNI 调用没法在主机上跑，见下面的验收清单。逆向依据与被撤回的转发路径在 [发送各类消息](wechat-send-types.md)。
+`tests/content_test.cpp`、`tests/backend_test.cpp` 覆盖拍平、@、链接、`ImageSpans`、base64，以及每一种被拒的请求；真正的 JNI 调用没法在主机上跑，见下面的验收清单。转发路径的实现在 [发送各类消息](wechat-send-types.md)。
 
 撤回（`message.delete`）用微信自己的撤回场景，反射调用，不 hook：
 
@@ -154,7 +154,7 @@ MsgInfo = ex0.k0.F0.k(talker, localId)          // ex0.j0，按 talker+本地 ms
 
 群管理写操作：`channel.delete`（退群）/ `guild.member.kick` 用 `qn.p`（cgi `delchatroommember`）复用发送路径的 `doScene(派发器, y2)`；`guild.member.role.set/unset` 用 `qn.b` / `qn.e`（cgi `add/delchatroomadmin`），经 `com.tencent.mm.modelbase.z2.d(o, null, false)` 交给微信自带 Cgi 运行器。详情、参数与未做的方法见 [群管理写操作](wechat-room.md)。
 
-拍一戳（v0.11.5，`/v1/internal/pat`）：微信双击头像的流程是两步，都可反射达成。`nv3.l` 单例（服务定位器 `ph5.n0.c(ov3.j.class)`）的 `nj(会话, 发起者, 被拍者, 模板, 时间秒, svrId)` 先插本地互动行（type 922746929，返回 `Pair(msgId, createTime)`，不可拍时返回 (0,0)），再 `new qv3.b(pair, 会话, 被拍者, 0)`（cgi `/cgi-bin/micromsg-bin/sendpat`，构造器自己拼 `uin_msgId_createTime` 指针串）走 `doScene(派发器, y2)`。scene int 0 是普通拍一戳，1 是「改拍一拍后缀」；直派不走中央 runner，所以 849 回调（svrId 回填、失败 Toast）都不会发生，本地记录的 svrId 停在 0，纯展示问题。`nj` 拒绝时 `PatSend` 直接 rejected，不派发。
+拍一戳（`/v1/internal/pat`）：微信双击头像的流程是两步，都可反射达成。`nv3.l` 单例（服务定位器 `ph5.n0.c(ov3.j.class)`）的 `nj(会话, 发起者, 被拍者, 模板, 时间秒, svrId)` 先插本地互动行（type 922746929，返回 `Pair(msgId, createTime)`，不可拍时返回 (0,0)），再 `new qv3.b(pair, 会话, 被拍者, 0)`（cgi `/cgi-bin/micromsg-bin/sendpat`，构造器自己拼 `uin_msgId_createTime` 指针串）走 `doScene(派发器, y2)`。scene int 0 是普通拍一戳，1 是「改拍一拍后缀」；直派不走中央 runner，所以 849 回调（svrId 回填、失败 Toast）都不会发生，本地记录的 svrId 停在 0，纯展示问题。`nj` 拒绝时 `PatSend` 直接 rejected，不派发。
 
 资源路由：`upload.create` 由 `native/tempstore.cpp` 落盘，返回 `internal:wechat/<user>/_tmp/<name>`（5 分钟）；收到的消息媒体是 `internal:wechat/<user>/_msg/<kind>/<id>/<签名>`（见 [消息内容](wechat-content.md)）。`/v1/proxy/{url}` 在 `server.cpp` 里：`internal:` 解析登录号后流式回文件（`_tmp` 直接查，`_msg` 交给已登记的解析器，先验签）；http(s) 前缀未登记则 403；非法 400；未知登录 / 验签失败 404；带 CORS，不需 Satori 登录头。`proxy_urls` 仍为空（微信没有公网资源 URL）。
 
@@ -209,7 +209,7 @@ python3 tools/dexmethodstrings.py $APK 'Lcom/tencent/mm/app/q3;' b
 3. 想继续写功能：从 5 个待做写操作里挑一个，按发送 / 撤回的老路子做。先只读地找到微信自己的接口（离线 DEX 反查 + 必要时 JADX），再反射调用，最后真机验一条。群改名在可读 dex 里没有 cgi，删好友也没有 `delcontact`（只有 `delcontactlabel`），入群 / 好友审批依赖申请消息里的 ticket。想碰媒体发送先读 [发送各类消息](wechat-send-types.md)。
 4. 纪律：每个方法真实实现后才进 `features`；`unsupported` 只放微信真的没有的能力；破坏性动作不伪造成功。往上加 `unsupported` 条目时记得同步 `tests/capabilities_test.cpp` 的计数断言。
 
-## v0.10.0 / v0.11.0 / v0.11.3 真机验收清单（重启手机、微信起来之后按顺序跑一遍）
+## 真机验收清单（重启手机、微信起来之后按顺序跑一遍）
 
 模块的 `.so` 在开机时被 Zygisk Next 钉成 memfd，覆盖磁盘文件后必须重启手机才会加载新代码（见 `satori-wx-module-deploy` 记忆条目）。主机测试里没有的部分只能在这里验：JNI 调用、真实的库与文件。
 
@@ -220,11 +220,11 @@ ME=wxid_8zxjsghrk8vz41
 api() { local body=${2:-'{}'}; curl -s -X POST "http://127.0.0.1:5601/v1/$1" -H "Authorization: Bearer $T" \
   -H "Satori-Platform: wechat" -H "Satori-User-ID: $ME" -H 'Content-Type: application/json' -d "$body"; echo; }
 
-# 0) v0.11.0：events.watching 必须是 true，然后量延迟。http 几十毫秒、event 也是几十毫秒（旧轮询是 200–1900ms 均匀分布）
+# 0) events.watching 必须是 true，然后量延迟。http 几十毫秒、event 也是几十毫秒
 api internal/status | head -c 600
 python3 tools/latency-probe.py -n 10
 
-# 0b) v0.11.3：keepalive.wakelock 与 wakelock_held / cpu_held / wifi_held 开机后都应当是 true
+# 0b) keepalive.wakelock 与 wakelock_held / cpu_held / wifi_held 开机后都应当是 true
 #     （用户锁默认开，不定时）；通知条目仍是展开样式，正文带在线时长
 api internal/status | python3 -c 'import json,sys; print(json.load(sys.stdin)["keepalive"])'
 
@@ -259,7 +259,7 @@ python3 tools/events-tail.py --token "$T"
 api message.create '{"channel_id":"filehelper","content":"撤回测试"}'
 api message.delete '{"channel_id":"filehelper","message_id":"<上一步返回的 id>"}'
 
-# 6b) v0.12.0 发文件、发视频、引用回复（filehelper，只影响自己）
+# 6b) 发文件、发视频、引用回复（filehelper，只影响自己）
 #     先 upload.create（multipart），再把返回的 internal: 链接放进元素；再用返回的 id 验引用
 curl -s -X POST http://127.0.0.1:5601/v1/upload.create -H "Authorization: Bearer $T" -H "Satori-Platform: wechat" \
   -H "Satori-User-ID: $ME" -F 'file=@/path/to/clip.mp4;type=video/mp4'
@@ -276,7 +276,7 @@ api internal/capabilities   # message_elements 与 limits
 # 7) 收消息：让别人给你发图片 / 语音 / 引用回复 / 在群里 @ 你，events-tail 里对应看到
 #    <img>/<audio>、<quote id=…/>、<at id="wxid_8zxjsghrk8vz41" …/>
 
-# 8) 拍一戳（v0.11.5）：真机验证一条。发到自己文件助手会 rejected（filehelper 不可拍），
+# 8) 拍一戳：真机验证一条。发到自己文件助手会 rejected（filehelper 不可拍），
 #    在真群里拍一个成员应当 200；本机微信聊天页出现「你拍了拍…」，对方收到拍一戳提示。
 api internal/pat '{"channel_id":"filehelper","user_id":"wxid_8zxjsghrk8vz41"}'   # 期望 502 rejected:true
 api internal/pat '{"channel_id":"<群id>@chatroom","user_id":"<群成员wxid>"}'      # 期望 200 {"ok":true}
