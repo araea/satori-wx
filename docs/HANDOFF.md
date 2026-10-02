@@ -8,7 +8,7 @@
 
 纯 native C++：无 DEX、无 Java 助手、无 ArtMethod 改写、无 hook 引擎。连发送都是纯反射调用微信自己的代码，不加载任何额外东西。
 
-当前版本 v0.14.0。合并转发已对称：`message.create` 认得 `<message forward>`，发成微信「聊天记录」卡片（appmsg 19，`<recorditem>` 带全部记录，限额与微信自己的多选一致）；收到的卡片解码回 `<message forward>`。其余能力见下文各节。
+当前版本 v0.15.0（错误体统一成 `{code,message}`，`internal/capabilities` 与 satori-qq 共用口径）。上一版 v0.14.0：合并转发已对称：`message.create` 认得 `<message forward>`，发成微信「聊天记录」卡片（appmsg 19，`<recorditem>` 带全部记录，限额与微信自己的多选一致）；收到的卡片解码回 `<message forward>`。其余能力见下文各节。
 
 - 收到的消息按 Satori 元素解码（图片 / 语音 / 视频 / 表情 / 链接 / 文件 / 回复 / 合并转发 / @），媒体是签名链接，由 `/v1/proxy` 流式回包，见 [消息内容](wechat-content.md)。
 - 事件：`message-created`（带 `guild` `member` 与头像）、`message-deleted`、`guild-member-added|removed`、`guild-added|removed`、`friend-added|removed`，见 [事件](wechat-events.md)。
