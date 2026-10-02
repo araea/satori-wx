@@ -11,6 +11,7 @@
 #include "wx_pat.h"
 #include "media.h"
 #include "wx_send.h"
+#include "version.h"
 #include <android/log.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -65,6 +66,13 @@ void AddBackendStatus(cJSON *object, bool capabilities) {
     }
     satori::KeepaliveStatus(object);
     if (!capabilities) return;
+    // The vocabulary shared with satori-qq's internal/capabilities (adapter, version, platform,
+    // standard_methods, unsupported, event_types, message_elements, limits): acumen negotiates
+    // on it instead of guessing from the adapter's name. standard_methods is added by the server
+    // from login.features; `unsupported` below is the standard methods WeChat has no concept for.
+    cJSON_AddStringToObject(object, "adapter", "satori-wx");
+    cJSON_AddStringToObject(object, "version", SATORI_WX_VERSION);
+    cJSON_AddStringToObject(object, "platform", "wechat");
     // The events this backend can raise, so a client can tell "nothing happened" from "cannot".
     static const char *const kEvents[] = {
         "message-created", "message-deleted", "guild-added", "guild-removed", "guild-member-added", "guild-member-removed",

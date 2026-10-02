@@ -78,8 +78,8 @@ cJSON *SentMessage(Store *store, const char *channel_id, const char *content, lo
 Response Failure(const char *code, const char *detail, bool rejected) {
     cJSON *body = cJSON_CreateObject();
     if (!body) return {502, nullptr};
-    cJSON_AddStringToObject(body, "error", code);
-    if (detail && *detail) cJSON_AddStringToObject(body, "detail", detail);
+    cJSON_AddStringToObject(body, "code", code);
+    cJSON_AddStringToObject(body, "message", detail && *detail ? detail : code);
     // Distinguishes "refused by policy" (disabled, pacing) from a send that
     // actually reached WeChat and failed.
     if (rejected) cJSON_AddBoolToObject(body, "rejected", true);
@@ -90,8 +90,8 @@ Response Failure(const char *code, const char *detail, bool rejected) {
 Response BadRequest(const char *code, const char *detail) {
     cJSON *body = cJSON_CreateObject();
     if (!body) return {400, nullptr};
-    cJSON_AddStringToObject(body, "error", code);
-    if (detail && *detail) cJSON_AddStringToObject(body, "detail", detail);
+    cJSON_AddStringToObject(body, "code", code);
+    cJSON_AddStringToObject(body, "message", detail && *detail ? detail : code);
     return {400, body};
 }
 

@@ -21,6 +21,10 @@
 #include <time.h>
 #include <unistd.h>
 
+// Every error body is {"code": "<machine-readable slug>", "message": "<text>"}: clients branch on
+// `code`. The two arguments are string literals, so the body is a compile-time constant.
+#define ERROR_BODY(slug, text) "{\"code\":\"" slug "\",\"message\":\"" text "\"}"
+
 namespace satori {
 namespace {
 constexpr size_t kHeader = 8192, kMessage = 16384, kInput = kHeader + kMessage;
@@ -214,7 +218,7 @@ int ParseRange(const char *header, uint64_t size, uint64_t *first, uint64_t *las
 void StreamFile(Client &c, int fd, const char *content_type, const char *range, bool head) {
     struct stat info {};
     if (fstat(fd, &info) || !S_ISREG(info.st_mode)) {
-        close(fd); RawJson(c, 404, "Not Found", "{\"error\":\"not_found\"}"); return;
+        close(fd); RawJson(c, 404, "Not Found", ERROR_BODY("not_found", "not found")); return;
     }
     const uint64_t size = static_cast<uint64_t>(info.st_size);
     uint64_t first = 0, last = size ? size - 1 : 0;
@@ -271,50 +275,50 @@ bool PercentDecode(const char *in, char *out, size_t capacity) {
 // link, so it is decoded first.
 void Proxy(Client &c, Hub *hub, const char *raw_url, const char *range, bool head) {
     char url_buf[2048];
-    if (!PercentDecode(raw_url, url_buf, sizeof(url_buf))) { RawJson(c, 400, "Bad Request", "{\"error\":\"invalid_url\"}"); return; }
+    if (!PercentDecode(raw_url, url_buf, sizeof(url_buf))) { RawJson(c, 400, "Bad Request", ERROR_BODY("invalid_url", "invalid url")); return; }
     const char *url = url_buf;
     if (!strncmp(url, "internal:", 9)) {
         const char *platform = url + 9, *slash = strchr(platform, '/');
-        if (!slash || slash == platform) { RawJson(c, 400, "Bad Request", "{\"error\":\"invalid_internal_url\"}"); return; }
+        if (!slash || slash == platform) { RawJson(c, 400, "Bad Request", ERROR_BODY("invalid_internal_url", "invalid internal url")); return; }
         const char *user = slash + 1, *slash2 = strchr(user, '/');
-        if (!slash2 || slash2 == user || !slash2[1]) { RawJson(c, 400, "Bad Request", "{\"error\":\"invalid_internal_url\"}"); return; }
+        if (!slash2 || slash2 == user || !slash2[1]) { RawJson(c, 400, "Bad Request", ERROR_BODY("invalid_internal_url", "invalid internal url")); return; }
         char platform_buf[64], user_buf[160];
         const size_t platform_size = slash - platform, user_size = slash2 - user;
-        if (platform_size >= sizeof(platform_buf) || user_size >= sizeof(user_buf)) { RawJson(c, 400, "Bad Request", "{\"error\":\"invalid_internal_url\"}"); return; }
+        if (platform_size >= sizeof(platform_buf) || user_size >= sizeof(user_buf)) { RawJson(c, 400, "Bad Request", ERROR_BODY("invalid_internal_url", "invalid internal url")); return; }
         memcpy(platform_buf, platform, platform_size); platform_buf[platform_size] = 0;
         memcpy(user_buf, user, user_size); user_buf[user_size] = 0;
-        if (!FindLogin(hub, platform_buf, user_buf)) { RawJson(c, 404, "Not Found", "{\"error\":\"login_not_found\"}"); return; }
+        if (!FindLogin(hub, platform_buf, user_buf)) { RawJson(c, 404, "Not Found", ERROR_BODY("login_not_found", "login not found")); return; }
         const char *path = slash2 + 1;
         if (!strncmp(path, "_tmp/", 5)) {
             const TempFile *file = TempStoreGet(path + 5);
-            if (!file) { RawJson(c, 404, "Not Found", "{\"error\":\"not_found\"}"); return; }
+            if (!file) { RawJson(c, 404, "Not Found", ERROR_BODY("not_found", "not found")); return; }
             const int fd = open(file->path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
-            if (fd < 0) { RawJson(c, 404, "Not Found", "{\"error\":\"not_found\"}"); return; }
+            if (fd < 0) { RawJson(c, 404, "Not Found", ERROR_BODY("not_found", "not found")); return; }
             StreamFile(c, fd, file->content_type, range, head);
             return;
         }
         MediaFile media;
         if (g_media_resolver && g_media_resolver(user_buf, path, &media)) {
             const int fd = open(media.path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
-            if (fd < 0) { RawJson(c, 404, "Not Found", "{\"error\":\"not_found\"}"); return; }
+            if (fd < 0) { RawJson(c, 404, "Not Found", ERROR_BODY("not_found", "not found")); return; }
             StreamFile(c, fd, media.content_type, range, head);
             return;
         }
-        RawJson(c, 404, "Not Found", "{\"error\":\"unknown_internal_route\"}");
+        RawJson(c, 404, "Not Found", ERROR_BODY("unknown_internal_route", "unknown internal route"));
         return;
     }
     const bool http = !strncmp(url, "http://", 7) || !strncmp(url, "https://", 8);
     const char *host = url + (http ? (url[4] == 's' ? 8 : 7) : 0);
     if (!http || !*host || *host == '/' || *host == '?' || *host == '#') {
-        RawJson(c, 400, "Bad Request", "{\"error\":\"invalid_url\"}"); return;
+        RawJson(c, 400, "Bad Request", ERROR_BODY("invalid_url", "invalid url")); return;
     }
     const cJSON *urls = cJSON_GetObjectItemCaseSensitive(Meta(hub), "proxy_urls");
     for (const cJSON *p = urls ? urls->child : nullptr; p; p = p->next)
         if (cJSON_IsString(p) && *p->valuestring && !strncmp(url, p->valuestring, strlen(p->valuestring))) {
             // Advertised prefixes are never registered: this build has no outbound HTTP client.
-            RawJson(c, 501, "Not Implemented", "{\"error\":\"proxy_not_implemented\"}"); return;
+            RawJson(c, 501, "Not Implemented", ERROR_BODY("proxy_not_implemented", "proxying external urls is not implemented")); return;
         }
-    RawJson(c, 403, "Forbidden", "{\"error\":\"forbidden\"}");
+    RawJson(c, 403, "Forbidden", ERROR_BODY("forbidden", "proxy url not allowed"));
 }
 void Upload(Client &c, const char *platform, const char *user, const Multipart *uploads) {
     auto valid_id = [](const char *id) {
@@ -327,21 +331,21 @@ void Upload(Client &c, const char *platform, const char *user, const Multipart *
         return true;
     };
     if (!uploads || !uploads->count || !valid_id(platform) || !valid_id(user)) {
-        Reply(c, 400, "Bad Request", "{\"error\":\"invalid_upload\"}"); return;
+        Reply(c, 400, "Bad Request", ERROR_BODY("invalid_upload", "invalid upload")); return;
     }
-    if (!TempStoreAvailable()) { Reply(c, 501, "Not Implemented", "{\"error\":\"upload_unavailable\"}"); return; }
+    if (!TempStoreAvailable()) { Reply(c, 501, "Not Implemented", ERROR_BODY("upload_unavailable", "upload temp store unavailable")); return; }
     cJSON *result = cJSON_CreateObject();
-    if (!result) { Reply(c, 500, "Internal Server Error", "{}"); return; }
+    if (!result) { Reply(c, 500, "Internal Server Error", ERROR_BODY("internal_error", "internal error")); return; }
     for (size_t i = 0; i < uploads->count; ++i) {
         const Part &part = uploads->parts[i];
         char name[160];
         if (!TempStorePut(part.filename, part.content_type, part.data, part.size, name, sizeof(name))) {
-            cJSON_Delete(result); Reply(c, 500, "Internal Server Error", "{\"error\":\"upload_failed\"}"); return;
+            cJSON_Delete(result); Reply(c, 500, "Internal Server Error", ERROR_BODY("upload_failed", "upload failed")); return;
         }
         char url[512];
         snprintf(url, sizeof(url), "internal:%s/%s/_tmp/%s", platform, user, name);
         if (!cJSON_AddStringToObject(result, part.name, url)) {
-            cJSON_Delete(result); Reply(c, 500, "Internal Server Error", "{}"); return;
+            cJSON_Delete(result); Reply(c, 500, "Internal Server Error", ERROR_BODY("internal_error", "internal error")); return;
         }
     }
     char *text = cJSON_PrintUnformatted(result); cJSON_Delete(result);
@@ -449,8 +453,8 @@ void UploadPump(Client &c) {
     const UploadState state = UploadFeed(job->stream, c.input, c.used);
     c.used = 0;
     if (state == UploadState::More) { c.deadline = Now() + kRequestMs; return; }
-    if (state == UploadState::Bad) { Reply(c, 400, "Bad Request", "{\"error\":\"invalid_upload\"}"); UploadFree(job); c.upload = nullptr; return; }
-    if (state == UploadState::Failed) { Reply(c, 500, "Internal Server Error", "{\"error\":\"upload_failed\"}"); UploadFree(job); c.upload = nullptr; return; }
+    if (state == UploadState::Bad) { Reply(c, 400, "Bad Request", ERROR_BODY("invalid_upload", "invalid upload")); UploadFree(job); c.upload = nullptr; return; }
+    if (state == UploadState::Failed) { Reply(c, 500, "Internal Server Error", ERROR_BODY("upload_failed", "upload failed")); UploadFree(job); c.upload = nullptr; return; }
     cJSON *result = cJSON_CreateObject();
     bool ok = result != nullptr;
     for (size_t i = 0; ok && i < UploadCount(job->stream); ++i) {
@@ -482,13 +486,13 @@ void Http(Client &c, const Config &config, Hub *hub, const Backend *backend, Web
     c.input[c.used] = 0;
     const char *end = static_cast<const char *>(memmem(c.input, c.used, "\r\n\r\n", 4));
     if (!end) {
-        if (c.used >= kHeader) Reply(c, 431, "Request Header Fields Too Large", "{\"error\":\"headers_too_large\"}");
+        if (c.used >= kHeader) Reply(c, 431, "Request Header Fields Too Large", ERROR_BODY("headers_too_large", "request headers too large"));
         return;
     }
     const size_t length = end - c.input + 4;
-    if (length > kHeader) { Reply(c, 431, "Request Header Fields Too Large", "{}"); return; }
+    if (length > kHeader) { Reply(c, 431, "Request Header Fields Too Large", ERROR_BODY("headers_too_large", "request headers too large")); return; }
     char scratch[kHeader + 1]; memcpy(scratch, c.input, length); scratch[length] = 0;
-    auto bad = [&]() { Reply(c, 400, "Bad Request", "{\"error\":\"invalid_request\"}"); };
+    auto bad = [&]() { Reply(c, 400, "Bad Request", ERROR_BODY("invalid_request", "invalid request")); };
     for (size_t i = 0; i < length; ++i) {
         const unsigned char ch = scratch[i];
         if ((ch < 32 && ch != '\r' && ch != '\n' && ch != '\t') || ch == 127) { bad(); return; }
@@ -528,39 +532,39 @@ void Http(Client &c, const Config &config, Hub *hub, const Backend *backend, Web
     if (!*header("Host") || *header("Transfer-Encoding")) { bad(); return; }
     const char *expect = header("Expect");
     const bool wants_continue = !strcasecmp(expect, "100-continue");
-    if (*expect && !wants_continue) { Reply(c, 417, "Expectation Failed", "{}"); return; }
+    if (*expect && !wants_continue) { Reply(c, 417, "Expectation Failed", ERROR_BODY("expectation_failed", "expectation failed")); return; }
     uint64_t announced = 0;
     for (const char *p = header("Content-Length"); *p; ++p) {
         if (*p < '0' || *p > '9') { bad(); return; }
         announced = announced * 10 + static_cast<uint64_t>(*p - '0');
-        if (announced > kUploadStreamMax) { Reply(c, 413, "Content Too Large", "{}"); return; }
+        if (announced > kUploadStreamMax) { Reply(c, 413, "Content Too Large", ERROR_BODY("payload_too_large", "payload too large")); return; }
     }
     const bool streamed_upload = announced > kMessage && !strcmp(path, "/v1/upload.create");
-    if (!streamed_upload && announced > kUploadMax) { Reply(c, 413, "Content Too Large", "{}"); return; }
+    if (!streamed_upload && announced > kUploadMax) { Reply(c, 413, "Content Too Large", ERROR_BODY("payload_too_large", "payload too large")); return; }
     const size_t body_size = streamed_upload ? 0 : static_cast<size_t>(announced);
     if (streamed_upload) {
         // Everything that could refuse the request is checked now, from the headers alone, so a
         // refused upload costs no body at all (the connection closes with the answer).
         const char *auth = header("Authorization");
-        if (!*auth) { Reply(c, 401, "Unauthorized", "{\"error\":\"missing_token\"}"); return; }
+        if (!*auth) { Reply(c, 401, "Unauthorized", ERROR_BODY("missing_token", "missing token")); return; }
         if (strncasecmp(auth, "Bearer ", 7) || !EqualToken(config.token, auth + 7)) {
-            Reply(c, 403, "Forbidden", "{\"error\":\"invalid_token\"}"); return;
+            Reply(c, 403, "Forbidden", ERROR_BODY("invalid_token", "invalid token")); return;
         }
-        if (strcmp(method, "POST")) { Reply(c, 405, "Method Not Allowed", "{}"); return; }
+        if (strcmp(method, "POST")) { Reply(c, 405, "Method Not Allowed", ERROR_BODY("method_not_allowed", "method not allowed")); return; }
         const char *content_type = header("Content-Type");
         if (strncasecmp(content_type, "multipart/form-data;", 20) || !strstr(content_type, "boundary=")) {
-            Reply(c, 415, "Unsupported Media Type", "{}"); return;
+            Reply(c, 415, "Unsupported Media Type", ERROR_BODY("unsupported_media_type", "expected application/json")); return;
         }
-        if (!*header("Satori-Platform") || !*header("Satori-User-ID")) { Reply(c, 400, "Bad Request", "{\"error\":\"missing_login_headers\"}"); return; }
+        if (!*header("Satori-Platform") || !*header("Satori-User-ID")) { Reply(c, 400, "Bad Request", ERROR_BODY("missing_login_headers", "missing Satori-Platform or Satori-User-ID header")); return; }
         const cJSON *login = FindLogin(hub, header("Satori-Platform"), header("Satori-User-ID"));
-        if (!login) { Reply(c, 403, "Forbidden", "{\"error\":\"login_not_found\"}"); return; }
-        if (cJSON_GetObjectItemCaseSensitive(login, "status")->valuedouble != 1) { Reply(c, 503, "Service Unavailable", "{\"error\":\"login_offline\"}"); return; }
+        if (!login) { Reply(c, 403, "Forbidden", ERROR_BODY("login_not_found", "login not found")); return; }
+        if (cJSON_GetObjectItemCaseSensitive(login, "status")->valuedouble != 1) { Reply(c, 503, "Service Unavailable", ERROR_BODY("login_offline", "login offline")); return; }
         bool supported = false;
         const cJSON *features = cJSON_GetObjectItemCaseSensitive(login, "features");
         for (const cJSON *f = features ? features->child : nullptr; f; f = f->next)
             if (cJSON_IsString(f) && !strcmp(f->valuestring, "upload.create")) supported = true;
-        if (!supported) { Reply(c, 404, "Not Found", "{\"error\":\"unsupported_api\"}"); return; }
-        if (!TempStoreAvailable()) { Reply(c, 501, "Not Implemented", "{\"error\":\"upload_unavailable\"}"); return; }
+        if (!supported) { Reply(c, 404, "Not Found", ERROR_BODY("unsupported_method", "unsupported method")); return; }
+        if (!TempStoreAvailable()) { Reply(c, 501, "Not Implemented", ERROR_BODY("upload_unavailable", "upload temp store unavailable")); return; }
         auto valid_id = [](const char *id) {
             const size_t size = strlen(id);
             if (!size || size >= 128) return false;
@@ -572,12 +576,12 @@ void Http(Client &c, const Config &config, Hub *hub, const Backend *backend, Web
         };
         if (!valid_id(header("Satori-Platform")) || !valid_id(header("Satori-User-ID")) ||
             strlen(header("Satori-Platform")) >= sizeof(UploadJob::platform) || strlen(header("Satori-User-ID")) >= sizeof(UploadJob::user)) {
-            Reply(c, 400, "Bad Request", "{\"error\":\"invalid_upload\"}"); return;
+            Reply(c, 400, "Bad Request", ERROR_BODY("invalid_upload", "invalid upload")); return;
         }
         auto *job = static_cast<UploadJob *>(calloc(1, sizeof(UploadJob)));
-        if (!job) { Reply(c, 503, "Service Unavailable", "{\"error\":\"out_of_memory\"}"); return; }
+        if (!job) { Reply(c, 503, "Service Unavailable", ERROR_BODY("out_of_memory", "out of memory")); return; }
         job->stream = UploadBegin(content_type, announced);
-        if (!job->stream) { free(job); Reply(c, 400, "Bad Request", "{\"error\":\"invalid_upload\"}"); return; }
+        if (!job->stream) { free(job); Reply(c, 400, "Bad Request", ERROR_BODY("invalid_upload", "invalid upload")); return; }
         snprintf(job->platform, sizeof(job->platform), "%s", header("Satori-Platform"));
         snprintf(job->user, sizeof(job->user), "%s", header("Satori-User-ID"));
         c.upload = job;
@@ -596,16 +600,16 @@ void Http(Client &c, const Config &config, Hub *hub, const Backend *backend, Web
     // (message.create takes an <img src="data:..."> inline, upload.create takes multipart). A
     // large body is only buffered for a caller that has already proven it holds the token.
     if (body_size > kMessage) {
-        if (strcmp(path, "/v1/upload.create") && strcmp(path, "/v1/message.create")) { Reply(c, 413, "Content Too Large", "{}"); return; }
+        if (strcmp(path, "/v1/upload.create") && strcmp(path, "/v1/message.create")) { Reply(c, 413, "Content Too Large", ERROR_BODY("payload_too_large", "payload too large")); return; }
         const char *auth = header("Authorization");
-        if (!*auth) { Reply(c, 401, "Unauthorized", "{\"error\":\"missing_token\"}"); return; }
+        if (!*auth) { Reply(c, 401, "Unauthorized", ERROR_BODY("missing_token", "missing token")); return; }
         if (strncasecmp(auth, "Bearer ", 7) || !EqualToken(config.token, auth + 7)) {
-            Reply(c, 403, "Forbidden", "{\"error\":\"invalid_token\"}"); return;
+            Reply(c, 403, "Forbidden", ERROR_BODY("invalid_token", "invalid token")); return;
         }
         const size_t need = length + body_size + 1;
         if (need > c.input_capacity) {
             char *grown = static_cast<char *>(realloc(c.input, need));
-            if (!grown) { Reply(c, 503, "Service Unavailable", "{\"error\":\"out_of_memory\"}"); return; }
+            if (!grown) { Reply(c, 503, "Service Unavailable", ERROR_BODY("out_of_memory", "out of memory")); return; }
             c.input = grown; c.input_capacity = need;
         }
     }
@@ -619,7 +623,7 @@ void Http(Client &c, const Config &config, Hub *hub, const Backend *backend, Web
         return;
     }
     if (!strcmp(path, "/v1/events")) {
-        if (strcmp(method, "GET")) { Reply(c, 405, "Method Not Allowed", "{}", "GET"); return; }
+        if (strcmp(method, "GET")) { Reply(c, 405, "Method Not Allowed", ERROR_BODY("method_not_allowed", "method not allowed"), "GET"); return; }
         if (body_size || strcasecmp(header("Upgrade"), "websocket") ||
             !HeaderToken(header("Connection"), "upgrade") || strcmp(header("Sec-WebSocket-Version"), "13") ||
             !WebSocketKey(header("Sec-WebSocket-Key"))) { bad(); return; }
@@ -627,7 +631,7 @@ void Http(Client &c, const Config &config, Hub *hub, const Backend *backend, Web
         const int n = snprintf(response, sizeof(response), "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\n"
                                "Connection: Upgrade\r\nSec-WebSocket-Accept: %s\r\n\r\n", accept);
         c.message = static_cast<char *>(malloc(kMessage + 1));
-        if (!c.message) { Reply(c, 503, "Service Unavailable", "{\"error\":\"out_of_memory\"}"); return; }
+        if (!c.message) { Reply(c, 503, "Service Unavailable", ERROR_BODY("out_of_memory", "out of memory")); return; }
         if (!Queue(c, response, n)) return;
         c.ws = true; g_client_count = g_client_count + 1; c.deadline = Now() + kRequestMs;
         memmove(c.input, c.input + length, c.used - length); c.used -= length;
@@ -635,15 +639,15 @@ void Http(Client &c, const Config &config, Hub *hub, const Backend *backend, Web
     }
     if (!strncmp(path, "/v1/proxy/", 10)) {
         const bool head = !strcmp(method, "HEAD");
-        if (strcmp(method, "GET") && !head) { Reply(c, 405, "Method Not Allowed", "{}", "GET, HEAD"); return; }
-        if (body_size) { Reply(c, 400, "Bad Request", "{\"error\":\"invalid_request\"}"); return; }
+        if (strcmp(method, "GET") && !head) { Reply(c, 405, "Method Not Allowed", ERROR_BODY("method_not_allowed", "method not allowed"), "GET, HEAD"); return; }
+        if (body_size) { Reply(c, 400, "Bad Request", ERROR_BODY("invalid_request", "invalid request")); return; }
         Proxy(c, hub, path + 10, header("Range"), head);
         return;
     }
     const char *auth = header("Authorization");
-    if (!*auth) { Reply(c, 401, "Unauthorized", "{\"error\":\"missing_token\"}"); return; }
+    if (!*auth) { Reply(c, 401, "Unauthorized", ERROR_BODY("missing_token", "missing token")); return; }
     if (strncasecmp(auth, "Bearer ", 7) || !EqualToken(config.token, auth + 7)) {
-        Reply(c, 403, "Forbidden", "{\"error\":\"invalid_token\"}"); return;
+        Reply(c, 403, "Forbidden", ERROR_BODY("invalid_token", "invalid token")); return;
     }
     const bool meta = !strcmp(path, "/v1/meta");
     const bool status = !strcmp(path, "/v1/internal/status");
@@ -653,19 +657,19 @@ void Http(Client &c, const Config &config, Hub *hub, const Backend *backend, Web
     const bool wakelock = !strcmp(path, "/v1/internal/wakelock");
     const bool pat = !strcmp(path, "/v1/internal/pat");
     const Method *rpc = !strncmp(path, "/v1/", 4) ? FindMethod(path + 4) : nullptr;
-    if (!meta && !status && !capabilities && !webhook_create && !webhook_delete && !wakelock && !pat && !rpc) { Reply(c, 404, "Not Found", "{\"error\":\"unknown_api\"}"); return; }
-    if (strcmp(method, "POST")) { Reply(c, 405, "Method Not Allowed", "{}"); return; }
+    if (!meta && !status && !capabilities && !webhook_create && !webhook_delete && !wakelock && !pat && !rpc) { Reply(c, 404, "Not Found", ERROR_BODY("not_found", "unknown API route")); return; }
+    if (strcmp(method, "POST")) { Reply(c, 405, "Method Not Allowed", ERROR_BODY("method_not_allowed", "method not allowed")); return; }
     cJSON *body = nullptr;
     Multipart uploads{};
     const char *type = header("Content-Type");
     if (rpc && rpc->upload) {
         if (strncasecmp(type, "multipart/form-data;", 20) || !strstr(type, "boundary=")) {
-            Reply(c, 415, "Unsupported Media Type", "{}"); return;
+            Reply(c, 415, "Unsupported Media Type", ERROR_BODY("unsupported_media_type", "expected application/json")); return;
         }
         if (!ParseMultipart(type, c.input + length, body_size, &uploads)) { bad(); return; }
     } else {
         if (body_size && (strncasecmp(type, "application/json", 16) || (type[16] && type[16] != ';'))) {
-            Reply(c, 415, "Unsupported Media Type", "{}"); return;
+            Reply(c, 415, "Unsupported Media Type", ERROR_BODY("unsupported_media_type", "expected application/json")); return;
         }
         body = body_size ? Json(c.input + length, body_size) : cJSON_CreateObject();
         // Structural parse only here; a method's own parameter rules are checked after we
@@ -692,12 +696,24 @@ void Http(Client &c, const Config &config, Hub *hub, const Backend *backend, Web
             Reply(c, text ? 200 : 500, text ? "OK" : "Internal Server Error", text ? text : "{}"); free(text);
             cJSON_Delete(result);
         } else {
-            Reply(c, 500, "Internal Server Error", "{}");
+            Reply(c, 500, "Internal Server Error", ERROR_BODY("internal_error", "internal error"));
         }
     } else if (capabilities) {
-        cJSON *result = cJSON_CreateObject(), *methods = cJSON_CreateArray();
-        if (result && methods && cJSON_AddItemToObject(result, "standard_methods", methods)) {
-            for (const auto *m = kMethods; m != kMethods + kMethodCount; ++m) cJSON_AddItemToArray(methods, cJSON_CreateString(m->name));
+        cJSON *result = cJSON_CreateObject();
+        if (result) {
+            // standard_methods is what the login serves: login.features without the `guild.plain`
+            // flag, the same list satori-qq reports. adapter / version / platform / unsupported /
+            // event_types / message_elements / limits come from the adapter (g_status_provider),
+            // in the vocabulary satori-qq answers with, so a client negotiates without knowing which.
+            cJSON *methods = cJSON_CreateArray();
+            if (methods && cJSON_AddItemToObject(result, "standard_methods", methods)) {
+                const cJSON *logins = cJSON_GetObjectItemCaseSensitive(Meta(hub), "logins");
+                const cJSON *features = logins && logins->child ? cJSON_GetObjectItemCaseSensitive(logins->child, "features") : nullptr;
+                for (const cJSON *f = features ? features->child : nullptr; f; f = f->next)
+                    if (cJSON_IsString(f) && strcmp(f->valuestring, "guild.plain")) cJSON_AddItemToArray(methods, cJSON_CreateString(f->valuestring));
+            } else {
+                cJSON_Delete(methods);
+            }
             cJSON_AddBoolToObject(result, "wechat_backend", backend != nullptr);
             cJSON_AddBoolToObject(result, "webhook", true);
             cJSON_AddNumberToObject(result, "webhooks", static_cast<double>(WebHookCount(hooks)));
@@ -708,13 +724,13 @@ void Http(Client &c, const Config &config, Hub *hub, const Backend *backend, Web
             Reply(c, text ? 200 : 500, text ? "OK" : "Internal Server Error", text ? text : "{}"); free(text);
             cJSON_Delete(result);
         } else {
-            cJSON_Delete(result); cJSON_Delete(methods); Reply(c, 500, "Internal Server Error", "{}");
+            Reply(c, 500, "Internal Server Error", ERROR_BODY("internal_error", "internal error"));
         }
     } else if (wakelock) {
         const cJSON *on = cJSON_GetObjectItemCaseSensitive(body, "on");
         const cJSON *toggle = cJSON_GetObjectItemCaseSensitive(body, "toggle");
         if (!g_wakelock_provider) {
-            Reply(c, 501, "Not Implemented", "{\"error\":\"backend_not_implemented\"}");
+            Reply(c, 501, "Not Implemented", ERROR_BODY("backend_not_implemented", "backend not implemented"));
         } else if (cJSON_IsBool(on) || (cJSON_IsBool(toggle) && toggle->valueint)) {
             const int action = cJSON_IsBool(on) ? (on->valueint ? 1 : 0) : 2;
             bool held = false;
@@ -727,10 +743,10 @@ void Http(Client &c, const Config &config, Hub *hub, const Backend *backend, Web
                 Reply(c, text ? 200 : 500, text ? "OK" : "Internal Server Error", text ? text : "{}"); free(text);
                 cJSON_Delete(result);
             } else {
-                Reply(c, 500, "Internal Server Error", "{}");
+                Reply(c, 500, "Internal Server Error", ERROR_BODY("internal_error", "internal error"));
             }
         } else {
-            Reply(c, 400, "Bad Request", "{\"error\":\"invalid_request\"}");
+            Reply(c, 400, "Bad Request", ERROR_BODY("invalid_request", "invalid request"));
         }
     } else if (pat) {
         // WeChat's "拍一戳". Not a Satori method: an internal extra on the same account rules
@@ -738,13 +754,13 @@ void Http(Client &c, const Config &config, Hub *hub, const Backend *backend, Web
         const cJSON *channel_id = cJSON_GetObjectItemCaseSensitive(body, "channel_id");
         const cJSON *user_id = cJSON_GetObjectItemCaseSensitive(body, "user_id");
         if (!*header("Satori-Platform") || !*header("Satori-User-ID")) {
-            Reply(c, 400, "Bad Request", "{\"error\":\"missing_login_headers\"}");
+            Reply(c, 400, "Bad Request", ERROR_BODY("missing_login_headers", "missing Satori-Platform or Satori-User-ID header"));
         } else if (!FindLogin(hub, header("Satori-Platform"), header("Satori-User-ID"))) {
-            Reply(c, 403, "Forbidden", "{\"error\":\"login_not_found\"}");
+            Reply(c, 403, "Forbidden", ERROR_BODY("login_not_found", "login not found"));
         } else if (!g_pat_provider) {
-            Reply(c, 501, "Not Implemented", "{\"error\":\"backend_not_implemented\"}");
+            Reply(c, 501, "Not Implemented", ERROR_BODY("backend_not_implemented", "backend not implemented"));
         } else if (!cJSON_IsString(channel_id) || !*channel_id->valuestring || !cJSON_IsString(user_id) || !*user_id->valuestring) {
-            Reply(c, 400, "Bad Request", "{\"error\":\"invalid_request\"}");
+            Reply(c, 400, "Bad Request", ERROR_BODY("invalid_request", "invalid request"));
         } else {
             char detail[160] = {};
             bool rejected = false;
@@ -754,15 +770,15 @@ void Http(Client &c, const Config &config, Hub *hub, const Backend *backend, Web
             } else {
                 cJSON *body_out = cJSON_CreateObject();
                 if (body_out) {
-                    cJSON_AddStringToObject(body_out, "error", "pat_failed");
-                    if (detail[0]) cJSON_AddStringToObject(body_out, "detail", detail);
+                    cJSON_AddStringToObject(body_out, "code", "pat_failed");
+                    cJSON_AddStringToObject(body_out, "message", detail[0] ? detail : "pat failed");
                     if (rejected) cJSON_AddBoolToObject(body_out, "rejected", true);
                     char *text = cJSON_PrintUnformatted(body_out);
                     Reply(c, 502, "Request Failed", text ? text : "{}");
                     free(text);
                     cJSON_Delete(body_out);
                 } else {
-                    Reply(c, 500, "Internal Server Error", "{}");
+                    Reply(c, 500, "Internal Server Error", ERROR_BODY("internal_error", "internal error"));
                 }
             }
         }
@@ -774,26 +790,26 @@ void Http(Client &c, const Config &config, Hub *hub, const Backend *backend, Web
             if (webhook_create) ok = AddWebHook(hooks, url->valuestring, token ? token->valuestring : "");
             else ok = RemoveWebHook(hooks, url->valuestring);
         }
-        Reply(c, ok ? 200 : 400, ok ? "OK" : "Bad Request", ok ? "{}" : "{\"error\":\"invalid_webhook\"}");
+        Reply(c, ok ? 200 : 400, ok ? "OK" : "Bad Request", ok ? "{}" : ERROR_BODY("invalid_webhook", "invalid webhook"));
     } else if (!*header("Satori-Platform") || !*header("Satori-User-ID")) {
-        Reply(c, 400, "Bad Request", "{\"error\":\"missing_login_headers\"}");
+        Reply(c, 400, "Bad Request", ERROR_BODY("missing_login_headers", "missing Satori-Platform or Satori-User-ID header"));
     } else {
         const cJSON *login = FindLogin(hub, header("Satori-Platform"), header("Satori-User-ID"));
-        if (!login) Reply(c, 403, "Forbidden", "{\"error\":\"login_not_found\"}");
+        if (!login) Reply(c, 403, "Forbidden", ERROR_BODY("login_not_found", "login not found"));
         else if (!strcmp(rpc->name, "login.get")) {
             char *text = cJSON_PrintUnformatted(login);
             Reply(c, text ? 200 : 500, text ? "OK" : "Internal Server Error", text ? text : "{}"); free(text);
         } else if (cJSON_GetObjectItemCaseSensitive(login, "status")->valuedouble != 1) {
-            Reply(c, 503, "Service Unavailable", "{\"error\":\"login_offline\"}");
+            Reply(c, 503, "Service Unavailable", ERROR_BODY("login_offline", "login offline"));
         } else {
             bool supported = false;
             const cJSON *features = cJSON_GetObjectItemCaseSensitive(login, "features");
             for (const cJSON *f = features ? features->child : nullptr; f; f = f->next)
                 if (cJSON_IsString(f) && !strcmp(f->valuestring, rpc->name)) supported = true;
-            if (!supported) Reply(c, 404, "Not Found", "{\"error\":\"unsupported_api\"}");
+            if (!supported) Reply(c, 404, "Not Found", ERROR_BODY("unsupported_method", "unsupported method"));
             else if (rpc->upload) Upload(c, header("Satori-Platform"), header("Satori-User-ID"), &uploads);
-            else if (!ValidateParams(*rpc, body)) Reply(c, 400, "Bad Request", "{\"error\":\"invalid_request\"}");
-            else if (!backend || !backend->call) Reply(c, 501, "Not Implemented", "{\"error\":\"backend_not_implemented\"}");
+            else if (!ValidateParams(*rpc, body)) Reply(c, 400, "Bad Request", ERROR_BODY("invalid_request", "invalid request"));
+            else if (!backend || !backend->call) Reply(c, 501, "Not Implemented", ERROR_BODY("backend_not_implemented", "backend not implemented"));
             else {
                 const Request request{rpc, header("Satori-Platform"), header("Satori-User-ID"), body, type, c.input + length, body_size, rpc->upload ? &uploads : nullptr};
                 Response response = backend->call(backend->context, request);
@@ -962,7 +978,7 @@ void Run(int listener, const Config &config, EventBus *bus, const Backend *backe
                 if (n > 0) {
                     c.used += n;
                     if (c.ws) WebSocket(c, config, hub); else Http(c, config, hub, backend, hooks);
-                    if (c.fd >= 0 && c.used == c.input_capacity - 1 && !c.closing) { if (c.ws) Close(c, 1009); else Reply(c, 413, "Content Too Large", "{}"); }
+                    if (c.fd >= 0 && c.used == c.input_capacity - 1 && !c.closing) { if (c.ws) Close(c, 1009); else Reply(c, 413, "Content Too Large", ERROR_BODY("payload_too_large", "payload too large")); }
                 } else if (!n || (errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR)) { Drop(c); continue; }
             }
             if (c.fd >= 0 && (c.pending > c.sent || c.file_left) && (events & POLLOUT)) {

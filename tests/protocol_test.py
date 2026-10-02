@@ -95,6 +95,17 @@ class ProtocolTests(unittest.TestCase):
         self.assertEqual(self.http('message.list', {'channel_id': 'c', 'direction': 'wrong'})[0], 400)
         self.assertEqual(self.http('message.list', {'channel_id': 'c', 'limit': 0})[0], 400)
         self.assertEqual(self.http('guild.member.mute', {'guild_id': 'g', 'user_id': 'u', 'duration': -1})[0], 400)
+    def test_errors_carry_code_and_message(self):
+        # Every non-2xx body is {"code": <slug>, "message": <text>}; clients branch on code.
+        cases = [
+            (self.http('message.create', {'channel_id': 'c'}), 400, 'invalid_request'),
+            (self.http('nosuch.method'), 404, 'not_found'),
+            (self.http('message.create', {'channel_id': 'c', 'content': 'x'}, {'Satori-User-ID': 'nobody'}), 403, 'login_not_found'),
+        ]
+        for (status, body), want_status, want_code in cases:
+            self.assertEqual(status, want_status, body)
+            self.assertEqual(body.get('code'), want_code, body)
+            self.assertTrue(body.get('message'), body)
     def test_pagination(self):
         _, first = self.http('message.list', {'channel_id': 'c'})
         _, second = self.http('message.list', {'channel_id': 'c', 'next': first['next']})

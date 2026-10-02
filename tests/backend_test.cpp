@@ -196,7 +196,7 @@ Outcome Create(const char *content) { return CreateIn("filehelper", content); }
 
 // The error code the backend put in the body, or "" when there is no body.
 const char *Code(const Outcome &outcome) {
-    const cJSON *error = outcome.body ? cJSON_GetObjectItemCaseSensitive(outcome.body, "error") : nullptr;
+    const cJSON *error = outcome.body ? cJSON_GetObjectItemCaseSensitive(outcome.body, "code") : nullptr;
     return cJSON_IsString(error) ? error->valuestring : "";
 }
 } // namespace

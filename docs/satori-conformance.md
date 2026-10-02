@@ -7,6 +7,7 @@
 | 标准项目 | 实现 / 验证 |
 | --- | --- |
 | HTTP RPC、Bearer、Satori-Platform / Satori-User-ID | 完成；401 缺令牌、403 令牌错误或账号不存在、405 方法错误 |
+| 错误体 | 每个非 2xx 响应都是 `{"code": "<机器可读的短名>", "message": "<给人看的>"}`（发送失败另带 `rejected`），与 satori-qq 同形，客户端按 `code` 判断。常用：`missing_token`（401）、`invalid_token`（403）、`login_not_found`（403 / 404）、`missing_login_headers`（400）、`invalid_request`（400）、`unsupported_method`（404，微信没有这个能力）、`not_found`（404）、`login_offline`（503）、`payload_too_large`（413）、`backend_not_implemented`（501）；发送与群管理的失败码见 [发送各类消息](wechat-send-types.md) |
 | 标准方法目录 | 37 个方法；与上游 protocol/src/index.ts 的 Methods 对照 |
 | JSON 参数 | 必填、可选、字符串、对象、布尔、非负整数、分页枚举验证 |
 | 方法可用性 | 登录快照 features 控制；不支持返回 404（在参数校验之前判定，不支持的方法缺参也回 404 而非 400），声明支持但无 handler 返回 501，离线返回 503 |
@@ -26,6 +27,7 @@
 | 消息内容 | 图片 / 语音 / 视频 / 表情 / 链接 / 文件 / 位置 / 名片 / 回复 / @ 解码成 Satori 元素；媒体是 HMAC 签名的 `internal:` 链接，由 `/v1/proxy` 流式回包 |
 | 事件 | `message-created`（带 `guild` `member` 头像）、`message-deleted`、`guild-member-added|removed`、`guild-added|removed`、`friend-added|removed`；启动只快照，差异连续两轮才发；见 [事件](wechat-events.md) |
 | user.channel.create | 返回该 wxid 的私聊频道（`type=1`） |
+| `internal/capabilities` | 与 satori-qq 共用口径：`adapter`、`version`、`platform`、`standard_methods`（= `login.features` 去掉 `guild.plain`，即本实现端提供的标准方法）、`unsupported`、`event_types`、`message_elements`（`message.create` 接受的元素）、`limits`（`upload_bytes` 等）；另有 wx 自己的诊断块（`send`、`events`、`keepalive`…）。acumen 连上后读它按声明办事，不靠适配器名字猜 |
 | 微信无法表达（`internal/capabilities.unsupported`） | `message.update`、`channel.create`、`channel.mute`、`guild.member.mute`、`reaction.create/delete/clear/list`、`guild.role.create/update/delete`。微信不能编辑消息、群内没有子频道、没有服务端禁言、无表态、无自定义角色 |
 | 未实现的写操作 | 群改名、好友删除 / 审批、入群审批：卡点见 [群管理写操作](wechat-room.md)。只有真实实现的方法才进 features，否则返回 404 |
 | 分页 | params 的 next/direction/limit/order 与后端返回的 data/prev/next 原样传递 |
