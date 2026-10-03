@@ -1,13 +1,13 @@
 # 知言应用
 
-知言模块的原生管理界面（`com.satori.wx`）：查看服务是否连通、断在哪一环、下一步做什么；管理端口与令牌；一键重新启动微信让配置生效。同时是微信常驻通知上「唤醒锁」按钮的落点（`keepalive.WakeToggleReceiver` 把切换转给模块的 `POST /v1/internal/wakelock`）。设计规范见 [知言应用设计规范](../docs/app-design.md)。
+知言模块的原生管理界面（`com.satori.wx`）：查看服务是否连通、断在哪一环、下一步做什么；管理端口与令牌；重新启动微信让配置生效。同时是微信常驻通知上「唤醒锁」按钮的落点（`keepalive.WakeToggleReceiver` 把切换转给模块的 `POST /v1/internal/wakelock`）。设计规范见 [知言应用设计规范](../docs/app-design.md)。
 
-零依赖：只用 Android 框架 API，不引入 androidx / Material Components；视图直接构造，不解析 XML 布局。
+零依赖：只用 Android 框架 API，不引入 androidx / Material Components。视图直接构造，不解析 XML 布局。
 
 ## 使用前提
 
 - 已安装并启用知言模块（`satori_wx`），且重启过手机。
-- 在 KernelSU / Magisk 里允许「知言」使用 Root。配置文件在 `/data/adb/modules/satori_wx/`，读写都要 Root；没有授权时首页停在「需要 Root 授权」，授权后点「重试」。
+- 在 KernelSU / Magisk 里允许「知言」使用 Root。配置文件在 `/data/adb/modules/satori_wx/`，读写都要 Root。没有授权时首页停在「需要 Root 授权」，授权后点「重试」。
 
 ## 构建与测试（arm64 Termux）
 
@@ -28,7 +28,7 @@ python3 tools/make-icons.py    # 增删图标后重新生成 res/drawable/ms_*.x
 su -c "cp build/Zhiyan.apk /data/local/tmp/ && pm install -r /data/local/tmp/Zhiyan.apk"
 ```
 
-签名密钥 `keystore/zhiyan.keystore` 不要删（被 gitignore，只在缺失时生成）：换了密钥，已安装的应用只能卸载重装。
+签名密钥 `keystore/zhiyan.keystore` 被 gitignore，只在缺失时生成。换密钥后已安装的应用只能卸载重装。
 
 ## 结构
 

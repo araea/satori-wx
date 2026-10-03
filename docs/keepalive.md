@@ -1,17 +1,17 @@
 # 常驻通知、唤醒锁与 wxguard
 
-微信被系统冻结或回收时，微信里的知言服务就停了。v0.7.0 加了三层保活：进程内的常驻通知与唤醒锁、进程内重启微信自己的核心服务、以及 root 侧看守 `wxguard`。前两层在微信进程里，第三层在系统里；它们互相独立，任何一层失效都不影响其余层。
+微信被系统冻结或回收时，微信里的知言服务就停了。三层保活：进程内的常驻通知与唤醒锁、进程内重启微信自己的核心服务、root 侧看守 `wxguard`。前两层在微信进程里，第三层在系统里。
 
 ## 进程内（`native/wx_keepalive.cpp`）
 
-模块在 `postAppSpecialize` 里用 `JavaVM` 起一个守护线程，等 `android.app.ActivityThread.currentApplication()` 返回后，用宿主（微信）上下文做三件事。全部是公开 Android 框架 API 的 JNI 调用：**不加载 dex、不定义类、不改 ArtMethod**，这也是按钮不能直接在进程内注册接收器的原因。
+模块在 `postAppSpecialize` 里用 `JavaVM` 起一个守护线程，等 `android.app.ActivityThread.currentApplication()` 返回后，用宿主（微信）上下文做三件事。全部是公开 Android 框架 API 的 JNI 调用：不加载 dex、不定义类、不改 ArtMethod。这也是按钮不能直接在进程内注册接收器的原因。
 
-- **常驻状态通知**：低重要性、静默、`ongoing` 的通道 `satori-wx-status`，状态色与 satori-qq 一致（在线=品牌色 / 等待=琥珀 / 异常=错误红）。标题 / 正文跟随真实状态：服务在监听且已登录 / 等待登录 / 已登录但端口没监听。折叠时是标题加一行（**在连客户端数**（WebSocket，与 satori-qq 的 connection count 同义）与端口）；展开后是这一行加**在线时长**（分钟精度，不足一分钟写「刚刚上线」）。展开的正文**不重复标题**，也不附唤醒锁与发送状态：唤醒锁的状态就是按钮上的字（「获取 / 释放唤醒锁」），发送没有开关，没有状态可报。点击用微信的 launcher intent 打开微信。每 3 秒刷新一次，内容没变就只检查条目还在不在（`NotificationManager.getActiveNotifications()`），被微信在前台清掉后自动补发。通知渠道在**每次发布前**重建一次：微信或 ColorOS 会把 `satori-wx-status` 这个渠道删掉（`mDeleted=true`），而向不存在的渠道发布通知会被系统默默拒收（logcat 里的 `No Channel found`，不抛异常），投递会变成每 3 秒重发一次。
-- **唤醒锁**：一个 `PARTIAL_WAKE_LOCK`（tag `satori-wx:wakelock`）加一个尽力而为的 `WIFI_MODE_FULL_HIGH_PERF`，都 `setReferenceCounted(false)`。**默认开**（v0.11.3 起）：模块存在的意义就是让服务随时响应，第一个 keeper tick 就把不定时的 CPU + Wi-Fi 锁持上；通知上的按钮与 `POST /v1/internal/wakelock` 关掉它只管本次开机。对齐 satori-qq 的 `WakeLockCtl`，还有两路自动持有：
-  - **出站期间自动持有**（`KeepaliveWakelockBegin/End`，引用计数）：`message.create`、`message.delete`、`channel.delete`、`guild.member.kick`、`guild.member.role.set/unset` 在派发期间持有 CPU 锁，避免息屏后微信内核的上传 / 派发被电源管理掐掉；自动持有带 180 秒上限，卡死的发送不会一直占着 CPU。用户手动的持有是不定时长的。
-  - **有客户端连接时保 Wi-Fi**：只要有一个 `/v1/events` WebSocket 客户端在连，就保持 Wi-Fi 锁，避免息屏省电把回环事件挤在队列里（对应 satori-qq 的 `sustainWifi`）。
-  - 按钮自身是一个 `PendingIntent.getBroadcast`，指向知言应用导出的 `com.satori.wx.keepalive.WakeToggleReceiver`，Intent 里带当前 `port` / `token` / 目标 `on` 状态。接收器把 `{"on":…}` POST 到 `http://127.0.0.1:<port>/v1/internal/wakelock`，模块在 `ApplyLock()` 里真正持有 / 释放，并在下一次刷新时更新按钮文字。
-- **进程内保活**：每 10 分钟对微信自己的 `com.tencent.mm.booter.CoreService` 调一次 `Context.startService()`。主进程里有「已启动的服务」时 oom_score_adj 停在 SERVICE_ADJ，高于 freezer 阈值；服务全停后才掉到 CACHED，被系统冻结。微信持有 `SYSTEM_ALERT_WINDOW`，后台 `startService` 被放行（记录了 `blocked` 也就只是记一行，不会崩）。
+- 常驻状态通知：低重要性、静默、`ongoing` 的通道 `satori-wx-status`，状态色与 satori-qq 一致（在线=品牌色 / 等待=琥珀 / 异常=错误红）。标题与正文跟随真实状态：服务在监听且已登录 / 等待登录 / 已登录但端口没监听。折叠时是标题加一行（在连客户端数（WebSocket）与端口），展开后是这一行加在线时长（分钟精度，不足一分钟写「刚刚上线」）。展开的正文不重复标题，也不附唤醒锁与发送状态：唤醒锁的状态就是按钮上的字（「获取 / 释放唤醒锁」），发送没有开关。点击用微信的 launcher intent 打开微信。每 3 秒刷新一次，内容没变就只检查条目还在不在（`NotificationManager.getActiveNotifications()`），被微信在前台清掉后自动补发。通知渠道在每次发布前重建一次：微信或 ColorOS 会把 `satori-wx-status` 这个渠道删掉（`mDeleted=true`），向不存在的渠道发布通知会被系统默默拒收（logcat 里的 `No Channel found`，不抛异常），投递会变成每 3 秒重发一次。
+- 唤醒锁：一个 `PARTIAL_WAKE_LOCK`（tag `satori-wx:wakelock`）加一个尽力而为的 `WIFI_MODE_FULL_HIGH_PERF`，都 `setReferenceCounted(false)`。默认开：第一个 keeper tick 就把不定时的 CPU + Wi-Fi 锁持上。通知上的按钮与 `POST /v1/internal/wakelock` 关掉它只管本次开机。对齐 satori-qq 的 `WakeLockCtl`，还有两路自动持有：
+  - 出站期间自动持有（`KeepaliveWakelockBegin/End`，引用计数）：`message.create`、`message.delete`、`channel.delete`、`guild.member.kick`、`guild.member.role.set/unset` 在派发期间持有 CPU 锁，避免息屏后微信内核的上传 / 派发被电源管理掐掉。自动持有带 180 秒上限。用户手动的持有是不定时长的。
+  - 有客户端连接时保 Wi-Fi：只要有一个 `/v1/events` WebSocket 客户端在连，就保持 Wi-Fi 锁（对应 satori-qq 的 `sustainWifi`）。
+  - 按钮自身是一个 `PendingIntent.getBroadcast`，指向知言应用导出的 `com.satori.wx.keepalive.WakeToggleReceiver`，Intent 里带当前 `port` / `token` / 目标 `on` 状态。接收器把 `{"on":…}` POST 到 `http://127.0.0.1:<port>/v1/internal/wakelock`，模块在 `ApplyLock()` 里真正持有或释放，并在下一次刷新时更新按钮文字。
+- 进程内保活：每 10 分钟对微信自己的 `com.tencent.mm.booter.CoreService` 调一次 `Context.startService()`。主进程里有「已启动的服务」时 oom_score_adj 停在 SERVICE_ADJ，高于 freezer 阈值。服务全停后才掉到 CACHED，被系统冻结。微信持有 `SYSTEM_ALERT_WINDOW`，后台 `startService` 被放行（记录了 `blocked` 只是记一行）。
 
 诊断：`POST /v1/internal/status` 与 `POST /v1/internal/capabilities` 的 `keepalive` 块：
 
@@ -20,8 +20,8 @@
   "notification": true,          // 最近一次发布成功
   "notifications_enabled": true, // 系统里微信的通知权限是否打开
   "channel": true,               // 通知渠道（satori-wx-status）是否可用
-  "wakelock": false,             // 用户意图（与 "user" 同值，兼容旧版应用）
-  "wakelock_held": false,        // OS 实际持有 CPU 或 Wi-Fi（兼容旧版应用）
+  "wakelock": false,             // 与 "user" 同值
+  "wakelock_held": false,        // OS 实际持有 CPU 或 Wi-Fi
   "user": false,                 // 用户意图（通知按钮）
   "auto": 0,                     // 正在进行的出站自动持有层数
   "cpu_held": false,             // CPU 锁是否真的持有
@@ -43,15 +43,15 @@
 
 ### 冻结事件驱动的即时解冻
 
-`OplusHansManager` 隔几秒就按 uid 冻一次微信（`freeze uid: … scene: |StrictMode-3|LcdOn`）。被冻期间回环端口还能握手，却没人应答，客户端看到的就是「指令发出去很久才有回复」。旧看守每 5 秒扫一次 cgroup，一次冻结最长要卡 5–10 秒。
+`OplusHansManager` 隔几秒就按 uid 冻一次微信（logcat 里是 `freeze uid: … scene: |StrictMode-3|LcdOn`）。被冻期间回环端口还能握手，却没人应答，客户端看到的就是「指令发出去很久才有回复」。只扫 cgroup 的话，一次冻结最长要卡 5–10 秒。
 
-现在 watchdog 起来时会拉起一个监听器（`wxguard thaw-watch`，自成会话），用系统自带的 `inotifyd` 盯着 `uid_<uid>/cgroup.events` 与每个 `pid_*/cgroup.events`：cgroup v2 在 `frozen` 变化时产生 inotify 事件（真机实测冻结后 6ms 内到），事件一到就把冻着的 `cgroup.freeze` 写回 0，微信实际停摆只有几毫秒（设备测试里 20–30ms，含测试自己的 10ms 轮询粒度）。监听每 60 秒重列一遍文件（微信重启后会长出新的 `pid_*`）；10 秒内解冻超过 30 次说明系统在和我们对着冻，每次停 1 秒不空转；日志每 30 秒合并成一行「事件驱动解冻 N 次」。每 5 秒一次的轮询保留作兜底。`tests/wxguard_thaw_test.sh`（root）用一次性 cgroup 覆盖 uid / pid 级冻结、连续冻结、风暴与清理。
+watchdog 起来时会拉起一个监听器（`wxguard thaw-watch`，自成会话），用系统自带的 `inotifyd` 盯着 `uid_<uid>/cgroup.events` 与每个 `pid_*/cgroup.events`：cgroup v2 在 `frozen` 变化时产生 inotify 事件（真机实测冻结后 6ms 内到），事件一到就把冻着的 `cgroup.freeze` 写回 0，微信实际停摆只有几毫秒（设备测试里 20–30ms，含测试自己的 10ms 轮询粒度）。监听每 60 秒重列一遍文件（微信重启后会长出新的 `pid_*`）。10 秒内解冻超过 30 次说明系统在反复冻结，每次停 1 秒不空转。日志每 30 秒合并成一行「事件驱动解冻 N 次」。每 5 秒一次的轮询保留作兜底。`tests/wxguard_thaw_test.sh`（root）用一次性 cgroup 覆盖 uid / pid 级冻结、连续冻结、风暴与清理。
 
 ### 看守主循环
 
 `wxguard` 与 Zygisk 注入层解耦：即使注入暂时失效，进程死亡仍能被恢复。它由模块自带的 `service.sh` 在开机时复制到 `/data/adb/satori-wx/wxguard.sh` 并调 `boot` 恢复上次状态。状态与日志放在模块目录之外，升级模块不会冲掉 `ARMED` / `PAUSED`。
 
-**全新安装默认 ARMED**（`WXGUARD_FRESH_MODE`，写进 `guard.conf` 可改成 `PAUSED`）。这条是 2026-09-28 真机排查的结论：ColorOS 的 `OplusHansManager` 会按 uid 反复冻结 / 解冻微信（`freeze uid: 10419 ... scene: |StrictMode-3|LcdOn`，间隔几秒到几十秒），被冻期间回环端口仍然三次握手成功、但没有任何响应。客户端不是收到错误，而是挂住到超时。旧默认（`fresh-install` → `PAUSED`）会让刚装好的模块看起来在线、实际不可用，所以改成默认保活。
+全新安装默认 ARMED（`WXGUARD_FRESH_MODE`，写进 `guard.conf` 可改成 `PAUSED`）。默认 PAUSED 会让刚装好的模块看起来在线、实际不可用。
 
 ```sh
 su -c 'sh /data/adb/satori-wx/wxguard.sh start'      # ARMED：应用系统配置并启动 watchdog
@@ -68,7 +68,7 @@ su -c 'sh /data/adb/satori-wx/wxguard.sh log 50'
 
 1. `stopped=true`（用户手动强停）→ 尊重用户，转 `PAUSED`。
 2. 主进程不在 → 崩溃或被回收；宽限期内继续等、设备没网先不动、`CRASH_WINDOW` 内重启达到 `CRASH_LIMIT` 次转 `PAUSED`；否则在冷却、每小时预算与指数退避允许时拉起。
-3. 进程在但被冻（`uid_*/cgroup.freeze=1`、`pid_*/cgroup.freeze=1` 或 `wchan=do_freezer_trap`）→ 写 freezer cgroup 解冻，同一冷却期只写一次；**不因为冻结就强杀重启**。
+3. 进程在但被冻（`uid_*/cgroup.freeze=1`、`pid_*/cgroup.freeze=1` 或 `wchan=do_freezer_trap`）→ 写 freezer cgroup 解冻，同一冷却期只写一次。不因为冻结就强杀重启。
 4. 进程在、没冻，但 `POST /v1/meta` 连续多轮无响应 → 判定挂死，按预算强拉起。
 5. 进程在、服务在，但 `logins` 里没有 `status=1`，且「刚刚还在线过」→ 按预算拉起触发自动登录。
 

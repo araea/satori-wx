@@ -1,8 +1,8 @@
 # 消息内容、媒体链接与历史分页
 
-读侧把 `message` 表的一行转成 Satori 的 `Message`：作者、内容标记串、回复、时间。`native/wx_message.{h,cpp}` 只做这一步映射，不碰数据库和文件；要查库的部分（被引用消息的本地 id、昵称、头像）由 `native/wx_store.cpp` 补。
+读侧把 `message` 表的一行转成 Satori 的 `Message`：作者、内容标记串、回复、时间。`native/wx_message.{h,cpp}` 只做这一步映射，不碰数据库和文件。要查库的部分（被引用消息的本地 id、昵称、头像）由 `native/wx_store.cpp` 补。
 
-微信 8.0.78，样本来自真机库。
+微信 8.0.78。
 
 ## 行格式
 
@@ -49,21 +49,21 @@
 
 ### @ 提及
 
-微信的选人 @ 在文本里写 `@昵称` 再接一个 U+2005，名单放在 `msgsource` 的 `<atuserlist>`（逗号分隔的 wxid，`notify@all` 是 @所有人）。解码时按出现顺序把第 k 个「@…U+2005」配给第 k 个 id，**不比对名字**。群昵称、备注、当前昵称三者常常对不上。名单里多出来的 id 放在最前面，不丢；手敲的 `@` 没有 U+2005，不算提及；私聊里没有提及。
+微信的选人 @ 在文本里写 `@昵称` 再接一个 U+2005，名单放在 `msgsource` 的 `<atuserlist>`（逗号分隔的 wxid，`notify@all` 是 @所有人）。解码时按出现顺序把第 k 个「@…U+2005」配给第 k 个 id，不比对名字。群昵称、备注、当前昵称三者常常对不上。名单里多出来的 id 放在最前面，不丢。手敲的 `@` 没有 U+2005，不算提及。私聊里没有提及。
 
 ### 回复
 
-`<title>` 是回复正文，`<refermsg>` 描述被引用的那条。被引用消息的本地 id 先查 `MsgQuote` 表（微信自己的记录，行可能比消息晚一点到），没有就拿 `<svrid>` 去 `message.msgSvrId` 里找。找到：`<quote id="…"/>`；找不到（历史已清理）：把原文内联成 `<quote><author user-id nickname/>原文</quote>`，仍然读得通，只是没有 `id`。
+`<title>` 是回复正文，`<refermsg>` 描述被引用的那条。被引用消息的本地 id 先查 `MsgQuote` 表（微信自己的记录，行可能比消息晚一点到），没有就拿 `<svrid>` 去 `message.msgSvrId` 里找。找到就填 `<quote id="…"/>`。找不到（历史已清理）时把原文内联成 `<quote><author user-id nickname/>原文</quote>`，仍然读得通，只是没有 `id`。
 
 ## 媒体链接
 
-`/v1/proxy` 按 Satori 约定不要 Authorization（好让 `<img>` 直接引用），而 `msgId` 是小整数。链接若不带签名，本机任何应用从 1 数到 N 就能读完用户收到的所有照片。所以每个媒体链接都是：
+`/v1/proxy` 按 Satori 约定不要 Authorization（好让 `<img>` 直接引用），而 `msgId` 是小整数。不带签名时，本机任何应用从 1 数到 N 就能读完用户收到的所有照片。所以每个媒体链接都是：
 
 ```
 internal:wechat/<login>/_msg/<kind>/<msgId>/<签名>
 ```
 
-签名是 `HMAC-SHA256(key, login \n kind \n id)` 的前 8 字节（16 位十六进制），`key` 由配置里的 token 派生。绑定登录、类型与 id，所以换个 id 或类型就不验证。token 是密钥而不是进程级随机数：微信重启后旧链接仍然有效，换 token 就全部作废。验证在碰数据库和文件系统之前。`native/media.{h,cpp}`、`native/wx_media.cpp`。
+签名是 `HMAC-SHA256(key, login \n kind \n id)` 的前 8 字节（16 位十六进制），`key` 由配置里的 token 派生。签名绑定登录、类型与 id，所以换个 id 或类型就不验证。token 是密钥而不是进程级随机数：微信重启后旧链接仍然有效，换 token 就全部作废。验证在碰数据库和文件系统之前。`native/media.{h,cpp}`、`native/wx_media.cpp`。
 
 `kind`：
 
@@ -75,13 +75,13 @@ internal:wechat/<login>/_msg/<kind>/<msgId>/<签名>
 | `emoji` | `emoji/<md5>`，md5 取自 XML |
 | `file` | `appattach.fileFullPath`，只认微信私有目录或它在共享存储上的目录；类型按扩展名 |
 
-`image` 的原图常是微信私有的 `wxgf` 容器，客户端打不开，会被跳过，回落到 `th_…hd` 与 `th_…` 两张缩略图。原图要等用户在微信里点开才会下载；模块不去触发下载。所以拿到的往往是缩略图（几十 KB，仍是 JPEG）。
+`image` 的原图常是微信私有的 `wxgf` 容器，客户端打不开，会被跳过，回落到 `th_…hd` 与 `th_…` 两张缩略图。原图要等用户在微信里点开才会下载，模块不去触发下载。所以拿到的往往是缩略图（几十 KB，仍是 JPEG）。
 
 `/v1/proxy` 是流式回包：按 64 KiB 从文件读，socket 排空了才读下一块，支持 `Range` 与 `HEAD`，客户端把整条链接做百分号编码也能解析。
 
 ## 事件里的资源
 
-`message-created` 按 Satori 的资源提升带上：`channel`、`guild`、`user`、`member` 只在事件顶层，`message` 里不再重复（`member` 里也没有 `user`）；`message.get` / `message.list` 返回的 `Message` 才是嵌套形态。
+`message-created` 按 Satori 的资源提升带上：`channel`、`guild`、`user`、`member` 只在事件顶层，`message` 里不再重复（`member` 里也没有 `user`）。`message.get` / `message.list` 返回的 `Message` 才是嵌套形态。
 
 ```json
 {"type":"message-created","login":{"sn":1},"timestamp":1790000000000,
@@ -96,14 +96,14 @@ internal:wechat/<login>/_msg/<kind>/<msgId>/<签名>
 
 ## 轮询
 
-`wx_live` 读一批（50 行）`rowid > 水位` 的新行，一批读满就不睡直接再读。什么时候读：`wx_watch` 用 inotify 盯着账号库所在目录，微信一写 `EnMicroMsg.db` / `-wal` 就醒（毫秒级），醒来读一次，再在 30ms、150ms 各补读一次。通知可能比「提交对第二个连接可见」早那么一点，而单次写入之后不会再有通知；没有通知时 1 秒兜底读一次，inotify 不可用退回 250ms 一次。此前是每 2 秒（v0.10.0 是 1 秒）读一次，一条消息平均白等半个到一个周期。水位只前进到**已处理的最后一行**：
+`wx_live` 读一批（50 行）`rowid > 水位` 的新行，一批读满就不睡直接再读。什么时候读：`wx_watch` 用 inotify 盯着账号库所在目录，微信一写 `EnMicroMsg.db` / `-wal` 就醒，醒来读一次，再在 30ms、150ms 各补读一次。通知可能比「提交对第二个连接可见」早那么一点，而单次写入之后不会再有通知。没有通知时 1 秒兜底读一次，inotify 不可用退回 250ms 一次。
+
+水位只前进到已处理的最后一行：
 
 - 总线满了（队列 32 条），被拒的那一行留到下一轮，顺序不变，不丢。
 - 读库出错，水位不动，下一轮同样的行再读。
 - 一条事件序列化后达到 128 KiB 上限：计数（`internal/status` 的 `events.skipped`）并越过，不卡死后面的消息。
 - 不是消息的行（系统提示、通话记录）直接越过。
-
-此前水位是「读完后取库里当前最大 rowid」：一次突发超过一批、或总线满了，超出的行就被永久跳过。
 
 ## `message.list`
 
@@ -116,7 +116,7 @@ internal:wechat/<login>/_msg/<kind>/<msgId>/<签名>
 | `order` | `asc`（默认）或 `desc`，是这一页内的顺序，与方向无关 |
 | `limit` | 1–50，缺省 50 |
 
-一页按 `(createTime, msgId)` 排序，走 `(talker, createTime)` 索引，不需要对整个会话排序（按 rowid 排会让 SQLite 把一个大群的所有行收集起来再排一遍）；令牌是消息的 `msgId`，取页时再查它的时间。同一毫秒的消息按 `msgId` 定先后，掉线补同步来的旧消息（`msgId` 大、时间早）按时间排在它该在的位置。令牌指向的行已经不存在（被清理）时回 400。
+一页按 `(createTime, msgId)` 排序，走 `(talker, createTime)` 索引，不需要对整个会话排序（按 rowid 排会让 SQLite 把一个大群的所有行收集起来再排一遍）。令牌是消息的 `msgId`，取页时再查它的时间。同一毫秒的消息按 `msgId` 定先后，掉线补同步来的旧消息（`msgId` 大、时间早）按时间排在它该在的位置。令牌指向的行已经不存在（被清理）时回 400。
 
 结果 `{data, prev?, next?}`：`prev` 存在表示还有更早的消息，`next` 表示还有更晚的。往回翻就拿 `prev` 当下一次的 `next`、方向 `before`。系统提示与撤回标记不计入一页的数量，所以一页不会因为夹了一条提示而不满。
 
@@ -124,4 +124,4 @@ internal:wechat/<login>/_msg/<kind>/<msgId>/<签名>
 
 ## 好友与头像
 
-`friend.list` 的判定是 `(type & 3) = 3`：`type` 是位标志，`3` 是普通好友，星标（`67`）、`2051`、`2115`、`65539` 这些带额外位的也是好友。此前写成 `type = 3`，这部分好友被漏掉。`friend.list` 与 `guild.list` 的续页游标原先按「小于游标」取下一页，升序列表会反复返回同一页，已改为「大于」。
+`friend.list` 的判定是 `(type & 3) = 3`：`type` 是位标志，`3` 是普通好友，星标（`67`）、`2051`、`2115`、`65539` 这些带额外位的也是好友。`friend.list` 与 `guild.list` 的续页游标按「大于游标」取下一页。
