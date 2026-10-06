@@ -5,6 +5,7 @@ import android.animation.ValueAnimator;
 import android.graphics.Canvas;
 import android.graphics.Paint;
 import android.graphics.Path;
+import android.graphics.PathMeasure;
 import android.graphics.RectF;
 import android.view.View;
 
@@ -22,7 +23,7 @@ final class Checkbox extends View {
     private final Path mark = new Path();
     private final Path partial = new Path();
     private final RectF box = new RectF();
-    private final android.graphics.PathMeasure measure = new android.graphics.PathMeasure();
+    private final PathMeasure measure = new PathMeasure();
     private float progress;
     private boolean checked;
     private boolean enabledLook = true;

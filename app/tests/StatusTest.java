@@ -2,9 +2,9 @@ import com.satori.wx.core.Api;
 import com.satori.wx.core.Conf;
 import com.satori.wx.core.Root;
 import com.satori.wx.core.Status;
+import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 import java.util.Base64;
-import java.nio.charset.StandardCharsets;
 import org.json.JSONObject;
 
 /**

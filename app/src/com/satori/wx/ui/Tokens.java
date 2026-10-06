@@ -9,6 +9,7 @@ import android.os.Build;
 import android.util.TypedValue;
 import android.widget.TextView;
 import com.satori.wx.R;
+import com.satori.wx.core.Status;
 
 /**
  * 知言 Design Tokens 在运行期的唯一读口：构造时把颜色、尺度、字级与弹簧一次解析完，之后只读字段。
@@ -272,18 +273,18 @@ final class Tokens {
     /** 语调 → 容器色 / 容器上的内容色 / 独立出现时的前景色。 */
     int toneContainer(int tone) {
         switch (tone) {
-            case com.satori.wx.core.Status.SUCCESS: return successContainer;
-            case com.satori.wx.core.Status.WARNING: return warningContainer;
-            case com.satori.wx.core.Status.ERROR: return errorContainer;
+            case Status.SUCCESS: return successContainer;
+            case Status.WARNING: return warningContainer;
+            case Status.ERROR: return errorContainer;
             default: return surfaceContainerHigh;
         }
     }
 
     int toneOnContainer(int tone) {
         switch (tone) {
-            case com.satori.wx.core.Status.SUCCESS: return onSuccessContainer;
-            case com.satori.wx.core.Status.WARNING: return onWarningContainer;
-            case com.satori.wx.core.Status.ERROR: return onErrorContainer;
+            case Status.SUCCESS: return onSuccessContainer;
+            case Status.WARNING: return onWarningContainer;
+            case Status.ERROR: return onErrorContainer;
             default: return onSurface;
         }
     }

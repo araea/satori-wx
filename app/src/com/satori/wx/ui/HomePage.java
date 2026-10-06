@@ -1,5 +1,6 @@
 package com.satori.wx.ui;
 
+import android.os.Build;
 import android.view.Gravity;
 import android.view.View;
 import android.widget.FrameLayout;
@@ -10,6 +11,7 @@ import android.widget.ScrollView;
 import android.widget.TextView;
 import com.satori.wx.R;
 import com.satori.wx.core.Status;
+import java.util.Arrays;
 import org.json.JSONObject;
 
 /**
@@ -154,7 +156,7 @@ final class HomePage {
             tile.addView(ui.text(labels[i], Tokens.LABEL_MEDIUM, t.onSurfaceVariant), Ui.stack(0));
             values[i] = ui.text("—", Tokens.HEADLINE_SMALL, t.onSurface);
             tile.addView(values[i], Ui.stack(t.spaceXs));
-            if (android.os.Build.VERSION.SDK_INT >= 28) tile.setScreenReaderFocusable(true);
+            if (Build.VERSION.SDK_INT >= 28) tile.setScreenReaderFocusable(true);
             if (pair) metrics.addView(tile, Ui.share(i == 0 ? 0 : t.space2xs));
             else metrics.addView(tile, Ui.stack(i == 0 ? 0 : t.space2xs));
         }
@@ -266,7 +268,7 @@ final class HomePage {
         // ---- 链路 ----
         int[] steps = Status.steps(s);
         String[] values = Status.stepValues(s);
-        boolean restyle = !java.util.Arrays.equals(steps, stepStates);
+        boolean restyle = !Arrays.equals(steps, stepStates);
         stepStates = steps;
         for (int i = 0; i < chain.length; i++) {
             if (restyle) {

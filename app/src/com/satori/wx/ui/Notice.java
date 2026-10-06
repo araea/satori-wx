@@ -1,6 +1,5 @@
 package com.satori.wx.ui;
 
-import android.text.TextUtils;
 import android.view.View;
 import android.widget.ImageView;
 import android.widget.LinearLayout;

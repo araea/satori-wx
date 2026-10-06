@@ -9,7 +9,7 @@
 # 签名密钥 keystore/zhiyan.keystore 只在缺失时生成一次。**不要删它**：换了密钥，已安装的应用就只能
 # 卸载重装才能更新。
 set -euo pipefail
-R=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+R=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 ANDROID_JAR=/data/data/com.termux/files/home/android/platform/android-35/android.jar
 BT=/data/data/com.termux/files/home/android/android-sdk-tools/build-tools
 FRAMEWORK=/system/framework/framework-res.apk
@@ -28,7 +28,7 @@ rm -rf "$OUT/gen" && mkdir -p "$OUT/gen"
 echo "== 2. javac =="
 rm -rf "$OUT/classes" && mkdir -p "$OUT/classes"
 find "$R/src" "$OUT/gen" -name '*.java' > "$OUT/sources.txt"
-javac -classpath "$ANDROID_JAR" -source 8 -target 8 -encoding UTF-8 -Xlint:-options \
+javac --release 17 -classpath "$ANDROID_JAR" -encoding UTF-8 -Xlint:all,-deprecation,-serial,-rawtypes \
   -d "$OUT/classes" @"$OUT/sources.txt"
 echo "   compiled $(find "$OUT/classes" -name '*.class' | wc -l) classes"
 

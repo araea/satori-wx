@@ -1,14 +1,14 @@
 #!/data/data/com.termux/files/usr/bin/bash
 # Termux arm64 native build. No JDK, SDK, D8, DEX or shared C++ runtime.
 set -euo pipefail
-SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+SCRIPT_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 R=${SATORI_WX_ROOT:-$SCRIPT_DIR}
 OUT=${SATORI_WX_OUT:-$R/build}
 CXX=${CXX:-clang++}
 CC=${CC:-clang}
 if [ $# -gt 1 ]; then echo "usage: $0" >&2; exit 2; fi
 mkdir -p "$OUT"
-OUT=$(CDPATH= cd -- "$OUT" && pwd)
+OUT=$(CDPATH='' cd -- "$OUT" && pwd)
 VERSION=$(sed -n 's/^version=//p' "$R/module.prop")
 WORK=$(mktemp -d "$OUT/.native-XXXXXX")
 trap 'rm -rf -- "$WORK"' EXIT

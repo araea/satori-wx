@@ -3,7 +3,7 @@
 # 前置：已安装当前构建的 com.satori.wx（../../build.sh + 装机），本机有 root（su，用于安装与取图）。
 # 不连服务、不调 su、不改配置、不点屏幕。
 set -euo pipefail
-APP_DIR=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
+APP_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")/../.." && pwd)
 OUT="$APP_DIR/build/design-tests"
 ANDROID_JAR=/data/data/com.termux/files/home/android/platform/android-35/android.jar
 BT=/data/data/com.termux/files/home/android/android-sdk-tools/build-tools
@@ -12,7 +12,7 @@ KS="$APP_DIR/keystore/zhiyan.keystore"
 
 rm -rf "$OUT" && mkdir -p "$OUT/classes" "$OUT/dex" "$OUT/design-review"
 echo "== 1. javac（对照应用的类编译，但不把它们打进测试包）=="
-javac -classpath "$ANDROID_JAR:$APP_DIR/build/classes" -source 8 -target 8 -encoding UTF-8 -nowarn -Xlint:-options \
+javac -classpath "$ANDROID_JAR:$APP_DIR/build/classes" --release 17 -encoding UTF-8 -nowarn \
   -d "$OUT/classes" "$APP_DIR/tests/ui/DesignSmoke.java"
 echo "== 2. d8 =="
 java -cp "$APP_DIR/libs/r8.jar" com.android.tools.r8.D8 --release --min-api 26 --lib "$ANDROID_JAR" \

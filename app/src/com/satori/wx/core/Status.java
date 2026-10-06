@@ -1,6 +1,10 @@
 package com.satori.wx.core;
 
+import java.text.SimpleDateFormat;
+import java.util.ArrayList;
+import java.util.Date;
 import java.util.List;
+import java.util.Locale;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
@@ -320,7 +324,7 @@ public final class Status {
 
     /** 文件与运行状态不一致的项目，用于说明「哪些还没生效」。 */
     public static List<String> differences(Snapshot s) {
-        java.util.ArrayList<String> out = new java.util.ArrayList<>();
+        ArrayList<String> out = new ArrayList<>();
         if (s.conf == null || s.status == null) return out;
         if (s.viaPrevious) out.add("端口或令牌");
         return out;
@@ -397,8 +401,8 @@ public final class Status {
     /** 诊断报告：只含版本、状态与计数，不含令牌、微信号、昵称或消息内容。 */
     public static String report(Snapshot s, String appVersion, long now) {
         StringBuilder out = new StringBuilder("知言 · 诊断报告\n");
-        out.append("检查时间：").append(new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss", java.util.Locale.CHINA)
-                .format(new java.util.Date(now))).append('\n');
+        out.append("检查时间：").append(new SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.CHINA)
+                .format(new Date(now))).append('\n');
         Line hero = hero(s);
         out.append("结论：").append(hero.title).append('\n');
         for (String[] row : diagnostics(s, appVersion)) out.append(row[0]).append("：").append(row[1]).append('\n');

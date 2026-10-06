@@ -10,11 +10,14 @@ import android.content.ClipboardManager;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.pm.PackageInfo;
+import android.graphics.Insets;
+import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.PersistableBundle;
+import android.provider.Settings;
 import android.view.Gravity;
 import android.view.View;
 import android.view.Window;
@@ -24,12 +27,18 @@ import android.view.WindowManager;
 import android.view.inputmethod.InputMethodManager;
 import android.widget.FrameLayout;
 import android.widget.LinearLayout;
+import android.window.BackEvent;
+import android.window.OnBackAnimationCallback;
+import android.window.OnBackInvokedCallback;
+import android.window.OnBackInvokedDispatcher;
 import com.satori.wx.core.Api;
 import com.satori.wx.core.Conf;
 import com.satori.wx.core.Root;
 import com.satori.wx.core.Status;
+import java.util.Objects;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import org.json.JSONObject;
 
 /**
  * 知言管理界面的宿主：三层导航、数据刷新、系统集成（安全区、预测性返回、剪贴板、分享）。
@@ -143,8 +152,8 @@ public final class MainActivity extends Activity
 
     private WindowInsets onInsets(View view, WindowInsets insets) {
         if (Build.VERSION.SDK_INT >= 30) {
-            android.graphics.Insets bars = insets.getInsets(WindowInsets.Type.systemBars() | WindowInsets.Type.displayCutout());
-            android.graphics.Insets ime = insets.getInsets(WindowInsets.Type.ime());
+            Insets bars = insets.getInsets(WindowInsets.Type.systemBars() | WindowInsets.Type.displayCutout());
+            Insets ime = insets.getInsets(WindowInsets.Type.ime());
             insetTop = bars.top;
             insetBottom = bars.bottom;
             insetLeft = bars.left;
@@ -294,15 +303,15 @@ public final class MainActivity extends Activity
     /** Android 13+：只在需要拦截时注册回调，其余时候系统能播放预测性返回动画。 */
     private void setupBack() {
         if (Build.VERSION.SDK_INT >= 34) {
-            backCallback = new android.window.OnBackAnimationCallback() {
+            backCallback = new OnBackAnimationCallback() {
                 private boolean tracking;
 
-                @Override public void onBackStarted(android.window.BackEvent event) {
+                @Override public void onBackStarted(BackEvent event) {
                     tracking = page == SETTINGS && settings != null && !settings.dirty() && Spring.enabled();
                     if (tracking) home.root.setVisibility(View.VISIBLE);
                 }
 
-                @Override public void onBackProgressed(android.window.BackEvent event) {
+                @Override public void onBackProgressed(BackEvent event) {
                     if (!tracking) return;
                     // M3 预测性返回：页面随手势缩到 90%、向手势方向偏移，露出下层页面。
                     float p = event.getProgress();
@@ -310,7 +319,7 @@ public final class MainActivity extends Activity
                     float scale = 1f - 0.1f * p;
                     view.setScaleX(scale);
                     view.setScaleY(scale);
-                    float direction = event.getSwipeEdge() == android.window.BackEvent.EDGE_LEFT ? 1 : -1;
+                    float direction = event.getSwipeEdge() == BackEvent.EDGE_LEFT ? 1 : -1;
                     view.setTranslationX(direction * t.dp(24) * p);
                     view.setAlpha(1f - 0.2f * p);
                 }
@@ -331,7 +340,7 @@ public final class MainActivity extends Activity
                 }
             };
         } else {
-            backCallback = (android.window.OnBackInvokedCallback) () -> { if (!handleBack()) finish(); };
+            backCallback = (OnBackInvokedCallback) () -> { if (!handleBack()) finish(); };
         }
         updateBackCallback();
     }
@@ -341,9 +350,9 @@ public final class MainActivity extends Activity
         boolean need = page == SETTINGS || (settings != null && settings.dirty());
         if (need == backRegistered) return;
         backRegistered = need;
-        android.window.OnBackInvokedDispatcher dispatcher = getOnBackInvokedDispatcher();
-        android.window.OnBackInvokedCallback callback = (android.window.OnBackInvokedCallback) backCallback;
-        if (need) dispatcher.registerOnBackInvokedCallback(android.window.OnBackInvokedDispatcher.PRIORITY_DEFAULT, callback);
+        OnBackInvokedDispatcher dispatcher = getOnBackInvokedDispatcher();
+        OnBackInvokedCallback callback = (OnBackInvokedCallback) backCallback;
+        if (need) dispatcher.registerOnBackInvokedCallback(OnBackInvokedDispatcher.PRIORITY_DEFAULT, callback);
         else dispatcher.unregisterOnBackInvokedCallback(callback);
     }
 
@@ -398,7 +407,7 @@ public final class MainActivity extends Activity
             }
             PackageInfo info = wechatInfo();
             int http = Api.UNREACHABLE;
-            org.json.JSONObject status = null, meta = null;
+            JSONObject status = null, meta = null;
             boolean viaPrevious = false;
             // 刚探测到微信没在运行或被冻结：服务不可能应答，不必再等满读超时。
             boolean hopeless = needRoot && device.granted && (device.wechatPid <= 0 || device.wechatFrozen);
@@ -425,7 +434,7 @@ public final class MainActivity extends Activity
             final Conf fConf = conf;
             final String fError = confError;
             final int fHttp = http;
-            final org.json.JSONObject fStatus = status, fMeta = meta;
+            final JSONObject fStatus = status, fMeta = meta;
             final boolean fVia = viaPrevious;
             main.post(() -> {
                 if (isDestroyed()) return;
@@ -468,7 +477,7 @@ public final class MainActivity extends Activity
         Status.Snapshot old = model.snapshot;
         boolean first = !old.checked;
         boolean confChanged = old.device == null || old.conf == null != (s.conf == null)
-                || (s.conf != null && !s.conf.sameAs(old.conf)) || !java.util.Objects.equals(old.confError, s.confError);
+                || (s.conf != null && !s.conf.sameAs(old.conf)) || !Objects.equals(old.confError, s.confError);
         model.snapshot.copyFrom(s);
         if (settings != null && s.device != null && s.device.granted && s.device.module && (confChanged || first)) {
             settings.load(s.conf, fallbackConf(), false);
@@ -559,8 +568,8 @@ public final class MainActivity extends Activity
      * 走的是系统公开的设置入口，知言不替用户改任何系统策略。
      */
     @Override public void openWeChatSettings() {
-        Intent intent = new Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
-                android.net.Uri.fromParts("package", Root.WECHAT, null));
+        Intent intent = new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                Uri.fromParts("package", Root.WECHAT, null));
         try {
             startActivity(intent);
         } catch (Exception error) {

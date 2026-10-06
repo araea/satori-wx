@@ -1,6 +1,7 @@
 package com.satori.wx.ui;
 
 import android.app.Dialog;
+import android.graphics.drawable.ColorDrawable;
 import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
@@ -8,6 +9,7 @@ import android.view.Window;
 import android.view.WindowManager;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
+import java.util.function.BooleanSupplier;
 
 /**
  * M3 基础对话框：标题、说明、可选的内容视图、右对齐的文字按钮；surface_container_high 容器、28dp 圆角。
@@ -23,13 +25,13 @@ final class Dialogs {
         final int style;
         final Runnable run;
         /** 返回 false 时对话框保持打开（例如输入校验没过）。 */
-        final java.util.function.BooleanSupplier check;
+        final BooleanSupplier check;
 
         Action(String label, int style, Runnable run) {
             this(label, style, run, null);
         }
 
-        Action(String label, int style, Runnable run, java.util.function.BooleanSupplier check) {
+        Action(String label, int style, Runnable run, BooleanSupplier check) {
             this.label = label;
             this.style = style;
             this.run = run;
@@ -80,7 +82,7 @@ final class Dialogs {
         dialog.setCanceledOnTouchOutside(true);
         Window window = dialog.getWindow();
         if (window != null) {
-            window.setBackgroundDrawable(new android.graphics.drawable.ColorDrawable(0));
+            window.setBackgroundDrawable(new ColorDrawable(0));
             window.setDimAmount(t.scrimPct / 100f);
             int screen = t.res.getDisplayMetrics().widthPixels;
             int width = Math.max(Math.min(t.dialogMin, screen - 2 * t.spaceLg),

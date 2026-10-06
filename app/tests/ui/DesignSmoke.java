@@ -6,13 +6,13 @@ import android.content.Context;
 import android.content.res.Configuration;
 import android.graphics.Bitmap;
 import android.graphics.Canvas;
-import android.os.Build;
 import android.os.Bundle;
-
-
+import android.text.Layout;
 import android.view.ContextThemeWrapper;
+import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
+import android.widget.EditText;
 import android.widget.ImageButton;
 import android.widget.LinearLayout;
 import android.widget.TextView;
@@ -218,7 +218,7 @@ public final class DesignSmoke extends Instrumentation {
         settings.load(s.conf, s.conf, true);
         settings.notice(Status.applied(s));
         LinearLayout panes = ui.row();
-        panes.setGravity(android.view.Gravity.FILL_VERTICAL);
+        panes.setGravity(Gravity.FILL_VERTICAL);
         panes.addView(home.root, new LinearLayout.LayoutParams(0, -1, 1));
         panes.addView(settings.root, new LinearLayout.LayoutParams(0, -1, 1));
         shoot(name, panes, ui.t, widthDp, 900);
@@ -268,8 +268,8 @@ public final class DesignSmoke extends Instrumentation {
             failures.add(name + ": 图标按钮没有名字：" + describe(view));
         }
         if (view instanceof TextView && view.getImportantForAccessibility() != View.IMPORTANT_FOR_ACCESSIBILITY_NO
-                && !(view instanceof android.widget.EditText)) {
-            android.text.Layout layout = ((TextView) view).getLayout();
+                && !(view instanceof EditText)) {
+            Layout layout = ((TextView) view).getLayout();
             for (int i = 0; layout != null && i < layout.getLineCount(); i++) {
                 if (layout.getEllipsisCount(i) > 0) {
                     failures.add(name + ": 文字被截断：" + ((TextView) view).getText());

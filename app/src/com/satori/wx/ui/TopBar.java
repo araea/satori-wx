@@ -2,8 +2,11 @@ package com.satori.wx.ui;
 
 import android.animation.ArgbEvaluator;
 import android.animation.ValueAnimator;
+import android.os.Build;
+import android.text.TextUtils;
 import android.view.Gravity;
 import android.view.View;
+import android.widget.AbsListView;
 import android.widget.ImageButton;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
@@ -40,7 +43,7 @@ final class TopBar extends LinearLayout {
         setBackgroundColor(base);
         title = ui.text(text, Tokens.TITLE_LARGE, t.onSurface);
         title.setSingleLine(true);
-        title.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        title.setEllipsize(TextUtils.TruncateAt.END);
         title.setImportantForAccessibility(IMPORTANT_FOR_ACCESSIBILITY_NO);
         title.setAlpha(0f);
         title.setPaddingRelative(t.spaceMd, 0, t.spaceSm, 0);
@@ -77,11 +80,11 @@ final class TopBar extends LinearLayout {
     void pinTitle() {
         title.setAlpha(1f);
         title.setImportantForAccessibility(IMPORTANT_FOR_ACCESSIBILITY_YES);
-        if (android.os.Build.VERSION.SDK_INT >= 28) title.setAccessibilityHeading(true);
+        if (Build.VERSION.SDK_INT >= 28) title.setAccessibilityHeading(true);
     }
 
     /** 列表滚离顶部时栏底色升一级。 */
-    void follow(android.widget.AbsListView list) {
+    void follow(AbsListView list) {
         list.setOnScrollChangeListener((v, x, y, ox, oy) -> lift(list.getChildCount() > 0
                 && (list.getFirstVisiblePosition() > 0 || list.getChildAt(0).getTop() < list.getPaddingTop())));
     }

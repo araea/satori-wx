@@ -6,6 +6,7 @@ import android.text.InputFilter;
 import android.text.InputType;
 import android.text.TextWatcher;
 import android.text.method.PasswordTransformationMethod;
+import android.view.Gravity;
 import android.view.View;
 import android.widget.ImageButton;
 import android.widget.LinearLayout;
@@ -129,7 +130,7 @@ final class SettingsPage {
         if (pinned()) {
             saveBar.setPadding(ui.layout.gutter(), t.spaceSm, ui.layout.gutter(), t.spaceSm);
             saveBar.setMinimumHeight(t.toolbar);
-            saveBar.setGravity(android.view.Gravity.CENTER_VERTICAL);
+            saveBar.setGravity(Gravity.CENTER_VERTICAL);
             saveBar.setBackgroundColor(t.surfaceContainer);
             LinearLayout line = ui.row();
             line.addView(saveState, Ui.share(0));

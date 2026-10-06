@@ -2,6 +2,7 @@ package com.satori.wx.ui;
 
 import android.graphics.drawable.Drawable;
 import com.satori.wx.R;
+import com.satori.wx.core.Talker;
 
 /**
  * 界面图标：全部是 Google 官方 Material Symbols Rounded（Apache-2.0）的矢量，
@@ -50,8 +51,8 @@ final class Icon {
     /** 会话类型对应的图标：私聊、群、文件传输助手。 */
     static int talker(int kind) {
         switch (kind) {
-            case com.satori.wx.core.Talker.GROUP: return GROUP;
-            case com.satori.wx.core.Talker.FILE: return FOLDER;
+            case Talker.GROUP: return GROUP;
+            case Talker.FILE: return FOLDER;
             default: return PERSON;
         }
     }

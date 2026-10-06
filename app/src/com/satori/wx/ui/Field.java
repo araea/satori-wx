@@ -8,7 +8,6 @@ import android.graphics.PixelFormat;
 import android.graphics.Rect;
 import android.graphics.RectF;
 import android.graphics.drawable.Drawable;
-import android.os.Build;
 import android.text.Editable;
 import android.text.InputType;
 import android.text.TextUtils;
@@ -24,6 +23,7 @@ import android.widget.ImageButton;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.TextView;
+import com.satori.wx.R;
 
 /**
  * M3 描边输入框（outlined text field）：标签在框内充当提示，获得焦点或有内容时缩小并浮到上边框的缺口里；
@@ -59,7 +59,7 @@ final class Field extends LinearLayout {
         this.placeholder = placeholder;
         setOrientation(VERTICAL);
 
-        int line = tokens.res.getDimensionPixelSize(com.satori.wx.R.dimen.md_type_body_large_line);
+        int line = tokens.res.getDimensionPixelSize(R.dimen.md_type_body_large_line);
         offset = Math.round(line * FLOAT_SCALE / 2f);
 
         box = new FrameLayout(tokens.context);
