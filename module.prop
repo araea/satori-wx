@@ -1,6 +1,6 @@
 id=satori_wx
 name=知言
-version=v0.15.0
-versionCode=47
+version=v0.15.1
+versionCode=48
 author=araea
 description=微信的 Satori v1 实现端（Zygisk 注入，纯 native）：收发消息、群管理、毫秒级事件推送，内置 root 保活。
