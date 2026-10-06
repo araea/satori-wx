@@ -399,19 +399,20 @@ void Proxy(Client &c, Hub *hub, const char *raw_url, const char *range, bool hea
         }
     RawJson(c, 403, "Forbidden", ERROR_BODY("forbidden", "proxy url not allowed"));
 }
+// A platform or user id that is safe to put in an internal: link and a file name.
+bool ValidLoginPart(const char *id, size_t capacity = 128) {
+    const size_t size = strlen(id);
+    if (!size || size >= 128 || size >= capacity) return false;
+    for (size_t i = 0; i < size; ++i) {
+        const char ch = id[i];
+        if (!((ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') || ch == '_' ||
+              ch == '-' || ch == '.'))
+            return false;
+    }
+    return true;
+}
 void Upload(Client &c, const char *platform, const char *user, const Multipart *uploads) {
-    auto valid_id = [](const char *id) {
-        const size_t size = strlen(id);
-        if (!size || size >= 128) return false;
-        for (size_t i = 0; i < size; ++i) {
-            const char ch = id[i];
-            if (!((ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') || ch == '_' ||
-                  ch == '-' || ch == '.'))
-                return false;
-        }
-        return true;
-    };
-    if (!uploads || !uploads->count || !valid_id(platform) || !valid_id(user)) {
+    if (!uploads || !uploads->count || !ValidLoginPart(platform) || !ValidLoginPart(user)) {
         Reply(c, 400, "Bad Request", ERROR_BODY("invalid_upload", "invalid upload"));
         return;
     }
@@ -630,8 +631,22 @@ void UploadPump(Client &c) {
     UploadFree(job);
     c.upload = nullptr;
 }
-struct Header {
-    char *name, *value;
+// A request head, parsed in place inside a scratch copy of the bytes that have arrived.
+struct Head {
+    struct Field {
+        char *name, *value;
+    };
+    char text[kHeader + 1];
+    char *method, *path;
+    Field fields[32];
+    int count;
+    size_t length; // head bytes in the input buffer, blank line included
+
+    const char *Get(const char *name) const {
+        for (int i = 0; i < count; ++i)
+            if (!strcasecmp(fields[i].name, name)) return fields[i].value;
+        return "";
+    }
 };
 bool HeaderToken(const char *list, const char *token) {
     const size_t n = strlen(token);
@@ -646,309 +661,419 @@ bool HeaderToken(const char *list, const char *token) {
     }
     return false;
 }
-void Http(Client &c, const Config &config, Hub *hub, const Backend *backend, WebHooks *hooks) {
-    if (c.upload) {
-        UploadPump(c);
+void Bad(Client &c) { Reply(c, 400, "Bad Request", ERROR_BODY("invalid_request", "invalid request")); }
+// Answers 400 and reports "stop" to the caller in one expression.
+bool Refuse(Client &c) {
+    Bad(c);
+    return false;
+}
+void TooLarge(Client &c) { Reply(c, 413, "Content Too Large", ERROR_BODY("payload_too_large", "payload too large")); }
+void OutOfMemory(Client &c) { Reply(c, 503, "Service Unavailable", ERROR_BODY("out_of_memory", "out of memory")); }
+// Prints `value` (borrowed) as a 200 body; a failed print answers 500.
+void ReplyJson(Client &c, const cJSON *value) {
+    char *text = value ? cJSON_PrintUnformatted(value) : nullptr;
+    Reply(c, text ? 200 : 500, text ? "OK" : "Internal Server Error", text ? text : "{}");
+    free(text);
+}
+// Same, for a result object the handler built (null: it could not even be allocated).
+void ReplyOwned(Client &c, cJSON *result) {
+    if (!result) {
+        Reply(c, 500, "Internal Server Error", ERROR_BODY("internal_error", "internal error"));
         return;
     }
+    ReplyJson(c, result);
+    cJSON_Delete(result);
+}
+// Bearer token check; answers 401 / 403 itself and returns false when it fails.
+bool Authorize(Client &c, const Config &config, const char *auth) {
+    if (!*auth) {
+        Reply(c, 401, "Unauthorized", ERROR_BODY("missing_token", "missing token"));
+        return false;
+    }
+    if (strncasecmp(auth, "Bearer ", 7) || !EqualToken(config.token, auth + 7)) {
+        Reply(c, 403, "Forbidden", ERROR_BODY("invalid_token", "invalid token"));
+        return false;
+    }
+    return true;
+}
+// The login named by Satori-Platform / Satori-User-ID; answers 400 / 403 itself when there is none.
+const cJSON *ResolveLogin(Client &c, Hub *hub, const Head &head) {
+    const char *platform = head.Get("Satori-Platform"), *user = head.Get("Satori-User-ID");
+    if (!*platform || !*user) {
+        Reply(c, 400, "Bad Request",
+              ERROR_BODY("missing_login_headers", "missing Satori-Platform or Satori-User-ID header"));
+        return nullptr;
+    }
+    const cJSON *login = FindLogin(hub, platform, user);
+    if (!login) Reply(c, 403, "Forbidden", ERROR_BODY("login_not_found", "login not found"));
+    return login;
+}
+bool LoginOnline(const cJSON *login) { return cJSON_GetObjectItemCaseSensitive(login, "status")->valuedouble == 1; }
+bool LoginServes(const cJSON *login, const char *method) {
+    const cJSON *features = cJSON_GetObjectItemCaseSensitive(login, "features");
+    for (const cJSON *f = features ? features->child : nullptr; f; f = f->next)
+        if (cJSON_IsString(f) && !strcmp(f->valuestring, method)) return true;
+    return false;
+}
+bool MultipartType(const char *type) {
+    return !strncasecmp(type, "multipart/form-data;", 20) && strstr(type, "boundary=");
+}
+void SendContinue(Client &c) {
+    static const char interim[] = "HTTP/1.1 100 Continue\r\n\r\n";
+    c.continued = true;
+    Queue(c, interim, sizeof(interim) - 1);
+}
+// Reads the request head out of the input buffer. False when it is still incomplete or was
+// refused (the refusal has already been answered).
+bool ReadHead(Client &c, Head *head) {
     c.input[c.used] = 0;
     const char *end = static_cast<const char *>(memmem(c.input, c.used, "\r\n\r\n", 4));
     if (!end) {
         if (c.used >= kHeader)
             Reply(c, 431, "Request Header Fields Too Large",
                   ERROR_BODY("headers_too_large", "request headers too large"));
-        return;
+        return false;
     }
     const size_t length = end - c.input + 4;
     if (length > kHeader) {
         Reply(c, 431, "Request Header Fields Too Large", ERROR_BODY("headers_too_large", "request headers too large"));
-        return;
+        return false;
     }
-    char scratch[kHeader + 1];
-    memcpy(scratch, c.input, length);
-    scratch[length] = 0;
-    auto bad = [&]() { Reply(c, 400, "Bad Request", ERROR_BODY("invalid_request", "invalid request")); };
+    memcpy(head->text, c.input, length);
+    head->text[length] = 0;
+    head->length = length;
+    head->count = 0;
     for (size_t i = 0; i < length; ++i) {
-        const unsigned char ch = scratch[i];
-        if ((ch < 32 && ch != '\r' && ch != '\n' && ch != '\t') || ch == 127) {
-            bad();
-            return;
-        }
+        const unsigned char ch = head->text[i];
+        if ((ch < 32 && ch != '\r' && ch != '\n' && ch != '\t') || ch == 127) return Refuse(c);
     }
-    char *line_end = strstr(scratch, "\r\n");
-    if (!line_end) {
-        bad();
-        return;
-    }
+    char *line_end = strstr(head->text, "\r\n");
+    if (!line_end) return Refuse(c);
     *line_end = 0;
-    char *method = scratch, *path = strchr(method, ' ');
-    if (!path) {
-        bad();
-        return;
-    }
+    char *method = head->text, *path = strchr(method, ' ');
+    if (!path) return Refuse(c);
     *path++ = 0;
     char *version = strchr(path, ' ');
-    if (!version) {
-        bad();
-        return;
-    }
+    if (!version) return Refuse(c);
     *version++ = 0;
-    if (!*method || *path != '/' || strchr(path, '\t') || strcmp(version, "HTTP/1.1")) {
-        bad();
-        return;
-    }
-    Header headers[32];
-    int count = 0;
+    if (!*method || *path != '/' || strchr(path, '\t') || strcmp(version, "HTTP/1.1")) return Refuse(c);
+    head->method = method;
+    head->path = path;
     for (char *p = line_end + 2; *p != '\r';) {
         line_end = strstr(p, "\r\n");
-        if (!line_end || count == 32) {
-            bad();
-            return;
-        }
+        if (!line_end || head->count == 32) return Refuse(c);
         *line_end = 0;
         char *value = strchr(p, ':');
-        if (!value || value == p) {
-            bad();
-            return;
-        }
+        if (!value || value == p) return Refuse(c);
         *value++ = 0;
         for (const char *key = p; *key; ++key)
             if (!((*key >= 'a' && *key <= 'z') || (*key >= 'A' && *key <= 'Z') || (*key >= '0' && *key <= '9') ||
-                  strchr("!#$%&'*+-.^_`|~", *key))) {
-                bad();
-                return;
-            }
+                  strchr("!#$%&'*+-.^_`|~", *key)))
+                return Refuse(c);
         while (*value == ' ' || *value == '\t') ++value;
         char *tail = line_end;
         while (tail > value && (tail[-1] == ' ' || tail[-1] == '\t')) *--tail = 0;
-        for (int i = 0; i < count; ++i)
-            if (!strcasecmp(headers[i].name, p)) {
-                bad();
-                return;
-            }
+        for (int i = 0; i < head->count; ++i)
+            if (!strcasecmp(head->fields[i].name, p)) return Refuse(c);
         for (const char *v = value; *v; ++v)
-            if ((static_cast<unsigned char>(*v) < 32 && *v != '\t') || *v == 127) {
-                bad();
-                return;
-            }
-        if (!strcasecmp(p, "Content-Length") && !*value) {
-            bad();
-            return;
-        }
-        headers[count++] = {p, value};
+            if ((static_cast<unsigned char>(*v) < 32 && *v != '\t') || *v == 127) return Refuse(c);
+        if (!strcasecmp(p, "Content-Length") && !*value) return Refuse(c);
+        head->fields[head->count++] = {p, value};
         p = line_end + 2;
     }
-    auto header = [&](const char *name) {
-        for (int i = 0; i < count; ++i)
-            if (!strcasecmp(headers[i].name, name)) return headers[i].value;
-        return const_cast<char *>("");
-    };
-    if (!*header("Host") || *header("Transfer-Encoding")) {
-        bad();
-        return;
-    }
-    const char *expect = header("Expect");
-    const bool wants_continue = !strcasecmp(expect, "100-continue");
-    if (*expect && !wants_continue) {
-        Reply(c, 417, "Expectation Failed", ERROR_BODY("expectation_failed", "expectation failed"));
-        return;
-    }
+    return true;
+}
+// Content-Length as a number, bounded by the largest body any route accepts.
+bool ParseLength(Client &c, const char *text, uint64_t *out) {
     uint64_t announced = 0;
-    for (const char *p = header("Content-Length"); *p; ++p) {
-        if (*p < '0' || *p > '9') {
-            bad();
-            return;
-        }
+    for (const char *p = text; *p; ++p) {
+        if (*p < '0' || *p > '9') return Refuse(c);
         announced = announced * 10 + static_cast<uint64_t>(*p - '0');
         if (announced > kUploadStreamMax) {
-            Reply(c, 413, "Content Too Large", ERROR_BODY("payload_too_large", "payload too large"));
-            return;
+            TooLarge(c);
+            return false;
         }
     }
-    const bool streamed_upload = announced > kMessage && !strcmp(path, "/v1/upload.create");
-    if (!streamed_upload && announced > kUploadMax) {
-        Reply(c, 413, "Content Too Large", ERROR_BODY("payload_too_large", "payload too large"));
+    *out = announced;
+    return true;
+}
+// upload.create with a body bigger than one JSON message: everything that could refuse the
+// request is checked now, from the headers alone, so a refused upload costs no body at all (the
+// connection closes with the answer). Then the body is streamed to the temp store as it arrives.
+void StartUpload(Client &c, const Config &config, Hub *hub, const Head &head, uint64_t announced, bool wants_continue) {
+    if (!Authorize(c, config, head.Get("Authorization"))) return;
+    if (strcmp(head.method, "POST")) {
+        Reply(c, 405, "Method Not Allowed", ERROR_BODY("method_not_allowed", "method not allowed"));
         return;
     }
-    const size_t body_size = streamed_upload ? 0 : static_cast<size_t>(announced);
-    if (streamed_upload) {
-        // Everything that could refuse the request is checked now, from the headers alone, so a
-        // refused upload costs no body at all (the connection closes with the answer).
-        const char *auth = header("Authorization");
-        if (!*auth) {
-            Reply(c, 401, "Unauthorized", ERROR_BODY("missing_token", "missing token"));
-            return;
-        }
-        if (strncasecmp(auth, "Bearer ", 7) || !EqualToken(config.token, auth + 7)) {
-            Reply(c, 403, "Forbidden", ERROR_BODY("invalid_token", "invalid token"));
-            return;
-        }
-        if (strcmp(method, "POST")) {
-            Reply(c, 405, "Method Not Allowed", ERROR_BODY("method_not_allowed", "method not allowed"));
-            return;
-        }
-        const char *content_type = header("Content-Type");
-        if (strncasecmp(content_type, "multipart/form-data;", 20) || !strstr(content_type, "boundary=")) {
-            Reply(c, 415, "Unsupported Media Type", ERROR_BODY("unsupported_media_type", "expected application/json"));
-            return;
-        }
-        if (!*header("Satori-Platform") || !*header("Satori-User-ID")) {
-            Reply(c, 400, "Bad Request",
-                  ERROR_BODY("missing_login_headers", "missing Satori-Platform or Satori-User-ID header"));
-            return;
-        }
-        const cJSON *login = FindLogin(hub, header("Satori-Platform"), header("Satori-User-ID"));
-        if (!login) {
-            Reply(c, 403, "Forbidden", ERROR_BODY("login_not_found", "login not found"));
-            return;
-        }
-        if (cJSON_GetObjectItemCaseSensitive(login, "status")->valuedouble != 1) {
-            Reply(c, 503, "Service Unavailable", ERROR_BODY("login_offline", "login offline"));
-            return;
-        }
-        bool supported = false;
-        const cJSON *features = cJSON_GetObjectItemCaseSensitive(login, "features");
-        for (const cJSON *f = features ? features->child : nullptr; f; f = f->next)
-            if (cJSON_IsString(f) && !strcmp(f->valuestring, "upload.create")) supported = true;
-        if (!supported) {
-            Reply(c, 404, "Not Found", ERROR_BODY("unsupported_method", "unsupported method"));
-            return;
-        }
-        if (!TempStoreAvailable()) {
-            Reply(c, 501, "Not Implemented", ERROR_BODY("upload_unavailable", "upload temp store unavailable"));
-            return;
-        }
-        auto valid_id = [](const char *id) {
-            const size_t size = strlen(id);
-            if (!size || size >= 128) return false;
-            for (size_t i = 0; i < size; ++i) {
-                const char ch = id[i];
-                if (!((ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') || ch == '_' ||
-                      ch == '-' || ch == '.'))
-                    return false;
-            }
-            return true;
-        };
-        if (!valid_id(header("Satori-Platform")) || !valid_id(header("Satori-User-ID")) ||
-            strlen(header("Satori-Platform")) >= sizeof(UploadJob::platform) ||
-            strlen(header("Satori-User-ID")) >= sizeof(UploadJob::user)) {
-            Reply(c, 400, "Bad Request", ERROR_BODY("invalid_upload", "invalid upload"));
-            return;
-        }
-        auto *job = static_cast<UploadJob *>(calloc(1, sizeof(UploadJob)));
-        if (!job) {
-            Reply(c, 503, "Service Unavailable", ERROR_BODY("out_of_memory", "out of memory"));
-            return;
-        }
-        job->stream = UploadBegin(content_type, announced);
-        if (!job->stream) {
-            free(job);
-            Reply(c, 400, "Bad Request", ERROR_BODY("invalid_upload", "invalid upload"));
-            return;
-        }
-        snprintf(job->platform, sizeof(job->platform), "%s", header("Satori-Platform"));
-        snprintf(job->user, sizeof(job->user), "%s", header("Satori-User-ID"));
-        c.upload = job;
-        c.deadline = Now() + kRequestMs;
-        // The body starts right behind the headers; whatever already arrived is the first chunk.
-        memmove(c.input, c.input + length, c.used - length);
-        c.used -= length;
-        if (wants_continue && !c.continued && !c.used) {
-            static const char interim[] = "HTTP/1.1 100 Continue\r\n\r\n";
-            c.continued = true;
-            Queue(c, interim, sizeof(interim) - 1);
-        }
-        if (c.used) UploadPump(c);
+    const char *content_type = head.Get("Content-Type");
+    if (!MultipartType(content_type)) {
+        Reply(c, 415, "Unsupported Media Type", ERROR_BODY("unsupported_media_type", "expected application/json"));
         return;
     }
-    // Everything but the two routes that can carry a picture keeps the small JSON limit
-    // (message.create takes an <img src="data:..."> inline, upload.create takes multipart). A
-    // large body is only buffered for a caller that has already proven it holds the token.
-    if (body_size > kMessage) {
-        if (strcmp(path, "/v1/upload.create") && strcmp(path, "/v1/message.create")) {
-            Reply(c, 413, "Content Too Large", ERROR_BODY("payload_too_large", "payload too large"));
-            return;
-        }
-        const char *auth = header("Authorization");
-        if (!*auth) {
-            Reply(c, 401, "Unauthorized", ERROR_BODY("missing_token", "missing token"));
-            return;
-        }
-        if (strncasecmp(auth, "Bearer ", 7) || !EqualToken(config.token, auth + 7)) {
-            Reply(c, 403, "Forbidden", ERROR_BODY("invalid_token", "invalid token"));
-            return;
-        }
-        const size_t need = length + body_size + 1;
-        if (need > c.input_capacity) {
-            char *grown = static_cast<char *>(realloc(c.input, need));
-            if (!grown) {
-                Reply(c, 503, "Service Unavailable", ERROR_BODY("out_of_memory", "out of memory"));
-                return;
-            }
-            c.input = grown;
-            c.input_capacity = need;
-        }
-    }
-    if (c.used < length + body_size) {
-        // curl and some SDKs hold the body back until the server says to go ahead.
-        if (wants_continue && !c.continued) {
-            static const char interim[] = "HTTP/1.1 100 Continue\r\n\r\n";
-            c.continued = true;
-            Queue(c, interim, sizeof(interim) - 1);
-        }
+    const cJSON *login = ResolveLogin(c, hub, head);
+    if (!login) return;
+    if (!LoginOnline(login)) {
+        Reply(c, 503, "Service Unavailable", ERROR_BODY("login_offline", "login offline"));
         return;
     }
-    if (!strcmp(path, "/v1/events")) {
-        if (strcmp(method, "GET")) {
-            Reply(c, 405, "Method Not Allowed", ERROR_BODY("method_not_allowed", "method not allowed"), "GET");
-            return;
-        }
-        if (body_size || strcasecmp(header("Upgrade"), "websocket") || !HeaderToken(header("Connection"), "upgrade") ||
-            strcmp(header("Sec-WebSocket-Version"), "13") || !WebSocketKey(header("Sec-WebSocket-Key"))) {
-            bad();
-            return;
-        }
-        char accept[29], response[256];
-        WebSocketAccept(header("Sec-WebSocket-Key"), accept);
-        const int n = snprintf(response, sizeof(response),
-                               "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\n"
-                               "Connection: Upgrade\r\nSec-WebSocket-Accept: %s\r\n\r\n",
-                               accept);
-        c.message = static_cast<char *>(malloc(kMessage + 1));
-        if (!c.message) {
-            Reply(c, 503, "Service Unavailable", ERROR_BODY("out_of_memory", "out of memory"));
-            return;
-        }
-        if (!Queue(c, response, n)) return;
-        c.ws = true;
-        g_client_count = g_client_count + 1;
-        c.deadline = Now() + kRequestMs;
-        memmove(c.input, c.input + length, c.used - length);
-        c.used -= length;
+    if (!LoginServes(login, "upload.create")) {
+        Reply(c, 404, "Not Found", ERROR_BODY("unsupported_method", "unsupported method"));
         return;
     }
-    if (!strncmp(path, "/v1/proxy/", 10)) {
-        const bool head = !strcmp(method, "HEAD");
-        if (strcmp(method, "GET") && !head) {
-            Reply(c, 405, "Method Not Allowed", ERROR_BODY("method_not_allowed", "method not allowed"), "GET, HEAD");
-            return;
+    if (!TempStoreAvailable()) {
+        Reply(c, 501, "Not Implemented", ERROR_BODY("upload_unavailable", "upload temp store unavailable"));
+        return;
+    }
+    const char *platform = head.Get("Satori-Platform"), *user = head.Get("Satori-User-ID");
+    if (!ValidLoginPart(platform, sizeof(UploadJob::platform)) || !ValidLoginPart(user, sizeof(UploadJob::user))) {
+        Reply(c, 400, "Bad Request", ERROR_BODY("invalid_upload", "invalid upload"));
+        return;
+    }
+    auto *job = static_cast<UploadJob *>(calloc(1, sizeof(UploadJob)));
+    if (!job) {
+        OutOfMemory(c);
+        return;
+    }
+    job->stream = UploadBegin(content_type, announced);
+    if (!job->stream) {
+        free(job);
+        Reply(c, 400, "Bad Request", ERROR_BODY("invalid_upload", "invalid upload"));
+        return;
+    }
+    snprintf(job->platform, sizeof(job->platform), "%s", platform);
+    snprintf(job->user, sizeof(job->user), "%s", user);
+    c.upload = job;
+    c.deadline = Now() + kRequestMs;
+    // The body starts right behind the headers; whatever already arrived is the first chunk.
+    memmove(c.input, c.input + head.length, c.used - head.length);
+    c.used -= head.length;
+    if (wants_continue && !c.continued && !c.used) SendContinue(c);
+    if (c.used) UploadPump(c);
+}
+// Everything but the two routes that can carry a picture keeps the small JSON limit
+// (message.create takes an <img src="data:..."> inline, upload.create takes multipart). A
+// large body is only buffered for a caller that has already proven it holds the token.
+bool AdmitLargeBody(Client &c, const Config &config, const Head &head, size_t body_size) {
+    if (strcmp(head.path, "/v1/upload.create") && strcmp(head.path, "/v1/message.create")) {
+        TooLarge(c);
+        return false;
+    }
+    if (!Authorize(c, config, head.Get("Authorization"))) return false;
+    const size_t need = head.length + body_size + 1;
+    if (need > c.input_capacity) {
+        char *grown = static_cast<char *>(realloc(c.input, need));
+        if (!grown) {
+            OutOfMemory(c);
+            return false;
         }
-        if (body_size) {
-            Reply(c, 400, "Bad Request", ERROR_BODY("invalid_request", "invalid request"));
-            return;
+        c.input = grown;
+        c.input_capacity = need;
+    }
+    return true;
+}
+// GET /v1/events: the WebSocket upgrade.
+void Events(Client &c, const Head &head, size_t body_size) {
+    if (strcmp(head.method, "GET")) {
+        Reply(c, 405, "Method Not Allowed", ERROR_BODY("method_not_allowed", "method not allowed"), "GET");
+        return;
+    }
+    if (body_size || strcasecmp(head.Get("Upgrade"), "websocket") || !HeaderToken(head.Get("Connection"), "upgrade") ||
+        strcmp(head.Get("Sec-WebSocket-Version"), "13") || !WebSocketKey(head.Get("Sec-WebSocket-Key"))) {
+        Bad(c);
+        return;
+    }
+    char accept[29], response[256];
+    WebSocketAccept(head.Get("Sec-WebSocket-Key"), accept);
+    const int n = snprintf(response, sizeof(response),
+                           "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\n"
+                           "Connection: Upgrade\r\nSec-WebSocket-Accept: %s\r\n\r\n",
+                           accept);
+    c.message = static_cast<char *>(malloc(kMessage + 1));
+    if (!c.message) {
+        OutOfMemory(c);
+        return;
+    }
+    if (!Queue(c, response, n)) return;
+    c.ws = true;
+    g_client_count = g_client_count + 1;
+    c.deadline = Now() + kRequestMs;
+    memmove(c.input, c.input + head.length, c.used - head.length);
+    c.used -= head.length;
+}
+// GET|HEAD /v1/proxy/{url}: the public resource route, no token.
+void ProxyRoute(Client &c, Hub *hub, const Head &head, size_t body_size) {
+    const bool only_head = !strcmp(head.method, "HEAD");
+    if (strcmp(head.method, "GET") && !only_head) {
+        Reply(c, 405, "Method Not Allowed", ERROR_BODY("method_not_allowed", "method not allowed"), "GET, HEAD");
+        return;
+    }
+    if (body_size) {
+        Bad(c);
+        return;
+    }
+    Proxy(c, hub, head.path + 10, head.Get("Range"), only_head);
+}
+
+// Everything an authenticated POST handler works with.
+struct Exchange {
+    Client &c;
+    Hub *hub;
+    const Backend *backend;
+    WebHooks *hooks;
+    const Head &head;
+    const cJSON *body; // null for multipart methods
+};
+void ServeStatus(Exchange &x) {
+    cJSON *result = cJSON_CreateObject();
+    if (result) {
+        cJSON_AddStringToObject(result, "version", SATORI_WX_VERSION);
+        cJSON_AddBoolToObject(result, "native", true);
+        cJSON_AddNumberToObject(result, "pid", static_cast<double>(getpid()));
+        cJSON_AddStringToObject(result, "backend", x.backend ? "attached" : "unavailable");
+        cJSON_AddBoolToObject(result, "event_replay", true);
+        cJSON_AddNumberToObject(result, "replay_capacity", static_cast<double>(kHistory));
+        cJSON_AddNumberToObject(result, "standard_methods", static_cast<double>(kMethodCount));
+        cJSON_AddNumberToObject(result, "sequence", static_cast<double>(Latest(x.hub)));
+        if (g_status_provider) g_status_provider(result, false);
+    }
+    ReplyOwned(x.c, result);
+}
+void ServeCapabilities(Exchange &x) {
+    cJSON *result = cJSON_CreateObject();
+    if (result) {
+        // standard_methods is what the login serves: login.features without the `guild.plain`
+        // flag, the same list satori-qq reports. adapter / version / platform / unsupported /
+        // event_types / message_elements / limits come from the adapter (g_status_provider),
+        // in the vocabulary satori-qq answers with, so a client negotiates without knowing which.
+        cJSON *methods = cJSON_CreateArray();
+        if (methods && cJSON_AddItemToObject(result, "standard_methods", methods)) {
+            const cJSON *logins = cJSON_GetObjectItemCaseSensitive(Meta(x.hub), "logins");
+            const cJSON *features =
+                logins && logins->child ? cJSON_GetObjectItemCaseSensitive(logins->child, "features") : nullptr;
+            for (const cJSON *f = features ? features->child : nullptr; f; f = f->next)
+                if (cJSON_IsString(f) && strcmp(f->valuestring, "guild.plain"))
+                    cJSON_AddItemToArray(methods, cJSON_CreateString(f->valuestring));
+        } else {
+            cJSON_Delete(methods);
         }
-        Proxy(c, hub, path + 10, header("Range"), head);
+        cJSON_AddBoolToObject(result, "wechat_backend", x.backend != nullptr);
+        cJSON_AddBoolToObject(result, "webhook", true);
+        cJSON_AddNumberToObject(result, "webhooks", static_cast<double>(WebHookCount(x.hooks)));
+        cJSON_AddBoolToObject(result, "proxy", true);
+        cJSON_AddBoolToObject(result, "upload", TempStoreAvailable());
+        if (g_status_provider) g_status_provider(result, true);
+    }
+    ReplyOwned(x.c, result);
+}
+void ServeWakelock(Exchange &x) {
+    const cJSON *on = cJSON_GetObjectItemCaseSensitive(x.body, "on");
+    const cJSON *toggle = cJSON_GetObjectItemCaseSensitive(x.body, "toggle");
+    if (!g_wakelock_provider) {
+        Reply(x.c, 501, "Not Implemented", ERROR_BODY("backend_not_implemented", "backend not implemented"));
+    } else if (cJSON_IsBool(on) || (cJSON_IsBool(toggle) && toggle->valueint)) {
+        const int action = cJSON_IsBool(on) ? (on->valueint ? 1 : 0) : 2;
+        bool held = false;
+        g_wakelock_provider(action, &held);
+        cJSON *result = cJSON_CreateObject();
+        if (result) {
+            cJSON_AddBoolToObject(result, "on", held);
+            cJSON_AddBoolToObject(result, "held", held);
+        }
+        ReplyOwned(x.c, result);
+    } else {
+        Bad(x.c);
+    }
+}
+// WeChat's "拍一戳". Not a Satori method: an internal extra on the same account rules as the rpc
+// methods (token + login headers), handled by the module's provider.
+void ServePat(Exchange &x) {
+    const cJSON *channel_id = cJSON_GetObjectItemCaseSensitive(x.body, "channel_id");
+    const cJSON *user_id = cJSON_GetObjectItemCaseSensitive(x.body, "user_id");
+    if (!ResolveLogin(x.c, x.hub, x.head)) return;
+    if (!g_pat_provider) {
+        Reply(x.c, 501, "Not Implemented", ERROR_BODY("backend_not_implemented", "backend not implemented"));
         return;
     }
-    const char *auth = header("Authorization");
-    if (!*auth) {
-        Reply(c, 401, "Unauthorized", ERROR_BODY("missing_token", "missing token"));
+    if (!cJSON_IsString(channel_id) || !*channel_id->valuestring || !cJSON_IsString(user_id) ||
+        !*user_id->valuestring) {
+        Bad(x.c);
         return;
     }
-    if (strncasecmp(auth, "Bearer ", 7) || !EqualToken(config.token, auth + 7)) {
-        Reply(c, 403, "Forbidden", ERROR_BODY("invalid_token", "invalid token"));
+    char detail[160] = {};
+    bool rejected = false;
+    if (g_pat_provider(channel_id->valuestring, user_id->valuestring, &rejected, detail, sizeof(detail))) {
+        Reply(x.c, 200, "OK", "{\"ok\":true}");
         return;
     }
+    cJSON *failure = cJSON_CreateObject();
+    if (!failure) {
+        ReplyOwned(x.c, nullptr);
+        return;
+    }
+    cJSON_AddStringToObject(failure, "code", "pat_failed");
+    cJSON_AddStringToObject(failure, "message", detail[0] ? detail : "pat failed");
+    if (rejected) cJSON_AddBoolToObject(failure, "rejected", true);
+    char *text = cJSON_PrintUnformatted(failure);
+    Reply(x.c, 502, "Request Failed", text ? text : "{}");
+    free(text);
+    cJSON_Delete(failure);
+}
+void ServeWebHook(Exchange &x, bool create) {
+    const cJSON *url = cJSON_GetObjectItemCaseSensitive(x.body, "url");
+    const cJSON *token = cJSON_GetObjectItemCaseSensitive(x.body, "token");
+    bool ok = cJSON_IsString(url) && *url->valuestring && (!token || cJSON_IsString(token));
+    if (ok)
+        ok = create ? AddWebHook(x.hooks, url->valuestring, token ? token->valuestring : "")
+                    : RemoveWebHook(x.hooks, url->valuestring);
+    Reply(x.c, ok ? 200 : 400, ok ? "OK" : "Bad Request", ok ? "{}" : ERROR_BODY("invalid_webhook", "invalid webhook"));
+}
+// A Satori method: needs the login the request names, online and serving it.
+void ServeMethod(Exchange &x, const Method &rpc, const Multipart *uploads, const char *type, const char *data,
+                 size_t size) {
+    const cJSON *login = ResolveLogin(x.c, x.hub, x.head);
+    if (!login) return;
+    if (!strcmp(rpc.name, "login.get")) {
+        ReplyJson(x.c, login);
+        return;
+    }
+    if (!LoginOnline(login)) {
+        Reply(x.c, 503, "Service Unavailable", ERROR_BODY("login_offline", "login offline"));
+        return;
+    }
+    if (!LoginServes(login, rpc.name)) {
+        Reply(x.c, 404, "Not Found", ERROR_BODY("unsupported_method", "unsupported method"));
+        return;
+    }
+    const char *platform = x.head.Get("Satori-Platform"), *user = x.head.Get("Satori-User-ID");
+    if (rpc.upload) {
+        Upload(x.c, platform, user, uploads);
+        return;
+    }
+    if (!ValidateParams(rpc, x.body)) {
+        Bad(x.c);
+        return;
+    }
+    if (!x.backend || !x.backend->call) {
+        Reply(x.c, 501, "Not Implemented", ERROR_BODY("backend_not_implemented", "backend not implemented"));
+        return;
+    }
+    const Request request{&rpc, platform, user, x.body, type, data, size, nullptr};
+    Response response = x.backend->call(x.backend->context, request);
+    const int code = response.status >= 200 && response.status <= 599 ? response.status : 500;
+    char *text = response.body ? cJSON_PrintUnformatted(response.body) : nullptr;
+    Reply(x.c, code,
+          code < 300    ? "OK"
+          : code == 404 ? "Not Found"
+          : code == 501 ? "Not Implemented"
+                        : "Request Failed",
+          text ? text : "{}");
+    free(text);
+    cJSON_Delete(response.body);
+}
+// The authenticated POST routes: Satori methods plus the module's own /v1/internal and /v1/meta extras.
+void Rpc(Client &c, Hub *hub, const Backend *backend, WebHooks *hooks, const Head &head, size_t body_size) {
+    const char *path = head.path;
     const bool meta = !strcmp(path, "/v1/meta");
     const bool status = !strcmp(path, "/v1/internal/status");
     const bool capabilities = !strcmp(path, "/v1/internal/capabilities");
@@ -961,20 +1086,21 @@ void Http(Client &c, const Config &config, Hub *hub, const Backend *backend, Web
         Reply(c, 404, "Not Found", ERROR_BODY("not_found", "unknown API route"));
         return;
     }
-    if (strcmp(method, "POST")) {
+    if (strcmp(head.method, "POST")) {
         Reply(c, 405, "Method Not Allowed", ERROR_BODY("method_not_allowed", "method not allowed"));
         return;
     }
+    const char *type = head.Get("Content-Type");
+    const char *data = c.input + head.length;
     cJSON *body = nullptr;
     Multipart uploads{};
-    const char *type = header("Content-Type");
     if (rpc && rpc->upload) {
-        if (strncasecmp(type, "multipart/form-data;", 20) || !strstr(type, "boundary=")) {
+        if (!MultipartType(type)) {
             Reply(c, 415, "Unsupported Media Type", ERROR_BODY("unsupported_media_type", "expected application/json"));
             return;
         }
-        if (!ParseMultipart(type, c.input + length, body_size, &uploads)) {
-            bad();
+        if (!ParseMultipart(type, data, body_size, &uploads)) {
+            Bad(c);
             return;
         }
     } else {
@@ -982,186 +1108,76 @@ void Http(Client &c, const Config &config, Hub *hub, const Backend *backend, Web
             Reply(c, 415, "Unsupported Media Type", ERROR_BODY("unsupported_media_type", "expected application/json"));
             return;
         }
-        body = body_size ? Json(c.input + length, body_size) : cJSON_CreateObject();
+        body = body_size ? Json(data, body_size) : cJSON_CreateObject();
         // Structural parse only here; a method's own parameter rules are checked after we
         // know the login actually supports it, so an unsupported method answers 404 (not a
         // misleading 400) whatever its parameters look like.
         if (!body) {
-            bad();
+            Bad(c);
             return;
         }
     }
-    if (meta) {
-        char *text = cJSON_PrintUnformatted(Meta(hub));
-        Reply(c, text ? 200 : 500, text ? "OK" : "Internal Server Error", text ? text : "{}");
-        free(text);
-    } else if (status) {
-        cJSON *result = cJSON_CreateObject();
-        if (result) {
-            cJSON_AddStringToObject(result, "version", SATORI_WX_VERSION);
-            cJSON_AddBoolToObject(result, "native", true);
-            cJSON_AddNumberToObject(result, "pid", static_cast<double>(getpid()));
-            cJSON_AddStringToObject(result, "backend", backend ? "attached" : "unavailable");
-            cJSON_AddBoolToObject(result, "event_replay", true);
-            cJSON_AddNumberToObject(result, "replay_capacity", static_cast<double>(kHistory));
-            cJSON_AddNumberToObject(result, "standard_methods", static_cast<double>(kMethodCount));
-            cJSON_AddNumberToObject(result, "sequence", static_cast<double>(Latest(hub)));
-            if (g_status_provider) g_status_provider(result, false);
-            char *text = cJSON_PrintUnformatted(result);
-            Reply(c, text ? 200 : 500, text ? "OK" : "Internal Server Error", text ? text : "{}");
-            free(text);
-            cJSON_Delete(result);
-        } else {
-            Reply(c, 500, "Internal Server Error", ERROR_BODY("internal_error", "internal error"));
-        }
-    } else if (capabilities) {
-        cJSON *result = cJSON_CreateObject();
-        if (result) {
-            // standard_methods is what the login serves: login.features without the `guild.plain`
-            // flag, the same list satori-qq reports. adapter / version / platform / unsupported /
-            // event_types / message_elements / limits come from the adapter (g_status_provider),
-            // in the vocabulary satori-qq answers with, so a client negotiates without knowing which.
-            cJSON *methods = cJSON_CreateArray();
-            if (methods && cJSON_AddItemToObject(result, "standard_methods", methods)) {
-                const cJSON *logins = cJSON_GetObjectItemCaseSensitive(Meta(hub), "logins");
-                const cJSON *features =
-                    logins && logins->child ? cJSON_GetObjectItemCaseSensitive(logins->child, "features") : nullptr;
-                for (const cJSON *f = features ? features->child : nullptr; f; f = f->next)
-                    if (cJSON_IsString(f) && strcmp(f->valuestring, "guild.plain"))
-                        cJSON_AddItemToArray(methods, cJSON_CreateString(f->valuestring));
-            } else {
-                cJSON_Delete(methods);
-            }
-            cJSON_AddBoolToObject(result, "wechat_backend", backend != nullptr);
-            cJSON_AddBoolToObject(result, "webhook", true);
-            cJSON_AddNumberToObject(result, "webhooks", static_cast<double>(WebHookCount(hooks)));
-            cJSON_AddBoolToObject(result, "proxy", true);
-            cJSON_AddBoolToObject(result, "upload", TempStoreAvailable());
-            if (g_status_provider) g_status_provider(result, true);
-            char *text = cJSON_PrintUnformatted(result);
-            Reply(c, text ? 200 : 500, text ? "OK" : "Internal Server Error", text ? text : "{}");
-            free(text);
-            cJSON_Delete(result);
-        } else {
-            Reply(c, 500, "Internal Server Error", ERROR_BODY("internal_error", "internal error"));
-        }
-    } else if (wakelock) {
-        const cJSON *on = cJSON_GetObjectItemCaseSensitive(body, "on");
-        const cJSON *toggle = cJSON_GetObjectItemCaseSensitive(body, "toggle");
-        if (!g_wakelock_provider) {
-            Reply(c, 501, "Not Implemented", ERROR_BODY("backend_not_implemented", "backend not implemented"));
-        } else if (cJSON_IsBool(on) || (cJSON_IsBool(toggle) && toggle->valueint)) {
-            const int action = cJSON_IsBool(on) ? (on->valueint ? 1 : 0) : 2;
-            bool held = false;
-            g_wakelock_provider(action, &held);
-            cJSON *result = cJSON_CreateObject();
-            if (result) {
-                cJSON_AddBoolToObject(result, "on", held);
-                cJSON_AddBoolToObject(result, "held", held);
-                char *text = cJSON_PrintUnformatted(result);
-                Reply(c, text ? 200 : 500, text ? "OK" : "Internal Server Error", text ? text : "{}");
-                free(text);
-                cJSON_Delete(result);
-            } else {
-                Reply(c, 500, "Internal Server Error", ERROR_BODY("internal_error", "internal error"));
-            }
-        } else {
-            Reply(c, 400, "Bad Request", ERROR_BODY("invalid_request", "invalid request"));
-        }
-    } else if (pat) {
-        // WeChat's "拍一戳". Not a Satori method: an internal extra on the same account rules
-        // as the rpc methods (token + login headers), handled by the module's provider.
-        const cJSON *channel_id = cJSON_GetObjectItemCaseSensitive(body, "channel_id");
-        const cJSON *user_id = cJSON_GetObjectItemCaseSensitive(body, "user_id");
-        if (!*header("Satori-Platform") || !*header("Satori-User-ID")) {
-            Reply(c, 400, "Bad Request",
-                  ERROR_BODY("missing_login_headers", "missing Satori-Platform or Satori-User-ID header"));
-        } else if (!FindLogin(hub, header("Satori-Platform"), header("Satori-User-ID"))) {
-            Reply(c, 403, "Forbidden", ERROR_BODY("login_not_found", "login not found"));
-        } else if (!g_pat_provider) {
-            Reply(c, 501, "Not Implemented", ERROR_BODY("backend_not_implemented", "backend not implemented"));
-        } else if (!cJSON_IsString(channel_id) || !*channel_id->valuestring || !cJSON_IsString(user_id) ||
-                   !*user_id->valuestring) {
-            Reply(c, 400, "Bad Request", ERROR_BODY("invalid_request", "invalid request"));
-        } else {
-            char detail[160] = {};
-            bool rejected = false;
-            const bool ok =
-                g_pat_provider(channel_id->valuestring, user_id->valuestring, &rejected, detail, sizeof(detail));
-            if (ok) {
-                Reply(c, 200, "OK", "{\"ok\":true}");
-            } else {
-                cJSON *body_out = cJSON_CreateObject();
-                if (body_out) {
-                    cJSON_AddStringToObject(body_out, "code", "pat_failed");
-                    cJSON_AddStringToObject(body_out, "message", detail[0] ? detail : "pat failed");
-                    if (rejected) cJSON_AddBoolToObject(body_out, "rejected", true);
-                    char *text = cJSON_PrintUnformatted(body_out);
-                    Reply(c, 502, "Request Failed", text ? text : "{}");
-                    free(text);
-                    cJSON_Delete(body_out);
-                } else {
-                    Reply(c, 500, "Internal Server Error", ERROR_BODY("internal_error", "internal error"));
-                }
-            }
-        }
-    } else if (webhook_create || webhook_delete) {
-        const cJSON *url = cJSON_GetObjectItemCaseSensitive(body, "url");
-        const cJSON *token = cJSON_GetObjectItemCaseSensitive(body, "token");
-        bool ok = cJSON_IsString(url) && *url->valuestring && (!token || cJSON_IsString(token));
-        if (ok) {
-            if (webhook_create)
-                ok = AddWebHook(hooks, url->valuestring, token ? token->valuestring : "");
-            else
-                ok = RemoveWebHook(hooks, url->valuestring);
-        }
-        Reply(c, ok ? 200 : 400, ok ? "OK" : "Bad Request",
-              ok ? "{}" : ERROR_BODY("invalid_webhook", "invalid webhook"));
-    } else if (!*header("Satori-Platform") || !*header("Satori-User-ID")) {
-        Reply(c, 400, "Bad Request",
-              ERROR_BODY("missing_login_headers", "missing Satori-Platform or Satori-User-ID header"));
-    } else {
-        const cJSON *login = FindLogin(hub, header("Satori-Platform"), header("Satori-User-ID"));
-        if (!login)
-            Reply(c, 403, "Forbidden", ERROR_BODY("login_not_found", "login not found"));
-        else if (!strcmp(rpc->name, "login.get")) {
-            char *text = cJSON_PrintUnformatted(login);
-            Reply(c, text ? 200 : 500, text ? "OK" : "Internal Server Error", text ? text : "{}");
-            free(text);
-        } else if (cJSON_GetObjectItemCaseSensitive(login, "status")->valuedouble != 1) {
-            Reply(c, 503, "Service Unavailable", ERROR_BODY("login_offline", "login offline"));
-        } else {
-            bool supported = false;
-            const cJSON *features = cJSON_GetObjectItemCaseSensitive(login, "features");
-            for (const cJSON *f = features ? features->child : nullptr; f; f = f->next)
-                if (cJSON_IsString(f) && !strcmp(f->valuestring, rpc->name)) supported = true;
-            if (!supported)
-                Reply(c, 404, "Not Found", ERROR_BODY("unsupported_method", "unsupported method"));
-            else if (rpc->upload)
-                Upload(c, header("Satori-Platform"), header("Satori-User-ID"), &uploads);
-            else if (!ValidateParams(*rpc, body))
-                Reply(c, 400, "Bad Request", ERROR_BODY("invalid_request", "invalid request"));
-            else if (!backend || !backend->call)
-                Reply(c, 501, "Not Implemented", ERROR_BODY("backend_not_implemented", "backend not implemented"));
-            else {
-                const Request request{
-                    rpc,       header("Satori-Platform"),       header("Satori-User-ID"), body, type, c.input + length,
-                    body_size, rpc->upload ? &uploads : nullptr};
-                Response response = backend->call(backend->context, request);
-                const int code = response.status >= 200 && response.status <= 599 ? response.status : 500;
-                char *text = response.body ? cJSON_PrintUnformatted(response.body) : nullptr;
-                Reply(c, code,
-                      code < 300    ? "OK"
-                      : code == 404 ? "Not Found"
-                      : code == 501 ? "Not Implemented"
-                                    : "Request Failed",
-                      text ? text : "{}");
-                free(text);
-                cJSON_Delete(response.body);
-            }
-        }
-    }
+    Exchange x{c, hub, backend, hooks, head, body};
+    if (meta)
+        ReplyJson(c, Meta(hub));
+    else if (status)
+        ServeStatus(x);
+    else if (capabilities)
+        ServeCapabilities(x);
+    else if (wakelock)
+        ServeWakelock(x);
+    else if (pat)
+        ServePat(x);
+    else if (webhook_create || webhook_delete)
+        ServeWebHook(x, webhook_create);
+    else
+        ServeMethod(x, *rpc, &uploads, type, data, body_size);
     cJSON_Delete(body);
+}
+// One step of a client's HTTP exchange: finish a streamed upload, or parse what has arrived and
+// answer, upgrade or start streaming. Returns without doing anything until the whole request is here.
+void Http(Client &c, const Config &config, Hub *hub, const Backend *backend, WebHooks *hooks) {
+    if (c.upload) {
+        UploadPump(c);
+        return;
+    }
+    Head head;
+    if (!ReadHead(c, &head)) return;
+    if (!*head.Get("Host") || *head.Get("Transfer-Encoding")) {
+        Bad(c);
+        return;
+    }
+    const char *expect = head.Get("Expect");
+    const bool wants_continue = !strcasecmp(expect, "100-continue");
+    if (*expect && !wants_continue) {
+        Reply(c, 417, "Expectation Failed", ERROR_BODY("expectation_failed", "expectation failed"));
+        return;
+    }
+    uint64_t announced = 0;
+    if (!ParseLength(c, head.Get("Content-Length"), &announced)) return;
+    const bool streamed_upload = announced > kMessage && !strcmp(head.path, "/v1/upload.create");
+    if (!streamed_upload && announced > kUploadMax) {
+        TooLarge(c);
+        return;
+    }
+    if (streamed_upload) {
+        StartUpload(c, config, hub, head, announced, wants_continue);
+        return;
+    }
+    const size_t body_size = static_cast<size_t>(announced);
+    if (body_size > kMessage && !AdmitLargeBody(c, config, head, body_size)) return;
+    if (c.used < head.length + body_size) {
+        // curl and some SDKs hold the body back until the server says to go ahead.
+        if (wants_continue && !c.continued) SendContinue(c);
+        return;
+    }
+    if (!strcmp(head.path, "/v1/events")) {
+        Events(c, head, body_size);
+    } else if (!strncmp(head.path, "/v1/proxy/", 10)) {
+        ProxyRoute(c, hub, head, body_size);
+    } else if (Authorize(c, config, head.Get("Authorization"))) {
+        Rpc(c, hub, backend, hooks, head, body_size);
+    }
 }
 } // namespace
 

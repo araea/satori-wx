@@ -18,19 +18,25 @@ FLAGS=(-std=c++20 -O2 -fPIC -fvisibility=hidden -fno-exceptions -fno-rtti
        -I "$R/native")
 "$CC" -std=c11 -O2 -fPIC -fvisibility=hidden -DCJSON_HIDE_SYMBOLS -DCJSON_NESTING_LIMIT=16 \
     -c "$R/native/vendor/cjson/cJSON.c" -o "$WORK/cjson.o"
-"$CXX" "${FLAGS[@]}" -shared "$R/native/module.cpp" "$R/native/server.cpp" "$R/native/protocol.cpp" "$R/native/multipart.cpp" "$R/native/upload_stream.cpp" \
-    "$R/native/tempstore.cpp" "$R/native/webhook.cpp" "$R/native/wx_account.cpp" "$R/native/wx_adapter.cpp" "$R/native/wx_live.cpp" "$R/native/wx_watch.cpp" \
-    "$R/native/wx_store.cpp" "$R/native/wx_backend.cpp" "$R/native/wx_capabilities.cpp" "$R/native/wx_send.cpp" "$R/native/wx_send_media.cpp" "$R/native/mp4_probe.cpp" "$R/native/wx_voice.cpp" "$R/native/audio_pcm.cpp" "$R/native/wx_forward.cpp" \
-    "$R/native/wx_room.cpp" "$R/native/wx_pat.cpp" "$R/native/wx_message.cpp" "$R/native/wx_events.cpp" "$R/native/wx_media.cpp" "$R/native/media.cpp" "$R/native/xml_lite.cpp" \
-    "$R/native/wx_keepalive.cpp" \
-    "$R/native/wx_key.cpp" "$R/native/wcdb.cpp" "$WORK/cjson.o" \
+# 协议与服务端核心：模块、宿主侧自检与探针工具共用同一份源码。
+SERVER_CORE=(server protocol multipart upload_stream tempstore webhook)
+MODULE_ONLY=(
+    module wx_account wx_adapter wx_live wx_watch wx_store wx_backend wx_capabilities
+    wx_send wx_send_media mp4_probe wx_voice audio_pcm wx_forward wx_room wx_pat
+    wx_message wx_events wx_media media xml_lite wx_keepalive wx_key wcdb
+)
+sources() {
+    local name
+    for name in "$@"; do printf '%s\n' "$R/native/$name.cpp"; done
+}
+mapfile -t CORE < <(sources "${SERVER_CORE[@]}")
+mapfile -t MODULE < <(sources "${MODULE_ONLY[@]}")
+"$CXX" "${FLAGS[@]}" -shared "${MODULE[@]}" "${CORE[@]}" "$WORK/cjson.o" \
     -Wl,--no-undefined,-z,relro,-z,now -llog -ldl -o "$WORK/module/zygisk/arm64-v8a.so"
-"$CXX" "${FLAGS[@]}" "$R/tools/device_verify.cpp" "$R/native/server.cpp" "$R/native/protocol.cpp" \
-    "$R/native/multipart.cpp" "$R/native/upload_stream.cpp" "$R/native/tempstore.cpp" "$R/native/webhook.cpp" "$WORK/cjson.o" -Wl,--no-undefined -o "$OUT/satori-wx-check"
+"$CXX" "${FLAGS[@]}" "$R/tools/device_verify.cpp" "${CORE[@]}" "$WORK/cjson.o" -Wl,--no-undefined -o "$OUT/satori-wx-check"
 "$CXX" "${FLAGS[@]}" "$R/tools/account_probe.cpp" "$R/native/wx_account.cpp" "$R/native/protocol.cpp" \
     "$R/native/wx_capabilities.cpp" "$WORK/cjson.o" -Wl,--no-undefined -o "$OUT/satori-wx-account"
-"$CXX" "${FLAGS[@]}" "$R/tools/wcdb_probe.cpp" "$R/native/wcdb.cpp" \
-    -Wl,--no-undefined -ldl -o "$OUT/satori-wx-wcdb"
+"$CXX" "${FLAGS[@]}" "$R/tools/wcdb_probe.cpp" "$R/native/wcdb.cpp" -Wl,--no-undefined -ldl -o "$OUT/satori-wx-wcdb"
 cp "$R/module.prop" "$R/customize.sh" "$R/service.sh" "$R/action.sh" "$R/tools/wxguard.sh" "$WORK/module/"
 chmod 0755 "$WORK/module/service.sh" "$WORK/module/action.sh" "$WORK/module/wxguard.sh"
 mkdir -p "$WORK/module/licenses"
