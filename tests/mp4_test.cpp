@@ -8,7 +8,10 @@
 namespace {
 int failures = 0;
 void Check(bool ok, const char *what) {
-    if (!ok) { fprintf(stderr, "FAIL: %s\n", what); ++failures; }
+    if (!ok) {
+        fprintf(stderr, "FAIL: %s\n", what);
+        ++failures;
+    }
 }
 const char *Fixture(const char *name) {
     static char path[512];
@@ -16,7 +19,7 @@ const char *Fixture(const char *name) {
     snprintf(path, sizeof(path), "%s/%s", root ? root : "tests/fixtures", name);
     return path;
 }
-}
+} // namespace
 
 int main() {
     satori::Mp4Info info;
@@ -29,7 +32,8 @@ int main() {
     // moov after mdat: found by seeking past the media data.
     Check(satori::Mp4Probe(Fixture("tiny-moovlast.mp4"), &info), "moov-last reads");
     Check(info.container && info.has_video && !info.has_audio, "moov-last: video only");
-    Check(info.width == 64 && info.height == 48 && info.duration_ms >= 900 && info.duration_ms <= 1100, "moov-last size and duration");
+    Check(info.width == 64 && info.height == 48 && info.duration_ms >= 900 && info.duration_ms <= 1100,
+          "moov-last size and duration");
 
     // audio-only container: not a video, however it is named.
     Check(satori::Mp4Probe(Fixture("tiny.m4a"), &info), "m4a reads");
@@ -43,13 +47,19 @@ int main() {
     Check(satori::Mp4ProbeBytes(png, sizeof(png), &info) && !info.container, "a PNG is not a container");
     // a truncated box header must not read past the end
     const unsigned char cut[] = {0, 0, 0, 24, 'f', 't', 'y', 'p', 'i', 's', 'o', 'm', 0, 0, 2, 0, 'i', 's'};
-    Check(satori::Mp4ProbeBytes(cut, sizeof(cut), &info) && info.container && !info.has_video, "truncated ftyp is tolerated");
+    Check(satori::Mp4ProbeBytes(cut, sizeof(cut), &info) && info.container && !info.has_video,
+          "truncated ftyp is tolerated");
     // an absurd box size must not loop or overflow
-    const unsigned char huge[] = {0, 0, 0, 16, 'f', 't', 'y', 'p', 'i', 's', 'o', 'm', 0, 0, 0, 0, 0xFF, 0xFF, 0xFF, 0xFF, 'm', 'o', 'o', 'v'};
-    Check(satori::Mp4ProbeBytes(huge, sizeof(huge), &info) && info.container && !info.has_video, "oversized box is tolerated");
+    const unsigned char huge[] = {0, 0, 0, 16, 'f',  't',  'y',  'p',  'i', 's', 'o', 'm',
+                                  0, 0, 0, 0,  0xFF, 0xFF, 0xFF, 0xFF, 'm', 'o', 'o', 'v'};
+    Check(satori::Mp4ProbeBytes(huge, sizeof(huge), &info) && info.container && !info.has_video,
+          "oversized box is tolerated");
     Check(!satori::Mp4Probe("/nonexistent/file.mp4", &info), "a missing file is reported");
 
-    if (failures) { fprintf(stderr, "%d mp4 test failure(s)\n", failures); return 1; }
+    if (failures) {
+        fprintf(stderr, "%d mp4 test failure(s)\n", failures);
+        return 1;
+    }
     puts("mp4 probe tests passed");
     return 0;
 }

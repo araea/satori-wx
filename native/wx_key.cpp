@@ -46,7 +46,10 @@ int ReadKey(JNIEnv *env, jbyteArray array, unsigned char *out) {
     const jsize size = env->GetArrayLength(array);
     if (size <= 0 || static_cast<size_t>(size) > kKeyMax) return 0;
     env->GetByteArrayRegion(array, 0, size, reinterpret_cast<jbyte *>(out));
-    if (env->ExceptionCheck()) { env->ExceptionClear(); return 0; }
+    if (env->ExceptionCheck()) {
+        env->ExceptionClear();
+        return 0;
+    }
     return static_cast<int>(size);
 }
 
@@ -148,8 +151,8 @@ void *Worker(void *) {
     }
     g_slot = const_cast<RegisterFn *>(&env->functions->RegisterNatives);
     const bool installed = g_patch.install(g_slot, ObserveRegister);
-    __android_log_print(installed ? ANDROID_LOG_INFO : ANDROID_LOG_ERROR, "SatoriWx",
-                        "key capture: patched=%d", installed ? 1 : 0);
+    __android_log_print(installed ? ANDROID_LOG_INFO : ANDROID_LOG_ERROR, "SatoriWx", "key capture: patched=%d",
+                        installed ? 1 : 0);
     // Stay resident: WeChat re-registers natives and can switch accounts, so later specs must
     // still be captured. Each new spec rewrites key.log for the store to pick up.
     for (;;) {
@@ -168,7 +171,9 @@ void KeyCaptureStart(void *vm, const char *app_data_dir) {
     snprintf(g_dir, sizeof(g_dir), "%s/files/satori-wx", app_data_dir);
     pthread_t thread;
     const int error = pthread_create(&thread, nullptr, Worker, nullptr);
-    if (!error) pthread_detach(thread);
-    else __android_log_print(ANDROID_LOG_ERROR, "SatoriWx", "key capture thread: %s", strerror(error));
+    if (!error)
+        pthread_detach(thread);
+    else
+        __android_log_print(ANDROID_LOG_ERROR, "SatoriWx", "key capture thread: %s", strerror(error));
 }
 } // namespace satori

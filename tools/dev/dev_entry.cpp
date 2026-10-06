@@ -64,7 +64,10 @@ void Status(cJSON *object, bool) {
 void *Serve(void *) {
     pthread_setname_np(pthread_self(), "satori-dev");
     const int listener = satori::Listen(g_config);
-    if (listener < 0) { __android_log_print(ANDROID_LOG_ERROR, "SatoriDev", "listen failed"); return nullptr; }
+    if (listener < 0) {
+        __android_log_print(ANDROID_LOG_ERROR, "SatoriDev", "listen failed");
+        return nullptr;
+    }
     __android_log_print(ANDROID_LOG_INFO, "SatoriDev", "dev Satori listening at 127.0.0.1:%u", g_config.port);
     satori::Run(listener, g_config, g_bus, satori::WeChatBackend());
     return nullptr;
@@ -136,14 +139,16 @@ void *Control(void *) {
                     snprintf(ref.display, sizeof(ref.display), "%s", "测试");
                     snprintf(ref.text, sizeof(ref.text), "%s", "被引用的一行");
                     satori::SendResult r = satori::SendQuote(talker, cursor, ref, nullptr);
-                    snprintf(reply, sizeof(reply), "{\"ok\":%d,\"id\":%lld,\"net\":%d,\"detail\":\"%s\"}\n", r.ok ? 1 : 0, r.local_id, r.net_id, r.detail);
+                    snprintf(reply, sizeof(reply), "{\"ok\":%d,\"id\":%lld,\"net\":%d,\"detail\":\"%s\"}\n",
+                             r.ok ? 1 : 0, r.local_id, r.net_id, r.detail);
                 }
             } else if (verb && !strcmp(verb, "file")) {
                 const char *talker = strsep(&cursor, " ");
                 const char *path = strsep(&cursor, " ");
                 if (talker && path && cursor) {
                     satori::SendResult r = satori::SendFile(talker, path, cursor);
-                    snprintf(reply, sizeof(reply), "{\"ok\":%d,\"id\":%lld,\"detail\":\"%s\"}\n", r.ok ? 1 : 0, r.local_id, r.detail);
+                    snprintf(reply, sizeof(reply), "{\"ok\":%d,\"id\":%lld,\"detail\":\"%s\"}\n", r.ok ? 1 : 0,
+                             r.local_id, r.detail);
                 }
             }
         }

@@ -67,7 +67,10 @@ bool ReadFile(const char *path, char *buffer, size_t capacity, size_t *size) {
         if (used == capacity) {
             char extra;
             const ssize_t more = read(fd, &extra, 1);
-            if (more != 0) { close(fd); return false; } // oversize or read error
+            if (more != 0) {
+                close(fd);
+                return false;
+            } // oversize or read error
             break;
         }
     }
@@ -84,7 +87,10 @@ const char *SkipSpace(const char *p, const char *end) {
 
 int EncodeUtf8(uint32_t cp, char *out) {
     if (!cp || cp > 0x10ffff || (cp >= 0xd800 && cp <= 0xdfff)) return -1;
-    if (cp < 0x80) { out[0] = static_cast<char>(cp); return 1; }
+    if (cp < 0x80) {
+        out[0] = static_cast<char>(cp);
+        return 1;
+    }
     if (cp < 0x800) {
         out[0] = static_cast<char>(0xc0 | (cp >> 6));
         out[1] = static_cast<char>(0x80 | (cp & 63));
@@ -107,16 +113,23 @@ int EncodeUtf8(uint32_t cp, char *out) {
 bool NumericEntity(const char *p, size_t size, uint32_t *out) {
     if (!size || size > 8) return false;
     const bool hex = *p == 'x' || *p == 'X';
-    if (hex) { ++p; --size; }
+    if (hex) {
+        ++p;
+        --size;
+    }
     if (!size || size > 6) return false;
     uint32_t value = 0;
     for (size_t i = 0; i < size; ++i) {
         const char c = p[i];
         int digit;
-        if (c >= '0' && c <= '9') digit = c - '0';
-        else if (hex && c >= 'a' && c <= 'f') digit = c - 'a' + 10;
-        else if (hex && c >= 'A' && c <= 'F') digit = c - 'A' + 10;
-        else return false;
+        if (c >= '0' && c <= '9')
+            digit = c - '0';
+        else if (hex && c >= 'a' && c <= 'f')
+            digit = c - 'a' + 10;
+        else if (hex && c >= 'A' && c <= 'F')
+            digit = c - 'A' + 10;
+        else
+            return false;
         value = value * (hex ? 16 : 10) + static_cast<uint32_t>(digit);
         if (value > 0x10ffff) return false;
     }
@@ -150,14 +163,20 @@ bool DecodeEntities(const char *in, size_t size, char *out, size_t capacity) {
         char decoded = 0;
         uint32_t code = 0;
         bool known = true;
-        if (length == 3 && !memcmp(entity, "amp", 3)) decoded = '&';
-        else if (length == 2 && !memcmp(entity, "lt", 2)) decoded = '<';
-        else if (length == 2 && !memcmp(entity, "gt", 2)) decoded = '>';
-        else if (length == 4 && !memcmp(entity, "quot", 4)) decoded = '"';
-        else if (length == 4 && !memcmp(entity, "apos", 4)) decoded = '\'';
+        if (length == 3 && !memcmp(entity, "amp", 3))
+            decoded = '&';
+        else if (length == 2 && !memcmp(entity, "lt", 2))
+            decoded = '<';
+        else if (length == 2 && !memcmp(entity, "gt", 2))
+            decoded = '>';
+        else if (length == 4 && !memcmp(entity, "quot", 4))
+            decoded = '"';
+        else if (length == 4 && !memcmp(entity, "apos", 4))
+            decoded = '\'';
         else if (length >= 2 && entity[0] == '#') {
             if (!NumericEntity(entity + 1, length - 1, &code)) known = false;
-        } else known = false;
+        } else
+            known = false;
         if (!known) {
             if (used + (semi - i) + 1 >= capacity) return false;
             memcpy(out + used, in + i, semi - i + 1);
@@ -224,13 +243,14 @@ void ParsePrefs(const char *data, size_t size, Prefs *prefs) {
             if (name_size == 6 && !memcmp(name, "string", 6)) {
                 char value[kPrefsValue] = {};
                 if (!self_closing) {
-                    const char *close = static_cast<const char *>(memchr(gt + 1, '<', static_cast<size_t>(end - gt - 1)));
-                    if (close && DecodeEntities(gt + 1, static_cast<size_t>(close - gt - 1), value, sizeof(value))) prefs->Set(key, value);
+                    const char *close =
+                        static_cast<const char *>(memchr(gt + 1, '<', static_cast<size_t>(end - gt - 1)));
+                    if (close && DecodeEntities(gt + 1, static_cast<size_t>(close - gt - 1), value, sizeof(value)))
+                        prefs->Set(key, value);
                 } else if (Attribute(p, gt, "value", value, sizeof(value))) {
                     prefs->Set(key, value);
                 }
-            } else if ((name_size == 7 && !memcmp(name, "boolean", 7)) ||
-                       (name_size == 3 && !memcmp(name, "int", 3)) ||
+            } else if ((name_size == 7 && !memcmp(name, "boolean", 7)) || (name_size == 3 && !memcmp(name, "int", 3)) ||
                        (name_size == 4 && !memcmp(name, "long", 4))) {
                 char value[kPrefsValue] = {};
                 if (Attribute(p, gt, "value", value, sizeof(value))) prefs->Set(key, value);
@@ -267,7 +287,10 @@ bool Varint(const unsigned char *&p, const unsigned char *end, uint32_t *out) {
     for (int shift = 0; shift < 35 && p < end; shift += 7) {
         const unsigned char byte = *p++;
         value |= static_cast<uint32_t>(byte & 0x7f) << shift;
-        if (!(byte & 0x80)) { *out = value; return true; }
+        if (!(byte & 0x80)) {
+            *out = value;
+            return true;
+        }
     }
     return false;
 }
@@ -284,8 +307,8 @@ void ParseMmkv(const unsigned char *data, size_t size, size_t valid, Prefs *pref
     if (!Varint(p, end, &placeholder)) return;
     while (p < end) {
         uint32_t key_size, value_size;
-        if (!Varint(p, end, &key_size) || !key_size || key_size >= kPrefsKey ||
-            key_size > static_cast<size_t>(end - p)) return;
+        if (!Varint(p, end, &key_size) || !key_size || key_size >= kPrefsKey || key_size > static_cast<size_t>(end - p))
+            return;
         char key[kPrefsKey];
         memcpy(key, p, key_size);
         key[key_size] = 0;
@@ -322,7 +345,8 @@ bool LoadMmkv(const char *path, Prefs *prefs) {
             const int fd = open(meta_path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
             if (fd >= 0) {
                 ssize_t n;
-                do n = pread(fd, meta, sizeof(meta), 0); while (n < 0 && errno == EINTR);
+                do n = pread(fd, meta, sizeof(meta), 0);
+                while (n < 0 && errno == EINTR);
                 close(fd);
                 if (n == static_cast<ssize_t>(sizeof(meta))) valid = Le32(meta + 28);
             }
@@ -351,11 +375,16 @@ bool ReadAccount(const char *data_dir, Account *account) {
     char path[512];
     const size_t base = strlen(data_dir);
     if (base + sizeof(kMain) >= sizeof(path) || base + sizeof(kAuth) >= sizeof(path) ||
-        base + sizeof(kMmkv) + 4 >= sizeof(path)) return false;
+        base + sizeof(kMmkv) + 4 >= sizeof(path))
+        return false;
     memcpy(path, data_dir, base);
     Prefs *xml = static_cast<Prefs *>(malloc(sizeof(Prefs)));
     Prefs *mmkv = static_cast<Prefs *>(malloc(sizeof(Prefs)));
-    if (!xml || !mmkv) { free(xml); free(mmkv); return false; }
+    if (!xml || !mmkv) {
+        free(xml);
+        free(mmkv);
+        return false;
+    }
     strcpy(path + base, kMain);
     const bool xml_readable = LoadPrefs(path, xml);
     if (!xml_readable) xml->count = 0;
@@ -385,7 +414,8 @@ bool ReadAccount(const char *data_dir, Account *account) {
         if (!account->uin[0]) CopyField(account->uin, sizeof(account->uin), auth_uin);
         // Without an isLogin flag, WeChat's own authenticated uin matching the identity means
         // the account is signed in (it is cleared or changed on logout / account switch).
-        if (!xml_says) account->online = auth_uin && account->uin[0] && strcmp(auth_uin, "0") && !strcmp(auth_uin, account->uin);
+        if (!xml_says)
+            account->online = auth_uin && account->uin[0] && strcmp(auth_uin, "0") && !strcmp(auth_uin, account->uin);
     }
     free(xml);
     free(mmkv);
@@ -395,12 +425,10 @@ bool ReadAccount(const char *data_dir, Account *account) {
     return true;
 }
 
-bool SameIdentity(const Account &a, const Account &b) {
-    return !strcmp(a.wxid, b.wxid) && !strcmp(a.uin, b.uin);
-}
+bool SameIdentity(const Account &a, const Account &b) { return !strcmp(a.wxid, b.wxid) && !strcmp(a.uin, b.uin); }
 bool SameLogin(const Account &a, const Account &b) {
-    return SameIdentity(a, b) && a.online == b.online && !strcmp(a.alias, b.alias) &&
-           !strcmp(a.nickname, b.nickname) && !strcmp(a.mobile, b.mobile);
+    return SameIdentity(a, b) && a.online == b.online && !strcmp(a.alias, b.alias) && !strcmp(a.nickname, b.nickname) &&
+           !strcmp(a.mobile, b.mobile);
 }
 
 char *AccountEvent(const char *type, const Account &account, int sn) {
@@ -410,13 +438,19 @@ char *AccountEvent(const char *type, const Account &account, int sn) {
     if (!root) return nullptr;
     cJSON_AddStringToObject(root, "type", type);
     cJSON *login = cJSON_CreateObject();
-    if (!login) { cJSON_Delete(root); return nullptr; }
+    if (!login) {
+        cJSON_Delete(root);
+        return nullptr;
+    }
     cJSON_AddItemToObject(root, "login", login);
     cJSON_AddNumberToObject(login, "sn", sn);
     cJSON_AddNumberToObject(login, "status", removed ? 0 : (account.online ? 1 : 0));
     cJSON_AddStringToObject(login, "adapter", "satori-wx");
     cJSON *features = cJSON_CreateArray();
-    if (!features) { cJSON_Delete(root); return nullptr; }
+    if (!features) {
+        cJSON_Delete(root);
+        return nullptr;
+    }
     cJSON_AddItemToObject(login, "features", features);
     // Canonical list lives in wx_capabilities.cpp; it adds message.create when the sender
     // is enabled. wx_backend.cpp serves exactly this set.
@@ -426,7 +460,10 @@ char *AccountEvent(const char *type, const Account &account, int sn) {
     if (!removed) {
         cJSON_AddStringToObject(login, "platform", "wechat");
         cJSON *user = cJSON_CreateObject();
-        if (!user) { cJSON_Delete(root); return nullptr; }
+        if (!user) {
+            cJSON_Delete(root);
+            return nullptr;
+        }
         cJSON_AddItemToObject(login, "user", user);
         // The platform user id is the wxid; the nickname and alias are cosmetic.
         cJSON_AddStringToObject(user, "id", account.wxid);

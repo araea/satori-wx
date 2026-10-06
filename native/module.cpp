@@ -75,8 +75,9 @@ void AddBackendStatus(cJSON *object, bool capabilities) {
     cJSON_AddStringToObject(object, "platform", "wechat");
     // The events this backend can raise, so a client can tell "nothing happened" from "cannot".
     static const char *const kEvents[] = {
-        "message-created", "message-deleted", "guild-added", "guild-removed", "guild-member-added", "guild-member-removed",
-        "friend-added", "friend-removed", "login-added", "login-updated", "login-removed",
+        "message-created",    "message-deleted",      "guild-added",   "guild-removed",
+        "guild-member-added", "guild-member-removed", "friend-added",  "friend-removed",
+        "login-added",        "login-updated",        "login-removed",
     };
     cJSON *event_names = cJSON_CreateArray();
     if (event_names) {
@@ -86,7 +87,8 @@ void AddBackendStatus(cJSON *object, bool capabilities) {
     // What message.create understands, so a client can pick its elements without trial and error:
     // each media element is its own WeChat message; a <video> that is not an MP4 or an <audio> that
     // WeChat cannot play as a voice message goes out as a file (the returned Message says so).
-    static const char *const kElements[] = {"text", "at", "a", "br", "p", "message", "quote", "img", "video", "audio", "file"};
+    static const char *const kElements[] = {"text",  "at",  "a",     "br",    "p",   "message",
+                                            "quote", "img", "video", "audio", "file"};
     cJSON *elements = cJSON_CreateArray();
     if (elements) {
         cJSON_AddItemToObject(object, "message_elements", elements);
@@ -95,13 +97,15 @@ void AddBackendStatus(cJSON *object, bool capabilities) {
     cJSON *limits = cJSON_CreateObject();
     if (limits) {
         cJSON_AddItemToObject(object, "limits", limits);
-        cJSON_AddNumberToObject(limits, "upload_bytes", static_cast<double>(1ull << 30));       // upload.create, streamed to disk
-        cJSON_AddNumberToObject(limits, "inline_media_bytes", static_cast<double>(12u << 20));  // data: / base64:// non-picture media
+        cJSON_AddNumberToObject(limits, "upload_bytes",
+                                static_cast<double>(1ull << 30)); // upload.create, streamed to disk
+        cJSON_AddNumberToObject(limits, "inline_media_bytes",
+                                static_cast<double>(12u << 20)); // data: / base64:// non-picture media
         cJSON_AddNumberToObject(limits, "inline_image_bytes", static_cast<double>(8u << 20));
-        cJSON_AddNumberToObject(limits, "messages_per_request", 16);  // <message> parts
+        cJSON_AddNumberToObject(limits, "messages_per_request", 16); // <message> parts
         cJSON_AddNumberToObject(limits, "media_per_message", 8);
         cJSON_AddNumberToObject(limits, "images_per_message", 4);
-        cJSON_AddNumberToObject(limits, "voice_max_seconds", 60);   // longer <audio> goes out as a file
+        cJSON_AddNumberToObject(limits, "voice_max_seconds", 60); // longer <audio> goes out as a file
         cJSON_AddNumberToObject(limits, "upload_ttl_seconds", 300);
     }
     size_t unsupported_count = 0;
@@ -162,7 +166,10 @@ void *WatchAccount(void *) {
 
 class WxServerModule : public zygisk::ModuleBase {
 public:
-    void onLoad(zygisk::Api *api, JNIEnv *env) override { api_ = api; env_ = env; }
+    void onLoad(zygisk::Api *api, JNIEnv *env) override {
+        api_ = api;
+        env_ = env;
+    }
     void preAppSpecialize(zygisk::AppSpecializeArgs *args) override {
         if (args && args->nice_name && !env_->ExceptionCheck()) {
             const char *name = env_->GetStringUTFChars(args->nice_name, nullptr);
@@ -182,11 +189,14 @@ public:
         if (target_) {
             // Read configuration while the module directory is still accessible.
             const int dir = api_->getModuleDir();
-            const int fd = dir >= 0 ? openat(dir, "satori-wx.conf", O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK) : -1;
+            const int fd =
+                dir >= 0 ? openat(dir, "satori-wx.conf", O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK) : -1;
             configured_ = fd >= 0 && satori::ReadConfig(fd, &g_config);
             if (fd >= 0) close(fd);
             if (dir >= 0) close(dir);
-            if (!configured_) __android_log_print(ANDROID_LOG_ERROR, "SatoriWx", "missing or invalid satori-wx.conf; server disabled");
+            if (!configured_)
+                __android_log_print(ANDROID_LOG_ERROR, "SatoriWx",
+                                    "missing or invalid satori-wx.conf; server disabled");
             if (g_data_dir[0]) {
                 char temp_dir[300];
                 snprintf(temp_dir, sizeof(temp_dir), "%s/files/satori-wx-tmp", g_data_dir);
@@ -206,8 +216,10 @@ public:
         if (!target_ || !configured_) return;
         // The sender needs the process JavaVM; classes are resolved lazily on first use.
         JavaVM *vm = nullptr;
-        if (env_->GetJavaVM(&vm) == JNI_OK) satori::SendInit(vm);
-        else __android_log_print(ANDROID_LOG_ERROR, "SatoriWx", "GetJavaVM failed; message sender disabled");
+        if (env_->GetJavaVM(&vm) == JNI_OK)
+            satori::SendInit(vm);
+        else
+            __android_log_print(ANDROID_LOG_ERROR, "SatoriWx", "GetJavaVM failed; message sender disabled");
         // Resident notification + wake lock + in-process core-service keepalive. Needs the VM
         // and the parsed config; no-ops when the context never appears.
         if (vm) satori::KeepaliveStart(vm, g_config);
@@ -223,7 +235,8 @@ public:
         }
         pthread_detach(server);
         if (!g_data_dir[0]) {
-            __android_log_print(ANDROID_LOG_WARN, "SatoriWx", "app data directory unknown; account identity unavailable");
+            __android_log_print(ANDROID_LOG_WARN, "SatoriWx",
+                                "app data directory unknown; account identity unavailable");
         } else if (pthread_create(&account, nullptr, WatchAccount, nullptr)) {
             __android_log_print(ANDROID_LOG_ERROR, "SatoriWx", "account thread creation failed: %s", strerror(errno));
         } else {
@@ -238,7 +251,8 @@ public:
         // Resolve the sender once the account is online so status reflects real capability.
         pthread_t warm;
         if (pthread_create(&warm, nullptr, WarmSend, nullptr)) {
-            __android_log_print(ANDROID_LOG_WARN, "SatoriWx", "send warm-up thread creation failed: %s", strerror(errno));
+            __android_log_print(ANDROID_LOG_WARN, "SatoriWx", "send warm-up thread creation failed: %s",
+                                strerror(errno));
         } else {
             pthread_detach(warm);
         }
@@ -246,10 +260,11 @@ public:
     void preServerSpecialize(zygisk::ServerSpecializeArgs *) override {
         api_->setOption(zygisk::DLCLOSE_MODULE_LIBRARY);
     }
+
 private:
     zygisk::Api *api_ = nullptr;
     JNIEnv *env_ = nullptr;
     bool target_ = false, configured_ = false;
 };
-}
+} // namespace
 REGISTER_ZYGISK_MODULE(WxServerModule)

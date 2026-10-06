@@ -58,7 +58,10 @@ jfieldID Field(JNIEnv *env, jclass cls, const char *name, const char *signature)
 bool Resolve(JNIEnv *env, char *detail, size_t size) {
     if (g_ready) return true;
     char reason[160] = {};
-    if (!ReflectResolve(reason, sizeof(reason))) { Detail(detail, size, "%s", reason); return false; }
+    if (!ReflectResolve(reason, sizeof(reason))) {
+        Detail(detail, size, "%s", reason);
+        return false;
+    }
     auto load = [](const char *name) { return static_cast<jclass>(ReflectLoad(name)); };
     jclass mgr = load("nv3.l");
     jclass scene = load("qv3.b");
@@ -67,8 +70,9 @@ bool Resolve(JNIEnv *env, char *detail, size_t size) {
     bool ok = mgr && scene && pair && boxed;
     if (ok) {
         // (talker, fromUser, pattedUser, template, createTimeSec, svrId) -> Pair(msgId, createTime)
-        g_nj = Method(env, mgr, "nj",
-                      "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;IJ)Landroid/util/Pair;");
+        g_nj =
+            Method(env, mgr, "nj",
+                   "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;IJ)Landroid/util/Pair;");
         g_scene_ctor = Method(env, scene, "<init>", "(Landroid/util/Pair;Ljava/lang/String;Ljava/lang/String;I)V");
         g_scene_do = Method(env, scene, "doScene", "(Lcom/tencent/mm/network/s;Lcom/tencent/mm/modelbase/u0;)I");
         g_long_value = Method(env, boxed, "longValue", "()J");
@@ -103,11 +107,20 @@ jobject Manager(JNIEnv *env) {
     jclass marker = static_cast<jclass>(ReflectLoad("ov3.j"));
     if (!marker) return nullptr;
     jclass locator = static_cast<jclass>(ReflectLoad("ph5.n0"));
-    if (!locator) { env->DeleteLocalRef(marker); return nullptr; }
+    if (!locator) {
+        env->DeleteLocalRef(marker);
+        return nullptr;
+    }
     jmethodID get = env->GetStaticMethodID(locator, "c", "(Ljava/lang/Class;)Lph5/m;");
-    if (env->ExceptionCheck()) { env->ExceptionClear(); get = nullptr; }
+    if (env->ExceptionCheck()) {
+        env->ExceptionClear();
+        get = nullptr;
+    }
     jobject manager = get ? env->CallStaticObjectMethod(locator, get, marker) : nullptr;
-    if (env->ExceptionCheck()) { env->ExceptionClear(); manager = nullptr; }
+    if (env->ExceptionCheck()) {
+        env->ExceptionClear();
+        manager = nullptr;
+    }
     env->DeleteLocalRef(locator);
     env->DeleteLocalRef(marker);
     return manager;
@@ -121,7 +134,10 @@ ActionResult PatSend(const char *channel, const char *user) {
         return result;
     }
     JNIEnv *env = static_cast<JNIEnv *>(ReflectEnv());
-    if (!env) { Detail(result.detail, sizeof(result.detail), "JavaVM unavailable"); return result; }
+    if (!env) {
+        Detail(result.detail, sizeof(result.detail), "JavaVM unavailable");
+        return result;
+    }
     pthread_mutex_lock(&g_mu);
     const bool ready = Resolve(env, result.detail, sizeof(result.detail));
     pthread_mutex_unlock(&g_mu);
@@ -135,21 +151,28 @@ ActionResult PatSend(const char *channel, const char *user) {
     }
 
     jobject manager = Manager(env);
-    if (!manager) { Detail(result.detail, sizeof(result.detail), "pat manager unavailable"); return result; }
+    if (!manager) {
+        Detail(result.detail, sizeof(result.detail), "pat manager unavailable");
+        return result;
+    }
 
     // The visible tip text of the local row; the server's own record template uses the same
     // "${wxid}" placeholders, so the row reads like one the app itself would have inserted.
     char template_text[300];
-    snprintf(template_text, sizeof(template_text), "\"${%s}\" \xE6\x8B\x8D\xE4\xBA\x86\xE6\x8B\x8D \"${%s}\"", self, user);
+    snprintf(template_text, sizeof(template_text), "\"${%s}\" \xE6\x8B\x8D\xE4\xBA\x86\xE6\x8B\x8D \"${%s}\"", self,
+             user);
     jstring talker = env->NewStringUTF(channel);
     jstring from = env->NewStringUTF(self);
     jstring patted = env->NewStringUTF(user);
     jstring tip = env->NewStringUTF(template_text);
     jobject pair = nullptr;
     if (talker && from && patted && tip) {
-        pair = env->CallObjectMethod(manager, g_nj, talker, from, patted, tip,
-                                     static_cast<jint>(time(nullptr)), static_cast<jlong>(0));
-        if (env->ExceptionCheck()) { env->ExceptionClear(); pair = nullptr; }
+        pair = env->CallObjectMethod(manager, g_nj, talker, from, patted, tip, static_cast<jint>(time(nullptr)),
+                                     static_cast<jlong>(0));
+        if (env->ExceptionCheck()) {
+            env->ExceptionClear();
+            pair = nullptr;
+        }
     } else {
         if (env->ExceptionCheck()) env->ExceptionClear();
     }
@@ -166,9 +189,15 @@ ActionResult PatSend(const char *channel, const char *user) {
     // nj returns Pair(0, 0) when the talker or the patted user cannot be patted; refuse before
     // dispatching anything instead of trusting the server to say no.
     jobject boxed = pair ? env->GetObjectField(pair, g_pair_first) : nullptr;
-    if (env->ExceptionCheck()) { env->ExceptionClear(); boxed = nullptr; }
+    if (env->ExceptionCheck()) {
+        env->ExceptionClear();
+        boxed = nullptr;
+    }
     jlong msg_id = boxed ? env->CallLongMethod(boxed, g_long_value) : 0;
-    if (env->ExceptionCheck()) { env->ExceptionClear(); msg_id = 0; }
+    if (env->ExceptionCheck()) {
+        env->ExceptionClear();
+        msg_id = 0;
+    }
     if (boxed) env->DeleteLocalRef(boxed);
     if (msg_id <= 0) {
         env->DeleteLocalRef(pair);
@@ -181,19 +210,28 @@ ActionResult PatSend(const char *channel, const char *user) {
     jstring chat = env->NewStringUTF(channel);
     jstring target = env->NewStringUTF(user);
     // scene int 0 = the plain pat (1 is the "edit pat suffix" flow in the app).
-    jobject scene = (chat && target) ? env->NewObject(g_scene, g_scene_ctor, pair, chat, target, static_cast<jint>(0))
-                                     : nullptr;
-    if (env->ExceptionCheck()) { env->ExceptionClear(); scene = nullptr; }
+    jobject scene =
+        (chat && target) ? env->NewObject(g_scene, g_scene_ctor, pair, chat, target, static_cast<jint>(0)) : nullptr;
+    if (env->ExceptionCheck()) {
+        env->ExceptionClear();
+        scene = nullptr;
+    }
     if (chat) env->DeleteLocalRef(chat);
     if (target) env->DeleteLocalRef(target);
     env->DeleteLocalRef(pair);
     env->DeleteLocalRef(manager);
-    if (!scene) { Detail(result.detail, sizeof(result.detail), "sendpat scene construction failed"); return result; }
-    const int net = ReflectDispatchScene(scene, reinterpret_cast<void *>(g_scene_do), result.detail, sizeof(result.detail));
+    if (!scene) {
+        Detail(result.detail, sizeof(result.detail), "sendpat scene construction failed");
+        return result;
+    }
+    const int net =
+        ReflectDispatchScene(scene, reinterpret_cast<void *>(g_scene_do), result.detail, sizeof(result.detail));
     env->DeleteLocalRef(scene);
     result.ok = net >= 0;
-    if (result.ok) __android_log_print(ANDROID_LOG_INFO, "SatoriWx", "pat %s -> %s dispatched", channel, user);
-    else __android_log_print(ANDROID_LOG_WARN, "SatoriWx", "pat %s -> %s failed: %s", channel, user, result.detail);
+    if (result.ok)
+        __android_log_print(ANDROID_LOG_INFO, "SatoriWx", "pat %s -> %s dispatched", channel, user);
+    else
+        __android_log_print(ANDROID_LOG_WARN, "SatoriWx", "pat %s -> %s failed: %s", channel, user, result.detail);
     return result;
 }
 

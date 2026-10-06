@@ -63,8 +63,14 @@ struct Locals {
     jobject items[24];
     int count = 0;
     explicit Locals(JNIEnv *e) : env(e) {}
-    ~Locals() { for (int i = 0; i < count; ++i) if (items[i]) env->DeleteLocalRef(items[i]); }
-    template <typename T> T keep(T ref) { if (ref && count < 24) items[count++] = ref; return ref; }
+    ~Locals() {
+        for (int i = 0; i < count; ++i)
+            if (items[i]) env->DeleteLocalRef(items[i]);
+    }
+    template <typename T> T keep(T ref) {
+        if (ref && count < 24) items[count++] = ref;
+        return ref;
+    }
 };
 
 // XML text/attribute escaping for the appmsg content.
@@ -81,7 +87,10 @@ void AppendEscaped(char *out, size_t capacity, size_t *used, const char *text) {
         }
         const size_t need = entity ? strlen(entity) : 1;
         if (*used + need + 1 > capacity) return;
-        if (entity) memcpy(out + *used, entity, need); else out[*used] = *text;
+        if (entity)
+            memcpy(out + *used, entity, need);
+        else
+            out[*used] = *text;
         *used += need;
     }
     out[*used] = 0;
@@ -102,26 +111,42 @@ void MakeParents(const char *path) {
 bool LinkOrCopy(const char *from, const char *to, char *detail, size_t size) {
     if (link(from, to) == 0) return true;
     const int in = open(from, O_RDONLY | O_CLOEXEC);
-    if (in < 0) { Detail(detail, size, "cannot read the file: %s", strerror(errno)); return false; }
+    if (in < 0) {
+        Detail(detail, size, "cannot read the file: %s", strerror(errno));
+        return false;
+    }
     const int out = open(to, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0600);
-    if (out < 0) { close(in); Detail(detail, size, "cannot create %s: %s", to, strerror(errno)); return false; }
+    if (out < 0) {
+        close(in);
+        Detail(detail, size, "cannot create %s: %s", to, strerror(errno));
+        return false;
+    }
     char buffer[65536];
     bool ok = true;
     for (;;) {
         const ssize_t got = read(in, buffer, sizeof(buffer));
         if (got < 0 && errno == EINTR) continue;
-        if (got <= 0) { ok = got == 0; break; }
+        if (got <= 0) {
+            ok = got == 0;
+            break;
+        }
         for (ssize_t done = 0; done < got;) {
             const ssize_t put = write(out, buffer + done, static_cast<size_t>(got - done));
             if (put < 0 && errno == EINTR) continue;
-            if (put <= 0) { ok = false; break; }
+            if (put <= 0) {
+                ok = false;
+                break;
+            }
             done += put;
         }
         if (!ok) break;
     }
     close(in);
     close(out);
-    if (!ok) { unlink(to); Detail(detail, size, "copy failed: %s", strerror(errno)); }
+    if (!ok) {
+        unlink(to);
+        Detail(detail, size, "copy failed: %s", strerror(errno));
+    }
     return ok;
 }
 
@@ -131,11 +156,17 @@ bool Stage(const char *path, char *out, size_t capacity, char *detail, size_t si
     char directory[1100];
     snprintf(directory, sizeof(directory), "%s", path);
     char *slash = strrchr(directory, '/');
-    if (!slash) { Detail(detail, size, "no directory in the path"); return false; }
+    if (!slash) {
+        Detail(detail, size, "no directory in the path");
+        return false;
+    }
     *slash = 0;
     char staging[1200];
     snprintf(staging, sizeof(staging), "%s/send", directory);
-    if (mkdir(staging, 0700) && errno != EEXIST) { Detail(detail, size, "cannot create %s: %s", staging, strerror(errno)); return false; }
+    if (mkdir(staging, 0700) && errno != EEXIST) {
+        Detail(detail, size, "cannot create %s: %s", staging, strerror(errno));
+        return false;
+    }
     const time_t cutoff = time(nullptr) - 6 * 3600;
     if (DIR *dir = opendir(staging)) {
         while (const dirent *entry = readdir(dir)) {
@@ -152,8 +183,12 @@ bool Stage(const char *path, char *out, size_t capacity, char *detail, size_t si
     const char *dot = strrchr(base, '.');
     timespec now{};
     clock_gettime(CLOCK_REALTIME, &now);
-    if (snprintf(out, capacity, "%s/%lld-%u%s", staging, static_cast<long long>(now.tv_sec) * 1000 + now.tv_nsec / 1000000, ++counter,
-                 dot && strlen(dot) < 12 ? dot : "") >= static_cast<int>(capacity)) { Detail(detail, size, "path too long"); return false; }
+    if (snprintf(out, capacity, "%s/%lld-%u%s", staging,
+                 static_cast<long long>(now.tv_sec) * 1000 + now.tv_nsec / 1000000, ++counter,
+                 dot && strlen(dot) < 12 ? dot : "") >= static_cast<int>(capacity)) {
+        Detail(detail, size, "path too long");
+        return false;
+    }
     return LinkOrCopy(path, out, detail, size);
 }
 } // namespace
@@ -173,7 +208,10 @@ SendResult SendFile(const char *talker, const char *path, const char *title) {
         return result;
     }
     JNIEnv *env = static_cast<JNIEnv *>(ReflectEnv());
-    if (!env) { Detail(result.detail, sizeof(result.detail), "JavaVM unavailable"); return result; }
+    if (!env) {
+        Detail(result.detail, sizeof(result.detail), "JavaVM unavailable");
+        return result;
+    }
     if (!ReflectResolve(result.detail, sizeof(result.detail))) return result;
     Locals locals(env);
     jclass k0 = locals.keep(static_cast<jclass>(ReflectLoad("com.tencent.mm.pluginsdk.model.app.k0")));
@@ -184,8 +222,10 @@ SendResult SendFile(const char *talker, const char *path, const char *title) {
     jclass prepare_class = locals.keep(static_cast<jclass>(ReflectLoad("com.tencent.mm.pluginsdk.ui.tools.p0")));
     if (env->ExceptionCheck()) env->ExceptionClear();
     jmethodID attach_dir = StaticMethod(env, k0, "k", "()Ljava/lang/String;");
-    jmethodID free_path = StaticMethod(env, k0, "f", "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;");
-    jmethodID send_app = StaticMethod(env, k0, "I",
+    jmethodID free_path =
+        StaticMethod(env, k0, "f", "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;");
+    jmethodID send_app = StaticMethod(
+        env, k0, "I",
         "(Ldx0/r;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;[B)Landroid/util/Pair;");
     jmethodID parse = StaticMethod(env, content_class, "v", "(Ljava/lang/String;)Ldx0/r;");
     jfieldID pair_first = Field(env, pair_class, "first", "Ljava/lang/Object;");
@@ -193,27 +233,47 @@ SendResult SendFile(const char *talker, const char *path, const char *title) {
     jmethodID int_value = Method(env, integer_class, "intValue", "()I");
     jmethodID long_value = Method(env, long_class, "longValue", "()J");
     jmethodID prepare = StaticMethod(env, prepare_class, "a", "()V");
-    if (!k0 || !content_class || !pair_class || !attach_dir || !free_path || !send_app || !parse || !pair_first || !pair_second ||
-        !int_value || !long_value) {
+    if (!k0 || !content_class || !pair_class || !attach_dir || !free_path || !send_app || !parse || !pair_first ||
+        !pair_second || !int_value || !long_value) {
         Detail(result.detail, sizeof(result.detail), "file classes not found (version mismatch?)");
         return result;
     }
-    if (prepare) { env->CallStaticVoidMethod(prepare_class, prepare); if (env->ExceptionCheck()) env->ExceptionClear(); }
+    if (prepare) {
+        env->CallStaticVoidMethod(prepare_class, prepare);
+        if (env->ExceptionCheck()) env->ExceptionClear();
+    }
 
     // The extension WeChat shows on the bubble and the icon it picks.
     char extension[24] = {};
-    if (const char *dot = strrchr(title, '.')) if (dot[1] && strlen(dot + 1) < sizeof(extension) && !strchr(dot, '/')) snprintf(extension, sizeof(extension), "%s", dot + 1);
+    if (const char *dot = strrchr(title, '.'))
+        if (dot[1] && strlen(dot + 1) < sizeof(extension) && !strchr(dot, '/'))
+            snprintf(extension, sizeof(extension), "%s", dot + 1);
 
     // Where WeChat keeps the attachment: its own naming (collision-free), then our file goes in.
     jstring jtitle = locals.keep(env->NewStringUTF(title));
     jstring jext = locals.keep(env->NewStringUTF(extension));
     jstring directory = locals.keep(static_cast<jstring>(env->CallStaticObjectMethod(k0, attach_dir)));
-    if (env->ExceptionCheck()) { env->ExceptionClear(); directory = nullptr; }
-    jstring destination = directory ? locals.keep(static_cast<jstring>(env->CallStaticObjectMethod(k0, free_path, directory, jtitle, jext))) : nullptr;
-    if (env->ExceptionCheck()) { env->ExceptionClear(); destination = nullptr; }
-    if (!jtitle || !jext || !destination) { Detail(result.detail, sizeof(result.detail), "attachment directory unavailable"); return result; }
+    if (env->ExceptionCheck()) {
+        env->ExceptionClear();
+        directory = nullptr;
+    }
+    jstring destination =
+        directory
+            ? locals.keep(static_cast<jstring>(env->CallStaticObjectMethod(k0, free_path, directory, jtitle, jext)))
+            : nullptr;
+    if (env->ExceptionCheck()) {
+        env->ExceptionClear();
+        destination = nullptr;
+    }
+    if (!jtitle || !jext || !destination) {
+        Detail(result.detail, sizeof(result.detail), "attachment directory unavailable");
+        return result;
+    }
     const char *target = env->GetStringUTFChars(destination, nullptr);
-    if (!target) { Detail(result.detail, sizeof(result.detail), "attachment path unavailable"); return result; }
+    if (!target) {
+        Detail(result.detail, sizeof(result.detail), "attachment path unavailable");
+        return result;
+    }
     char attach_path[1024];
     snprintf(attach_path, sizeof(attach_path), "%s", target);
     env->ReleaseStringUTFChars(destination, target);
@@ -225,7 +285,13 @@ SendResult SendFile(const char *talker, const char *path, const char *title) {
     char xml[4096];
     size_t used = 0;
     xml[0] = 0;
-    auto put = [&](const char *text) { const size_t n = strlen(text); if (used + n + 1 < sizeof(xml)) { memcpy(xml + used, text, n + 1); used += n; } };
+    auto put = [&](const char *text) {
+        const size_t n = strlen(text);
+        if (used + n + 1 < sizeof(xml)) {
+            memcpy(xml + used, text, n + 1);
+            used += n;
+        }
+    };
     char number[32];
     put("<msg><appmsg appid=\"\" sdkver=\"0\"><title>");
     AppendEscaped(xml, sizeof(xml), &used, title);
@@ -242,16 +308,28 @@ SendResult SendFile(const char *talker, const char *path, const char *title) {
         "<appinfo><version>1</version><appname></appname></appinfo><commenturl></commenturl></msg>");
     jstring jxml = locals.keep(env->NewStringUTF(xml));
     jobject content = jxml ? locals.keep(env->CallStaticObjectMethod(content_class, parse, jxml)) : nullptr;
-    if (env->ExceptionCheck()) { env->ExceptionClear(); content = nullptr; }
-    if (!content) { unlink(attach_path); Detail(result.detail, sizeof(result.detail), "WeChat could not parse the file message"); return result; }
+    if (env->ExceptionCheck()) {
+        env->ExceptionClear();
+        content = nullptr;
+    }
+    if (!content) {
+        unlink(attach_path);
+        Detail(result.detail, sizeof(result.detail), "WeChat could not parse the file message");
+        return result;
+    }
 
     jstring jtalker = locals.keep(env->NewStringUTF(talker));
     jstring jempty = locals.keep(env->NewStringUTF(""));
     jstring jattach = locals.keep(env->NewStringUTF(attach_path));
     jobject pair = jtalker && jempty && jattach
-        ? locals.keep(env->CallStaticObjectMethod(k0, send_app, content, jempty, jempty, jtalker, jattach, static_cast<jbyteArray>(nullptr)))
-        : nullptr;
-    if (env->ExceptionCheck()) { env->ExceptionClear(); pair = nullptr; Detail(result.detail, sizeof(result.detail), "WeChat's file send threw"); }
+                       ? locals.keep(env->CallStaticObjectMethod(k0, send_app, content, jempty, jempty, jtalker,
+                                                                 jattach, static_cast<jbyteArray>(nullptr)))
+                       : nullptr;
+    if (env->ExceptionCheck()) {
+        env->ExceptionClear();
+        pair = nullptr;
+        Detail(result.detail, sizeof(result.detail), "WeChat's file send threw");
+    }
     if (!pair) {
         if (!result.detail[0]) Detail(result.detail, sizeof(result.detail), "WeChat's file send returned nothing");
         unlink(attach_path);
@@ -261,16 +339,20 @@ SendResult SendFile(const char *talker, const char *path, const char *title) {
     jobject second = locals.keep(env->GetObjectField(pair, pair_second));
     const jint code = first ? env->CallIntMethod(first, int_value) : -1;
     const jlong local_id = second ? env->CallLongMethod(second, long_value) : -1;
-    if (env->ExceptionCheck()) { env->ExceptionClear(); }
+    if (env->ExceptionCheck()) {
+        env->ExceptionClear();
+    }
     result.net_id = static_cast<int>(code);
     if (code != 0 || local_id <= 0) {
         unlink(attach_path);
-        Detail(result.detail, sizeof(result.detail), "WeChat refused the file (code %d, id %lld)", static_cast<int>(code), static_cast<long long>(local_id));
+        Detail(result.detail, sizeof(result.detail), "WeChat refused the file (code %d, id %lld)",
+               static_cast<int>(code), static_cast<long long>(local_id));
         return result;
     }
     result.ok = true;
     result.local_id = local_id;
-    __android_log_print(ANDROID_LOG_INFO, "SatoriWx", "file %s handed to WeChat for %s (local id %lld)", title, talker, static_cast<long long>(local_id));
+    __android_log_print(ANDROID_LOG_INFO, "SatoriWx", "file %s handed to WeChat for %s (local id %lld)", title, talker,
+                        static_cast<long long>(local_id));
     return result;
 }
 
@@ -289,7 +371,10 @@ SendResult SendVideo(const char *talker, const char *path, const char *thumb_pat
         return result;
     }
     JNIEnv *env = static_cast<JNIEnv *>(ReflectEnv());
-    if (!env) { Detail(result.detail, sizeof(result.detail), "JavaVM unavailable"); return result; }
+    if (!env) {
+        Detail(result.detail, sizeof(result.detail), "JavaVM unavailable");
+        return result;
+    }
     if (!ReflectResolve(result.detail, sizeof(result.detail))) return result;
     Locals locals(env);
     jclass n0 = locals.keep(static_cast<jclass>(ReflectLoad("ph5.n0")));
@@ -300,47 +385,79 @@ SendResult SendVideo(const char *talker, const char *path, const char *thumb_pat
     jclass prepare_class = locals.keep(static_cast<jclass>(ReflectLoad("com.tencent.mm.pluginsdk.ui.tools.p0")));
     if (env->ExceptionCheck()) env->ExceptionClear();
     jmethodID lookup = StaticMethod(env, n0, "c", "(Ljava/lang/Class;)Lph5/m;");
-    jmethodID element_ctor = Method(env, element_class, "<init>", "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;ZILqi0/t2;Lb41/k7;)V");
-    jmethodID cross_ctor = Method(env, cross_class, "<init>",
+    jmethodID element_ctor = Method(env, element_class, "<init>",
+                                    "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;ZILqi0/t2;Lb41/k7;)V");
+    jmethodID cross_ctor = Method(
+        env, cross_class, "<init>",
         "(Lb41/i7;Lpc5/qn6;Ljava/lang/String;Lpc5/p87;Ljava/lang/String;Lpc5/qn4;ZLqi0/r2;Ljava/lang/String;Lp95/f;ZZZ)V");
     jmethodID unique_name = StaticMethod(env, names_class, "a", "(Ljava/lang/String;)Ljava/lang/String;");
     jmethodID prepare = StaticMethod(env, prepare_class, "a", "()V");
-    if (!n0 || !service_interface || !element_class || !cross_class || !lookup || !element_ctor || !cross_ctor || !unique_name) {
+    if (!n0 || !service_interface || !element_class || !cross_class || !lookup || !element_ctor || !cross_ctor ||
+        !unique_name) {
         Detail(result.detail, sizeof(result.detail), "video classes not found (version mismatch?)");
         return result;
     }
     jobject service = locals.keep(env->CallStaticObjectMethod(n0, lookup, service_interface));
-    if (env->ExceptionCheck()) { env->ExceptionClear(); service = nullptr; }
+    if (env->ExceptionCheck()) {
+        env->ExceptionClear();
+        service = nullptr;
+    }
     jclass service_class = service ? locals.keep(env->GetObjectClass(service)) : nullptr;
     jmethodID send = service_class ? Method(env, service_class, "cj", "(Lqi0/w2;Ljava/lang/String;)Z") : nullptr;
     if (!service || !send) {
-        Detail(result.detail, sizeof(result.detail), service ? "video service has no cj() (version mismatch?)" : "video service unavailable");
+        Detail(result.detail, sizeof(result.detail),
+               service ? "video service has no cj() (version mismatch?)" : "video service unavailable");
         return result;
     }
-    if (prepare) { env->CallStaticVoidMethod(prepare_class, prepare); if (env->ExceptionCheck()) env->ExceptionClear(); }
+    if (prepare) {
+        env->CallStaticVoidMethod(prepare_class, prepare);
+        if (env->ExceptionCheck()) env->ExceptionClear();
+    }
     char staged[1300];
     if (!Stage(path, staged, sizeof(staged), result.detail, sizeof(result.detail))) return result;
     jstring jtalker = locals.keep(env->NewStringUTF(talker));
     jstring jpath = locals.keep(env->NewStringUTF(staged));
     jstring jthumb = locals.keep(env->NewStringUTF(thumb_path ? thumb_path : ""));
-    jstring jname = jtalker ? locals.keep(static_cast<jstring>(env->CallStaticObjectMethod(names_class, unique_name, jtalker))) : nullptr;
-    if (env->ExceptionCheck()) { env->ExceptionClear(); jname = nullptr; }
+    jstring jname =
+        jtalker ? locals.keep(static_cast<jstring>(env->CallStaticObjectMethod(names_class, unique_name, jtalker)))
+                : nullptr;
+    if (env->ExceptionCheck()) {
+        env->ExceptionClear();
+        jname = nullptr;
+    }
     // The chat UI's own arguments: compress as WeChat sees fit, no import copy.
-    jobject cross = locals.keep(env->NewObject(cross_class, cross_ctor, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
-                                               JNI_FALSE, nullptr, nullptr, nullptr, JNI_FALSE, JNI_FALSE, JNI_FALSE));
-    if (env->ExceptionCheck()) { env->ExceptionClear(); cross = nullptr; }
-    jobject element = (jname && jpath && jthumb && cross)
-        ? locals.keep(env->NewObject(element_class, element_ctor, jname, jpath, jthumb, JNI_FALSE, static_cast<jint>(duration_s > 0 ? duration_s : 0), cross, nullptr))
-        : nullptr;
-    if (env->ExceptionCheck()) { env->ExceptionClear(); element = nullptr; }
-    if (!element) { unlink(staged); Detail(result.detail, sizeof(result.detail), "video task construction failed"); return result; }
+    jobject cross =
+        locals.keep(env->NewObject(cross_class, cross_ctor, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
+                                   JNI_FALSE, nullptr, nullptr, nullptr, JNI_FALSE, JNI_FALSE, JNI_FALSE));
+    if (env->ExceptionCheck()) {
+        env->ExceptionClear();
+        cross = nullptr;
+    }
+    jobject element =
+        (jname && jpath && jthumb && cross)
+            ? locals.keep(env->NewObject(element_class, element_ctor, jname, jpath, jthumb, JNI_FALSE,
+                                         static_cast<jint>(duration_s > 0 ? duration_s : 0), cross, nullptr))
+            : nullptr;
+    if (env->ExceptionCheck()) {
+        env->ExceptionClear();
+        element = nullptr;
+    }
+    if (!element) {
+        unlink(staged);
+        Detail(result.detail, sizeof(result.detail), "video task construction failed");
+        return result;
+    }
     const jboolean started = env->CallBooleanMethod(service, send, element, jtalker);
     if (env->ExceptionCheck()) {
         env->ExceptionClear();
         Detail(result.detail, sizeof(result.detail), "WeChat's video send threw");
         return result;
     }
-    if (!started) { unlink(staged); Detail(result.detail, sizeof(result.detail), "WeChat declined to start the video send"); return result; }
+    if (!started) {
+        unlink(staged);
+        Detail(result.detail, sizeof(result.detail), "WeChat declined to start the video send");
+        return result;
+    }
     result.ok = true;
     __android_log_print(ANDROID_LOG_INFO, "SatoriWx", "video handed to WeChat for %s", talker);
     return result;
@@ -356,18 +473,23 @@ SendResult SendQuote(const char *talker, const char *text, const QuoteRef &quote
         return result;
     }
     JNIEnv *env = static_cast<JNIEnv *>(ReflectEnv());
-    if (!env) { Detail(result.detail, sizeof(result.detail), "JavaVM unavailable"); return result; }
+    if (!env) {
+        Detail(result.detail, sizeof(result.detail), "JavaVM unavailable");
+        return result;
+    }
     if (!ReflectResolve(result.detail, sizeof(result.detail))) return result;
     Locals locals(env);
     jclass k0 = locals.keep(static_cast<jclass>(ReflectLoad("com.tencent.mm.pluginsdk.model.app.k0")));
     jclass content_class = locals.keep(static_cast<jclass>(ReflectLoad("dx0.r")));
-    jclass item_class = locals.keep(static_cast<jclass>(ReflectLoad("com.tencent.mm.plugin.msgquote.model.MsgQuoteItem")));
+    jclass item_class =
+        locals.keep(static_cast<jclass>(ReflectLoad("com.tencent.mm.plugin.msgquote.model.MsgQuoteItem")));
     jclass pair_class = locals.keep(env->FindClass("android/util/Pair"));
     jclass integer_class = locals.keep(env->FindClass("java/lang/Integer"));
     jclass long_class = locals.keep(env->FindClass("java/lang/Long"));
     jclass prepare_class = locals.keep(static_cast<jclass>(ReflectLoad("com.tencent.mm.pluginsdk.ui.tools.p0")));
     if (env->ExceptionCheck()) env->ExceptionClear();
-    jmethodID send_app = StaticMethod(env, k0, "I",
+    jmethodID send_app = StaticMethod(
+        env, k0, "I",
         "(Ldx0/r;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;[B)Landroid/util/Pair;");
     jmethodID content_ctor = Method(env, content_class, "<init>", "()V");
     jmethodID item_ctor = Method(env, item_class, "<init>", "()V");
@@ -389,13 +511,34 @@ SendResult SendQuote(const char *talker, const char *text, const QuoteRef &quote
     jmethodID int_value = Method(env, integer_class, "intValue", "()I");
     jmethodID long_value = Method(env, long_class, "longValue", "()J");
     jmethodID prepare = StaticMethod(env, prepare_class, "a", "()V");
-    const struct { const char *name; const void *found; } needed[] = {
-        {"k0", k0}, {"dx0.r", content_class}, {"MsgQuoteItem", item_class}, {"Pair", pair_class}, {"k0.I", send_app},
-        {"dx0.r.<init>", content_ctor}, {"MsgQuoteItem.<init>", item_ctor}, {"dx0.r.f", title}, {"dx0.r.i", kind},
-        {"dx0.r.x2", quote_field}, {"item.d", item_type}, {"item.e", item_svr}, {"item.f", item_from},
-        {"item.g", item_chat}, {"item.h", item_name}, {"item.i", item_source}, {"item.m", item_content},
-        {"item.n", item_merged}, {"item.p", item_strid}, {"item.q", item_created}, {"Pair.first", pair_first},
-        {"Pair.second", pair_second}, {"Integer.intValue", int_value}, {"Long.longValue", long_value},
+    const struct {
+        const char *name;
+        const void *found;
+    } needed[] = {
+        {"k0", k0},
+        {"dx0.r", content_class},
+        {"MsgQuoteItem", item_class},
+        {"Pair", pair_class},
+        {"k0.I", send_app},
+        {"dx0.r.<init>", content_ctor},
+        {"MsgQuoteItem.<init>", item_ctor},
+        {"dx0.r.f", title},
+        {"dx0.r.i", kind},
+        {"dx0.r.x2", quote_field},
+        {"item.d", item_type},
+        {"item.e", item_svr},
+        {"item.f", item_from},
+        {"item.g", item_chat},
+        {"item.h", item_name},
+        {"item.i", item_source},
+        {"item.m", item_content},
+        {"item.n", item_merged},
+        {"item.p", item_strid},
+        {"item.q", item_created},
+        {"Pair.first", pair_first},
+        {"Pair.second", pair_second},
+        {"Integer.intValue", int_value},
+        {"Long.longValue", long_value},
     };
     for (const auto &entry : needed) {
         if (!entry.found) {
@@ -403,16 +546,26 @@ SendResult SendQuote(const char *talker, const char *text, const QuoteRef &quote
             return result;
         }
     }
-    if (prepare) { env->CallStaticVoidMethod(prepare_class, prepare); if (env->ExceptionCheck()) env->ExceptionClear(); }
+    if (prepare) {
+        env->CallStaticVoidMethod(prepare_class, prepare);
+        if (env->ExceptionCheck()) env->ExceptionClear();
+    }
 
     // What a reply carries about the quoted line, as the chat UI fills it. The quoted content is text
     // (the store turns anything else into a "[图片]"-style line), so the type is 1 whatever it was.
     jobject item = locals.keep(env->NewObject(item_class, item_ctor));
     jobject content = locals.keep(env->NewObject(content_class, content_ctor));
-    if (env->ExceptionCheck()) { env->ExceptionClear(); item = content = nullptr; }
-    if (!item || !content) { Detail(result.detail, sizeof(result.detail), "quote objects could not be built"); return result; }
+    if (env->ExceptionCheck()) {
+        env->ExceptionClear();
+        item = content = nullptr;
+    }
+    if (!item || !content) {
+        Detail(result.detail, sizeof(result.detail), "quote objects could not be built");
+        return result;
+    }
     char merged[2400] = {};
-    if (mention_ids && *mention_ids) snprintf(merged, sizeof(merged), "<msgsource><atuserlist><![CDATA[%s]]></atuserlist></msgsource>", mention_ids);
+    if (mention_ids && *mention_ids)
+        snprintf(merged, sizeof(merged), "<msgsource><atuserlist><![CDATA[%s]]></atuserlist></msgsource>", mention_ids);
     jstring jtext = locals.keep(env->NewStringUTF(text));
     jstring jtalker = locals.keep(env->NewStringUTF(quote.talker));
     jstring jsender = locals.keep(env->NewStringUTF(quote.sender));
@@ -421,7 +574,11 @@ SendResult SendQuote(const char *talker, const char *text, const QuoteRef &quote
     jstring jempty = locals.keep(env->NewStringUTF(""));
     jstring jmerged = locals.keep(env->NewStringUTF(merged));
     jstring jtarget = locals.keep(env->NewStringUTF(talker));
-    if (env->ExceptionCheck()) { env->ExceptionClear(); Detail(result.detail, sizeof(result.detail), "string allocation failed"); return result; }
+    if (env->ExceptionCheck()) {
+        env->ExceptionClear();
+        Detail(result.detail, sizeof(result.detail), "string allocation failed");
+        return result;
+    }
     env->SetIntField(item, item_type, 1);
     env->SetLongField(item, item_svr, static_cast<jlong>(quote.svr_id));
     env->SetObjectField(item, item_from, jtalker);
@@ -436,8 +593,13 @@ SendResult SendQuote(const char *talker, const char *text, const QuoteRef &quote
     env->SetIntField(content, kind, 57);
     env->SetObjectField(content, quote_field, item);
 
-    jobject pair = locals.keep(env->CallStaticObjectMethod(k0, send_app, content, jempty, jempty, jtarget, jempty, static_cast<jbyteArray>(nullptr)));
-    if (env->ExceptionCheck()) { env->ExceptionClear(); pair = nullptr; Detail(result.detail, sizeof(result.detail), "WeChat's reply send threw"); }
+    jobject pair = locals.keep(env->CallStaticObjectMethod(k0, send_app, content, jempty, jempty, jtarget, jempty,
+                                                           static_cast<jbyteArray>(nullptr)));
+    if (env->ExceptionCheck()) {
+        env->ExceptionClear();
+        pair = nullptr;
+        Detail(result.detail, sizeof(result.detail), "WeChat's reply send threw");
+    }
     if (!pair) {
         if (!result.detail[0]) Detail(result.detail, sizeof(result.detail), "WeChat's reply send returned nothing");
         return result;
@@ -457,7 +619,8 @@ SendResult SendQuote(const char *talker, const char *text, const QuoteRef &quote
     result.ok = true;
     result.local_id = local_id > 0 ? local_id : -1;
 
-    __android_log_print(ANDROID_LOG_INFO, "SatoriWx", "reply to %lld handed to WeChat for %s (local id %lld)", quote.svr_id, talker, static_cast<long long>(result.local_id));
+    __android_log_print(ANDROID_LOG_INFO, "SatoriWx", "reply to %lld handed to WeChat for %s (local id %lld)",
+                        quote.svr_id, talker, static_cast<long long>(result.local_id));
     return result;
 }
 
@@ -471,7 +634,10 @@ SendResult SendForward(const char *talker, const char *title, const char *desc, 
         return result;
     }
     JNIEnv *env = static_cast<JNIEnv *>(ReflectEnv());
-    if (!env) { Detail(result.detail, sizeof(result.detail), "JavaVM unavailable"); return result; }
+    if (!env) {
+        Detail(result.detail, sizeof(result.detail), "JavaVM unavailable");
+        return result;
+    }
     if (!ReflectResolve(result.detail, sizeof(result.detail))) return result;
     Locals locals(env);
     jclass k0 = locals.keep(static_cast<jclass>(ReflectLoad("com.tencent.mm.pluginsdk.model.app.k0")));
@@ -481,7 +647,8 @@ SendResult SendForward(const char *talker, const char *title, const char *desc, 
     jclass long_class = locals.keep(env->FindClass("java/lang/Long"));
     jclass prepare_class = locals.keep(static_cast<jclass>(ReflectLoad("com.tencent.mm.pluginsdk.ui.tools.p0")));
     if (env->ExceptionCheck()) env->ExceptionClear();
-    jmethodID send_app = StaticMethod(env, k0, "I",
+    jmethodID send_app = StaticMethod(
+        env, k0, "I",
         "(Ldx0/r;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;[B)Landroid/util/Pair;");
     jmethodID parse = StaticMethod(env, content_class, "v", "(Ljava/lang/String;)Ldx0/r;");
     jfieldID pair_first = Field(env, pair_class, "first", "Ljava/lang/Object;");
@@ -489,11 +656,15 @@ SendResult SendForward(const char *talker, const char *title, const char *desc, 
     jmethodID int_value = Method(env, integer_class, "intValue", "()I");
     jmethodID long_value = Method(env, long_class, "longValue", "()J");
     jmethodID prepare = StaticMethod(env, prepare_class, "a", "()V");
-    if (!k0 || !content_class || !pair_class || !send_app || !parse || !pair_first || !pair_second || !int_value || !long_value) {
+    if (!k0 || !content_class || !pair_class || !send_app || !parse || !pair_first || !pair_second || !int_value ||
+        !long_value) {
         Detail(result.detail, sizeof(result.detail), "forward classes not found (version mismatch?)");
         return result;
     }
-    if (prepare) { env->CallStaticVoidMethod(prepare_class, prepare); if (env->ExceptionCheck()) env->ExceptionClear(); }
+    if (prepare) {
+        env->CallStaticVoidMethod(prepare_class, prepare);
+        if (env->ExceptionCheck()) env->ExceptionClear();
+    }
 
     // The appmsg WeChat parses back into its AppMessage: type 19, the records in <recorditem>. The
     // <url> is the page WeChat shows on a client too old to open a record. The records are XML
@@ -504,29 +675,46 @@ SendResult SendForward(const char *talker, const char *title, const char *desc, 
     xml.Text(title);
     xml.Append("</title><des>");
     xml.Text(desc ? desc : "");
-    xml.Append("</des><action>view</action><type>19</type><showtype>0</showtype><content></content>"
-               "<url>https://support.weixin.qq.com/cgi-bin/mmsupport-bin/readtemplate?t=page/favorite_record__w_unsupport&amp;from=singlemessage&amp;isappinstalled=0</url>"
-               "<dataurl></dataurl><lowurl></lowurl><lowdataurl></lowdataurl><recorditem><![CDATA[");
+    xml.Append(
+        "</des><action>view</action><type>19</type><showtype>0</showtype><content></content>"
+        "<url>https://support.weixin.qq.com/cgi-bin/mmsupport-bin/readtemplate?t=page/favorite_record__w_unsupport&amp;from=singlemessage&amp;isappinstalled=0</url>"
+        "<dataurl></dataurl><lowurl></lowurl><lowdataurl></lowdataurl><recorditem><![CDATA[");
     xml.Append(record_info);
-    xml.Append("]]></recorditem><thumburl></thumburl><messageaction></messageaction><extinfo></extinfo>"
-               "<sourceusername></sourceusername><sourcedisplayname></sourcedisplayname><commenturl></commenturl>"
-               "<appattach><totallen>0</totallen><attachid></attachid><emoticonmd5></emoticonmd5><fileext></fileext><aeskey></aeskey></appattach>"
-               "</appmsg><fromusername></fromusername><scene>0</scene><appinfo><version>1</version><appname></appname></appinfo>"
-               "<commenturl></commenturl></msg>");
-    if (xml.failed || !xml.data) { Detail(result.detail, sizeof(result.detail), "out of memory"); return result; }
+    xml.Append(
+        "]]></recorditem><thumburl></thumburl><messageaction></messageaction><extinfo></extinfo>"
+        "<sourceusername></sourceusername><sourcedisplayname></sourcedisplayname><commenturl></commenturl>"
+        "<appattach><totallen>0</totallen><attachid></attachid><emoticonmd5></emoticonmd5><fileext></fileext><aeskey></aeskey></appattach>"
+        "</appmsg><fromusername></fromusername><scene>0</scene><appinfo><version>1</version><appname></appname></appinfo>"
+        "<commenturl></commenturl></msg>");
+    if (xml.failed || !xml.data) {
+        Detail(result.detail, sizeof(result.detail), "out of memory");
+        return result;
+    }
     jstring jxml = locals.keep(env->NewStringUTF(xml.data));
     jobject content = jxml ? locals.keep(env->CallStaticObjectMethod(content_class, parse, jxml)) : nullptr;
-    if (env->ExceptionCheck()) { env->ExceptionClear(); content = nullptr; }
-    if (!content) { Detail(result.detail, sizeof(result.detail), "WeChat could not parse the chat record"); return result; }
+    if (env->ExceptionCheck()) {
+        env->ExceptionClear();
+        content = nullptr;
+    }
+    if (!content) {
+        Detail(result.detail, sizeof(result.detail), "WeChat could not parse the chat record");
+        return result;
+    }
 
     jstring jtalker = locals.keep(env->NewStringUTF(talker));
     jstring jempty = locals.keep(env->NewStringUTF(""));
     jobject pair = jtalker && jempty
-        ? locals.keep(env->CallStaticObjectMethod(k0, send_app, content, jempty, jempty, jtalker, jempty, static_cast<jbyteArray>(nullptr)))
-        : nullptr;
-    if (env->ExceptionCheck()) { env->ExceptionClear(); pair = nullptr; Detail(result.detail, sizeof(result.detail), "WeChat's chat-record send threw"); }
+                       ? locals.keep(env->CallStaticObjectMethod(k0, send_app, content, jempty, jempty, jtalker, jempty,
+                                                                 static_cast<jbyteArray>(nullptr)))
+                       : nullptr;
+    if (env->ExceptionCheck()) {
+        env->ExceptionClear();
+        pair = nullptr;
+        Detail(result.detail, sizeof(result.detail), "WeChat's chat-record send threw");
+    }
     if (!pair) {
-        if (!result.detail[0]) Detail(result.detail, sizeof(result.detail), "WeChat's chat-record send returned nothing");
+        if (!result.detail[0])
+            Detail(result.detail, sizeof(result.detail), "WeChat's chat-record send returned nothing");
         return result;
     }
     jobject first = locals.keep(env->GetObjectField(pair, pair_first));
@@ -537,12 +725,14 @@ SendResult SendForward(const char *talker, const char *title, const char *desc, 
     if (env->ExceptionCheck()) env->ExceptionClear();
     result.net_id = static_cast<int>(code);
     if (code != 0) {
-        Detail(result.detail, sizeof(result.detail), "WeChat refused the chat record (code %d)", static_cast<int>(code));
+        Detail(result.detail, sizeof(result.detail), "WeChat refused the chat record (code %d)",
+               static_cast<int>(code));
         return result;
     }
     result.ok = true;
     result.local_id = local_id > 0 ? local_id : -1;
-    __android_log_print(ANDROID_LOG_INFO, "SatoriWx", "chat record handed to WeChat for %s (local id %lld)", talker, static_cast<long long>(result.local_id));
+    __android_log_print(ANDROID_LOG_INFO, "SatoriWx", "chat record handed to WeChat for %s (local id %lld)", talker,
+                        static_cast<long long>(result.local_id));
     return result;
 }
 
@@ -572,7 +762,10 @@ SendResult SendVoice(const char *talker, const char *silk_path, int duration_ms)
         return result;
     }
     JNIEnv *env = static_cast<JNIEnv *>(ReflectEnv());
-    if (!env) { Detail(result.detail, sizeof(result.detail), "JavaVM unavailable"); return result; }
+    if (!env) {
+        Detail(result.detail, sizeof(result.detail), "JavaVM unavailable");
+        return result;
+    }
     if (!ReflectResolve(result.detail, sizeof(result.detail))) return result;
     Locals locals(env);
     jclass logic = locals.keep(static_cast<jclass>(ReflectLoad("v61.d1")));
@@ -582,7 +775,8 @@ SendResult SendVoice(const char *talker, const char *silk_path, int duration_ms)
     jclass message_class = locals.keep(static_cast<jclass>(ReflectLoad("com.tencent.mm.storage.e9")));
     if (env->ExceptionCheck()) env->ExceptionClear();
     jmethodID start = StaticMethod(env, logic, "h", "(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;");
-    jmethodID finish = StaticMethod(env, logic, "u", "(Ljava/lang/String;IILcom/tencent/mm/storage/e9;Ljava/lang/String;)Z");
+    jmethodID finish =
+        StaticMethod(env, logic, "u", "(Ljava/lang/String;IILcom/tencent/mm/storage/e9;Ljava/lang/String;)Z");
     jmethodID lookup = StaticMethod(env, n0, "c", "(Ljava/lang/Class;)Lph5/m;");
     jclass subcore = locals.keep(static_cast<jclass>(ReflectLoad("v61.v0")));
     jclass uploader_class = locals.keep(static_cast<jclass>(ReflectLoad("yl.y0")));
@@ -591,9 +785,14 @@ SendResult SendVoice(const char *talker, const char *silk_path, int duration_ms)
     jmethodID uploader_run = Method(env, uploader_class, "e", "()V");
     jfieldID legacy = kind_class ? env->GetStaticFieldID(kind_class, "j", "Lou5/x;") : nullptr;
     if (env->ExceptionCheck()) env->ExceptionClear();
-    const struct { const char *name; const void *found; } needed[] = {
-        {"v61.d1", logic}, {"ph5.n0", n0}, {"rn3.u0", paths_interface}, {"ou5.x", kind_class}, {"e9", message_class},
-        {"d1.h", start}, {"d1.u", finish}, {"n0.c", lookup}, {"ou5.x.j", legacy}, {"v0.dj", uploader_of}, {"y0.e", uploader_run},
+    const struct {
+        const char *name;
+        const void *found;
+    } needed[] = {
+        {"v61.d1", logic},      {"ph5.n0", n0},         {"rn3.u0", paths_interface},
+        {"ou5.x", kind_class},  {"e9", message_class},  {"d1.h", start},
+        {"d1.u", finish},       {"n0.c", lookup},       {"ou5.x.j", legacy},
+        {"v0.dj", uploader_of}, {"y0.e", uploader_run},
     };
     for (const auto &entry : needed) {
         if (!entry.found) {
@@ -602,34 +801,70 @@ SendResult SendVoice(const char *talker, const char *silk_path, int duration_ms)
         }
     }
     jobject paths = locals.keep(env->CallStaticObjectMethod(n0, lookup, paths_interface));
-    if (env->ExceptionCheck()) { env->ExceptionClear(); paths = nullptr; }
+    if (env->ExceptionCheck()) {
+        env->ExceptionClear();
+        paths = nullptr;
+    }
     jclass paths_class = paths ? locals.keep(env->GetObjectClass(paths)) : nullptr;
-    jmethodID voice_path = paths_class ? Method(env, paths_class, "Fj", "(Lou5/x;Ljava/lang/String;ZZ)Ljava/lang/String;") : nullptr;
-    if (!voice_path) { Detail(result.detail, sizeof(result.detail), "voice path service unavailable"); return result; }
+    jmethodID voice_path =
+        paths_class ? Method(env, paths_class, "Fj", "(Lou5/x;Ljava/lang/String;ZZ)Ljava/lang/String;") : nullptr;
+    if (!voice_path) {
+        Detail(result.detail, sizeof(result.detail), "voice path service unavailable");
+        return result;
+    }
     jobject kind = locals.keep(env->GetStaticObjectField(kind_class, legacy));
 
     // 1) WeChat registers a new voice file for this conversation and hands back its name.
     jstring jtalker = locals.keep(env->NewStringUTF(talker));
-    jstring jprefix = locals.keep(env->NewStringUTF("amr_"));   // every voice file WeChat writes is named amr_…, SILK included
+    jstring jprefix =
+        locals.keep(env->NewStringUTF("amr_")); // every voice file WeChat writes is named amr_…, SILK included
     jstring name = locals.keep(static_cast<jstring>(env->CallStaticObjectMethod(logic, start, jtalker, jprefix)));
-    if (env->ExceptionCheck()) { env->ExceptionClear(); name = nullptr; }
-    if (!name) { Detail(result.detail, sizeof(result.detail), "WeChat would not register a voice file"); return result; }
+    if (env->ExceptionCheck()) {
+        env->ExceptionClear();
+        name = nullptr;
+    }
+    if (!name) {
+        Detail(result.detail, sizeof(result.detail), "WeChat would not register a voice file");
+        return result;
+    }
     // 2) The file goes where WeChat keeps voice files for that name.
-    jstring destination = locals.keep(static_cast<jstring>(env->CallObjectMethod(paths, voice_path, kind, name, JNI_FALSE, JNI_TRUE)));
-    if (env->ExceptionCheck()) { env->ExceptionClear(); destination = nullptr; }
+    jstring destination =
+        locals.keep(static_cast<jstring>(env->CallObjectMethod(paths, voice_path, kind, name, JNI_FALSE, JNI_TRUE)));
+    if (env->ExceptionCheck()) {
+        env->ExceptionClear();
+        destination = nullptr;
+    }
     const char *target = destination ? env->GetStringUTFChars(destination, nullptr) : nullptr;
-    if (!target || !*target) { Detail(result.detail, sizeof(result.detail), "voice file path unavailable"); return result; }
+    if (!target || !*target) {
+        Detail(result.detail, sizeof(result.detail), "voice file path unavailable");
+        return result;
+    }
     char path[1200];
     snprintf(path, sizeof(path), "%s", target);
     env->ReleaseStringUTFChars(destination, target);
     // Both the directories and the file are ours to create: the path service only computes the name.
     MakeParents(path);
-    if (!LinkOrCopy(silk_path, path, result.detail, sizeof(result.detail))) { AbandonVoice(env, logic, name); return result; }
+    if (!LinkOrCopy(silk_path, path, result.detail, sizeof(result.detail))) {
+        AbandonVoice(env, logic, name);
+        return result;
+    }
     // 3) The recorder's "stop": builds the message row and lets WeChat's uploader take it.
-    const jboolean ok = env->CallStaticBooleanMethod(logic, finish, name, static_cast<jint>(duration_ms), static_cast<jint>(0),
-                                                     static_cast<jobject>(nullptr), static_cast<jstring>(nullptr));
-    if (env->ExceptionCheck()) { env->ExceptionClear(); Detail(result.detail, sizeof(result.detail), "WeChat's voice send threw"); unlink(path); AbandonVoice(env, logic, name); return result; }
-    if (!ok) { Detail(result.detail, sizeof(result.detail), "WeChat refused the voice file"); unlink(path); AbandonVoice(env, logic, name); return result; }
+    const jboolean ok =
+        env->CallStaticBooleanMethod(logic, finish, name, static_cast<jint>(duration_ms), static_cast<jint>(0),
+                                     static_cast<jobject>(nullptr), static_cast<jstring>(nullptr));
+    if (env->ExceptionCheck()) {
+        env->ExceptionClear();
+        Detail(result.detail, sizeof(result.detail), "WeChat's voice send threw");
+        unlink(path);
+        AbandonVoice(env, logic, name);
+        return result;
+    }
+    if (!ok) {
+        Detail(result.detail, sizeof(result.detail), "WeChat refused the voice file");
+        unlink(path);
+        AbandonVoice(env, logic, name);
+        return result;
+    }
     // ...and, as the recorder does right after, wake the voice uploader so it picks the file up now.
     jobject uploader = locals.keep(env->CallStaticObjectMethod(subcore, uploader_of));
     if (uploader) env->CallVoidMethod(uploader, uploader_run);

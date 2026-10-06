@@ -42,10 +42,10 @@ volatile long long g_live_wakes = 0;
 
 // How the poller learns that WeChat wrote something. A change notice on the database directory
 // wakes it within milliseconds; the timeouts below only cover a notice that never comes.
-constexpr int kFallbackMs = 1000;    // longest sleep while a watch is active
-constexpr int kNoWatchMs = 250;      // sleep when inotify is unavailable and we must poll blindly
-constexpr int kScanEveryMs = 3000;   // recalls / roster / friends scanner cadence
-constexpr int kMinGapMs = 10;        // a write burst must not turn into a busy loop
+constexpr int kFallbackMs = 1000;  // longest sleep while a watch is active
+constexpr int kNoWatchMs = 250;    // sleep when inotify is unavailable and we must poll blindly
+constexpr int kScanEveryMs = 3000; // recalls / roster / friends scanner cadence
+constexpr int kMinGapMs = 10;      // a write burst must not turn into a busy loop
 // A notice can land a hair before WeChat's commit is visible to a second connection, and a lone
 // write produces no further notice: read again shortly after every wake.
 constexpr int kTailMs[] = {30, 150};
@@ -54,7 +54,10 @@ constexpr int kTails = sizeof(kTailMs) / sizeof(kTailMs[0]);
 bool Emit(void *context, const char *event) {
     auto *live = static_cast<Live *>(context);
     const bool published = Publish(live->bus, event);
-    if (published) { ++live->emitted; g_live_emitted = live->emitted; }
+    if (published) {
+        ++live->emitted;
+        g_live_emitted = live->emitted;
+    }
     return published;
 }
 
@@ -106,12 +109,16 @@ bool FindDatabase(const char *app_data, char *out, size_t capacity) {
     DIR *dir = opendir(micro);
     if (!dir) return false;
     bool found = false;
-    for (dirent *entry; (entry = readdir(dir)); ) {
+    for (dirent *entry; (entry = readdir(dir));) {
         if (entry->d_name[0] == '.') continue;
         char path[1600];
         snprintf(path, sizeof(path), "%s/%s/EnMicroMsg.db", micro, entry->d_name);
         struct stat info{};
-        if (!stat(path, &info) && S_ISREG(info.st_mode)) { snprintf(out, capacity, "%s", path); found = true; break; }
+        if (!stat(path, &info) && S_ISREG(info.st_mode)) {
+            snprintf(out, capacity, "%s", path);
+            found = true;
+            break;
+        }
     }
     closedir(dir);
     return found;
@@ -131,7 +138,10 @@ bool LoadCipherSpec(const char *app_data, Spec *spec) {
         Spec candidate{};
         if (!ParseSpec(line, &candidate)) continue;
         if (candidate.version <= 0) continue;
-        if (!found) { *spec = candidate; found = true; }
+        if (!found) {
+            *spec = candidate;
+            found = true;
+        }
     }
     fclose(file);
     return found;
@@ -139,16 +149,29 @@ bool LoadCipherSpec(const char *app_data, Spec *spec) {
 
 bool TryOpen(Live *live, Store **out) {
     Spec spec{};
-    if (!LoadCipherSpec(live->app_data, &spec)) { Log(live->app_data, "open: no cipher spec yet"); return false; }
+    if (!LoadCipherSpec(live->app_data, &spec)) {
+        Log(live->app_data, "open: no cipher spec yet");
+        return false;
+    }
     char database[1600];
-    if (!FindDatabase(live->app_data, database, sizeof(database))) { Log(live->app_data, "open: no database found"); return false; }
+    if (!FindDatabase(live->app_data, database, sizeof(database))) {
+        Log(live->app_data, "open: no database found");
+        return false;
+    }
     Account account;
     const char *self_id = ReadAccount(live->app_data, &account) && account.exists ? account.wxid : nullptr;
     Store *store = CreateStore(database, spec.key, spec.size, spec.version, self_id);
     snprintf(live->database, sizeof(live->database), "%s", database);
-    if (!store) { Log(live->app_data, "open: failed (%s) compat=%d len=%d", StoreError(nullptr), spec.version, spec.size); return false; }
+    if (!store) {
+        Log(live->app_data, "open: failed (%s) compat=%d len=%d", StoreError(nullptr), spec.version, spec.size);
+        return false;
+    }
     const long long watermark = StoreWatermark(store);
-    if (watermark < 0) { Log(live->app_data, "open: watermark failed (%s)", StoreError(store)); DestroyStore(store); return false; }
+    if (watermark < 0) {
+        Log(live->app_data, "open: watermark failed (%s)", StoreError(store));
+        DestroyStore(store);
+        return false;
+    }
     Log(live->app_data, "opened: compat=%d len=%d watermark=%lld", spec.version, spec.size, watermark);
     *out = store;
     return true;
@@ -174,7 +197,10 @@ void *Loop(void *argument) {
         const timespec delay{2, 0};
         nanosleep(&delay, nullptr);
     }
-    if (!live->store) { Log(live->app_data, "gave up: no store after retries"); return nullptr; }
+    if (!live->store) {
+        Log(live->app_data, "gave up: no store after retries");
+        return nullptr;
+    }
     // Wait for the hub to hold an online login; otherwise Apply drops every event we publish.
     for (int i = 0; i < 150 && g_login_count <= 0; ++i) {
         const timespec second{1, 0};
@@ -194,8 +220,10 @@ void *Loop(void *argument) {
     g_live_scanner = scanner;
     const int watch = WatchOpen(live->database);
     g_live_watching = watch >= 0;
-    if (watch >= 0) Log(live->app_data, "watching %s for writes", live->database);
-    else Log(live->app_data, "inotify unavailable: polling every %d ms", kNoWatchMs);
+    if (watch >= 0)
+        Log(live->app_data, "watching %s for writes", live->database);
+    else
+        Log(live->app_data, "inotify unavailable: polling every %d ms", kNoWatchMs);
     long long last_scan = MonotonicMs();
     long long last_poll = 0;
     long long tail_at[kTails] = {};
@@ -216,7 +244,8 @@ void *Loop(void *argument) {
         if (more) continue;
         long long deadline = last_poll + (watch >= 0 ? kFallbackMs : kNoWatchMs);
         if (scanner && last_scan + kScanEveryMs < deadline) deadline = last_scan + kScanEveryMs;
-        for (long long due : tail_at) if (due && due < deadline) deadline = due;
+        for (long long due : tail_at)
+            if (due && due < deadline) deadline = due;
         if (WatchWait(watch, deadline - MonotonicMs())) {
             g_live_wakes = g_live_wakes + 1;
             const long long woke = MonotonicMs();
@@ -226,7 +255,8 @@ void *Loop(void *argument) {
             if (since < kMinGapMs) poll(nullptr, 0, static_cast<int>(kMinGapMs - since));
         }
         const long long now = MonotonicMs();
-        for (long long &due : tail_at) if (due && due <= now) due = 0;
+        for (long long &due : tail_at)
+            if (due && due <= now) due = 0;
     }
 }
 } // namespace
@@ -239,7 +269,10 @@ bool StartLiveStore(const char *app_data_dir, EventBus *bus, int login_sn) {
     live->bus = bus;
     live->login_sn = login_sn;
     pthread_t thread;
-    if (pthread_create(&thread, nullptr, Loop, live)) { free(live); return false; }
+    if (pthread_create(&thread, nullptr, Loop, live)) {
+        free(live);
+        return false;
+    }
     pthread_detach(thread);
     return true;
 }

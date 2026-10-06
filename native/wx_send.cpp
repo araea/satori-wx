@@ -29,7 +29,7 @@ pthread_mutex_t g_mu = PTHREAD_MUTEX_INITIALIZER;
 long long g_sent = 0;
 long long g_failed = 0;
 long long g_rejected = 0;
-long long g_attempt_ms = 0;   // last SendText() attempt (monotonic), 0 = none yet
+long long g_attempt_ms = 0; // last SendText() attempt (monotonic), 0 = none yet
 bool g_last_ok = false;
 int g_last_net = -1;
 long long g_last_local = -1;
@@ -39,21 +39,21 @@ char g_last_error[160] = {};
 // Resolved once on the host class loader and then only read.
 bool g_resolved = false;
 bool g_dispatcher_ok = false;
-jobject g_loader = nullptr;      // java.lang.ClassLoader (app)
+jobject g_loader = nullptr;        // java.lang.ClassLoader (app)
 jmethodID g_loader_load = nullptr; // ClassLoader.loadClass(String), cached by Resolve
-jclass g_r0 = nullptr;           // v51.r0
-jmethodID g_r0_ctor = nullptr;   // (String,String,int,int,long,String)V
+jclass g_r0 = nullptr;             // v51.r0
+jmethodID g_r0_ctor = nullptr;     // (String,String,int,int,long,String)V
 jmethodID g_r0_ctor_map = nullptr; // (String,String,int,int,Object,String)V: the overload that takes a msgsource map
-jclass g_hashmap = nullptr;       // java.util.HashMap, for that map
+jclass g_hashmap = nullptr;        // java.util.HashMap, for that map
 jmethodID g_hashmap_ctor = nullptr;
 jmethodID g_hashmap_put = nullptr;
-jfieldID g_r0_local = nullptr;   // f:J
-jmethodID g_r0_do_scene = nullptr; // (com.tencent.mm.network.s, com.tencent.mm.modelbase.u0)I
-jclass g_y2 = nullptr;           // com.tencent.mm.network.y2
-jmethodID g_y2_ctor = nullptr;   // ()V
-jclass g_a3 = nullptr;           // com.tencent.mm.network.a3 (MMPushCore, :push only)
+jfieldID g_r0_local = nullptr;       // f:J
+jmethodID g_r0_do_scene = nullptr;   // (com.tencent.mm.network.s, com.tencent.mm.modelbase.u0)I
+jclass g_y2 = nullptr;               // com.tencent.mm.network.y2
+jmethodID g_y2_ctor = nullptr;       // ()V
+jclass g_a3 = nullptr;               // com.tencent.mm.network.a3 (MMPushCore, :push only)
 jmethodID g_a3_dispatcher = nullptr; // ()Lcom/tencent/mm/network/j1;
-jclass g_r1 = nullptr;           // com.tencent.mm.modelbase.r1 (MMKernel network holder)
+jclass g_r1 = nullptr;               // com.tencent.mm.modelbase.r1 (MMKernel network holder)
 jfieldID g_r1_singleton = nullptr;   // y:Lcom/tencent/mm/modelbase/r1;
 jmethodID g_r1_dispatcher = nullptr; // k()Lcom/tencent/mm/network/s;
 // Recall: the message store and the revoke scene. Resolved leniently; when absent the
@@ -118,7 +118,10 @@ jfieldID StaticField(JNIEnv *env, jclass cls, const char *name, const char *sign
 // present; without one those paths throw. Prepare one so dispatch degrades cleanly.
 void PrepareLooper(JNIEnv *env) {
     jclass looper = env->FindClass("android/os/Looper");
-    if (!looper) { env->ExceptionClear(); return; }
+    if (!looper) {
+        env->ExceptionClear();
+        return;
+    }
     jmethodID mine = StaticMethod(env, looper, "myLooper", "()Landroid/os/Looper;");
     jmethodID prepare = StaticMethod(env, looper, "prepare", "()V");
     if (mine && prepare && !env->CallStaticObjectMethod(looper, mine)) {
@@ -143,7 +146,10 @@ jclass LoadClass(JNIEnv *env, jobject loader, jmethodID load, const char *name) 
     if (!text) return nullptr;
     auto cls = static_cast<jclass>(env->CallObjectMethod(loader, load, text));
     env->DeleteLocalRef(text);
-    if (env->ExceptionCheck()) { env->ExceptionClear(); return nullptr; }
+    if (env->ExceptionCheck()) {
+        env->ExceptionClear();
+        return nullptr;
+    }
     return cls;
 }
 
@@ -151,15 +157,29 @@ jclass LoadClass(JNIEnv *env, jobject loader, jmethodID load, const char *name) 
 // FindClass, so everything goes through ActivityThread.currentApplication()'s loader.
 bool Resolve(JNIEnv *env, char *detail, size_t size) {
     jclass activity_thread = env->FindClass("android/app/ActivityThread");
-    if (!activity_thread) { env->ExceptionClear(); Detail(detail, size, "ActivityThread missing"); return false; }
+    if (!activity_thread) {
+        env->ExceptionClear();
+        Detail(detail, size, "ActivityThread missing");
+        return false;
+    }
     jmethodID current = StaticMethod(env, activity_thread, "currentApplication", "()Landroid/app/Application;");
     jobject application = current ? env->CallStaticObjectMethod(activity_thread, current) : nullptr;
-    if (env->ExceptionCheck()) { env->ExceptionClear(); application = nullptr; }
-    if (!application) { env->DeleteLocalRef(activity_thread); Detail(detail, size, "application not ready"); return false; }
+    if (env->ExceptionCheck()) {
+        env->ExceptionClear();
+        application = nullptr;
+    }
+    if (!application) {
+        env->DeleteLocalRef(activity_thread);
+        Detail(detail, size, "application not ready");
+        return false;
+    }
     jclass application_class = env->FindClass("android/app/Application");
     jmethodID get_loader = Method(env, application_class, "getClassLoader", "()Ljava/lang/ClassLoader;");
     jobject loader = get_loader ? env->CallObjectMethod(application, get_loader) : nullptr;
-    if (env->ExceptionCheck()) { env->ExceptionClear(); loader = nullptr; }
+    if (env->ExceptionCheck()) {
+        env->ExceptionClear();
+        loader = nullptr;
+    }
     if (!loader) {
         env->DeleteLocalRef(application);
         if (application_class) env->DeleteLocalRef(application_class);
@@ -193,7 +213,8 @@ bool Resolve(JNIEnv *env, char *detail, size_t size) {
         g_r0_ctor = Method(env, r0, "<init>", "(Ljava/lang/String;Ljava/lang/String;IIJLjava/lang/String;)V");
         // Optional: the overload the chat UI uses to attach an <atuserlist>; a build without it
         // still sends text, just without real mentions.
-        g_r0_ctor_map = Method(env, r0, "<init>", "(Ljava/lang/String;Ljava/lang/String;IILjava/lang/Object;Ljava/lang/String;)V");
+        g_r0_ctor_map =
+            Method(env, r0, "<init>", "(Ljava/lang/String;Ljava/lang/String;IILjava/lang/Object;Ljava/lang/String;)V");
         if (!g_r0_ctor_map) env->ExceptionClear();
         jclass hashmap = env->FindClass("java/util/HashMap");
         if (hashmap) {
@@ -281,17 +302,27 @@ jobject Dispatcher(JNIEnv *env, int *mask) {
     int found = 0;
     if (g_r1 && g_r1_singleton && g_r1_dispatcher) {
         jobject holder = env->GetStaticObjectField(g_r1, g_r1_singleton);
-        if (env->ExceptionCheck()) { env->ExceptionClear(); holder = nullptr; }
+        if (env->ExceptionCheck()) {
+            env->ExceptionClear();
+            holder = nullptr;
+        }
         if (holder) {
             found |= 1;
             jobject local = env->CallObjectMethod(holder, g_r1_dispatcher);
             env->DeleteLocalRef(holder);
-            if (env->ExceptionCheck()) env->ExceptionClear();
-            else if (local) { if (mask) *mask = found | 2; return local; }
+            if (env->ExceptionCheck())
+                env->ExceptionClear();
+            else if (local) {
+                if (mask) *mask = found | 2;
+                return local;
+            }
         }
     }
     jobject dispatcher = env->CallStaticObjectMethod(g_a3, g_a3_dispatcher);
-    if (env->ExceptionCheck()) { env->ExceptionClear(); dispatcher = nullptr; }
+    if (env->ExceptionCheck()) {
+        env->ExceptionClear();
+        dispatcher = nullptr;
+    }
     if (dispatcher) found |= 4;
     if (mask) *mask = found;
     return dispatcher;
@@ -305,7 +336,10 @@ void *ReflectEnv() { return Env(); }
 
 bool ReflectResolve(char *detail, size_t size) {
     JNIEnv *env = Env();
-    if (!env) { if (detail && size) Detail(detail, size, "JavaVM unavailable"); return false; }
+    if (!env) {
+        if (detail && size) Detail(detail, size, "JavaVM unavailable");
+        return false;
+    }
     pthread_mutex_lock(&g_mu);
     const bool ok = g_resolved || Resolve(env, detail, size);
     pthread_mutex_unlock(&g_mu);
@@ -323,14 +357,20 @@ void *ReflectCallback() {
     JNIEnv *env = Env();
     if (!env || !g_y2 || !g_y2_ctor) return nullptr;
     jobject callback = env->NewObject(g_y2, g_y2_ctor);
-    if (env->ExceptionCheck()) { env->ExceptionClear(); return nullptr; }
+    if (env->ExceptionCheck()) {
+        env->ExceptionClear();
+        return nullptr;
+    }
     return callback;
 }
 
 // Calls scene.doScene(dispatcher, callback); returns the netId, or -1 with a reason.
 int ReflectDispatchScene(void *scene, void *do_scene, char *detail, size_t size) {
     JNIEnv *env = Env();
-    if (!env || !scene || !do_scene) { Detail(detail, size, "scene unavailable"); return -1; }
+    if (!env || !scene || !do_scene) {
+        Detail(detail, size, "scene unavailable");
+        return -1;
+    }
     int probe = 0;
     jobject dispatcher = Dispatcher(env, &probe);
     if (!dispatcher) {
@@ -338,13 +378,17 @@ int ReflectDispatchScene(void *scene, void *do_scene, char *detail, size_t size)
         return -1;
     }
     jobject callback = env->NewObject(g_y2, g_y2_ctor);
-    if (env->ExceptionCheck()) { env->ExceptionClear(); callback = nullptr; }
+    if (env->ExceptionCheck()) {
+        env->ExceptionClear();
+        callback = nullptr;
+    }
     if (!callback) {
         env->DeleteLocalRef(dispatcher);
         Detail(detail, size, "callback allocation failed");
         return -1;
     }
-    const jint net = env->CallIntMethod(static_cast<jobject>(scene), reinterpret_cast<jmethodID>(do_scene), dispatcher, callback);
+    const jint net =
+        env->CallIntMethod(static_cast<jobject>(scene), reinterpret_cast<jmethodID>(do_scene), dispatcher, callback);
     if (env->ExceptionCheck()) {
         env->ExceptionClear();
         Detail(detail, size, "dispatch threw");
@@ -467,14 +511,24 @@ static SendResult SendTextInner(const char *talker, const char *content, const c
             jobject previous = env->CallObjectMethod(map, g_hashmap_put, jkey, jvalue);
             if (previous) env->DeleteLocalRef(previous);
         } else {
-            if (map) { env->DeleteLocalRef(map); map = nullptr; }
+            if (map) {
+                env->DeleteLocalRef(map);
+                map = nullptr;
+            }
         }
         if (jkey) env->DeleteLocalRef(jkey);
         if (jvalue) env->DeleteLocalRef(jvalue);
-        if (env->ExceptionCheck()) { env->ExceptionClear(); if (map) { env->DeleteLocalRef(map); map = nullptr; } }
+        if (env->ExceptionCheck()) {
+            env->ExceptionClear();
+            if (map) {
+                env->DeleteLocalRef(map);
+                map = nullptr;
+            }
+        }
     }
     if (map) {
-        scene = env->NewObject(g_r0, g_r0_ctor_map, jtalker, jcontent, static_cast<jint>(1), static_cast<jint>(1), map, jempty);
+        scene = env->NewObject(g_r0, g_r0_ctor_map, jtalker, jcontent, static_cast<jint>(1), static_cast<jint>(1), map,
+                               jempty);
         env->DeleteLocalRef(map);
     } else {
         scene = env->NewObject(g_r0, g_r0_ctor, jtalker, jcontent, static_cast<jint>(1), static_cast<jint>(0),
@@ -496,7 +550,10 @@ static SendResult SendTextInner(const char *talker, const char *content, const c
     }
     result.local_id = env->GetLongField(scene, g_r0_local);
     jobject callback = env->NewObject(g_y2, g_y2_ctor);
-    if (env->ExceptionCheck()) { env->ExceptionClear(); callback = nullptr; }
+    if (env->ExceptionCheck()) {
+        env->ExceptionClear();
+        callback = nullptr;
+    }
     if (!callback) {
         env->DeleteLocalRef(dispatcher);
         env->DeleteLocalRef(scene);
@@ -529,14 +586,19 @@ SendResult SendText(const char *talker, const char *content, const char *mention
     g_last_local = result.local_id;
     snprintf(g_last_target, sizeof(g_last_target), "%s", talker ? talker : "");
     snprintf(g_last_error, sizeof(g_last_error), "%s", result.ok ? "" : result.detail);
-    if (result.ok) ++g_sent;
-    else if (result.rejected) ++g_rejected;
-    else ++g_failed;
+    if (result.ok)
+        ++g_sent;
+    else if (result.rejected)
+        ++g_rejected;
+    else
+        ++g_failed;
     pthread_mutex_unlock(&g_mu);
-    if (result.ok) __android_log_print(ANDROID_LOG_INFO, "SatoriWx", "sent to %s (local id %lld, netId %d)",
-                                       talker, result.local_id, result.net_id);
-    else __android_log_print(ANDROID_LOG_WARN, "SatoriWx", "send to %s failed%s: %s",
-                             talker, result.rejected ? " (rejected)" : "", result.detail);
+    if (result.ok)
+        __android_log_print(ANDROID_LOG_INFO, "SatoriWx", "sent to %s (local id %lld, netId %d)", talker,
+                            result.local_id, result.net_id);
+    else
+        __android_log_print(ANDROID_LOG_WARN, "SatoriWx", "send to %s failed%s: %s", talker,
+                            result.rejected ? " (rejected)" : "", result.detail);
     return result;
 }
 
@@ -569,42 +631,58 @@ SendResult SendImage(const char *talker, const char *self_id, const char *path) 
     jobject service = nullptr, callback = nullptr, context = nullptr, params = nullptr, flow = nullptr;
     jstring jpath = nullptr, jself = nullptr, jtalker = nullptr, jsource = nullptr;
     jmethodID lookup = StaticMethod(env, n0, "c", "(Ljava/lang/Class;)Lph5/m;");
-    jmethodID params_ctor = Method(env, params_class, "<init>", "(Ljava/lang/String;ILjava/lang/String;Ljava/lang/String;Lw90/i0;)V");
+    jmethodID params_ctor =
+        Method(env, params_class, "<init>", "(Ljava/lang/String;ILjava/lang/String;Ljava/lang/String;Lw90/i0;)V");
     jfieldID params_source = Field(env, params_class, "j", "Ljava/lang/String;");
     jmethodID context_ctor = Method(env, context_class, "<init>", "()V");
     jfieldID context_kind = Field(env, context_class, "a", "I");
     jfieldID context_callback = Field(env, context_class, "o", "Lb41/k7;");
     jmethodID callback_ctor = Method(env, callback_class, "<init>", "()V");
     jmethodID prepare = StaticMethod(env, prepare_class, "a", "()V");
-    if (!n0 || !service_interface || !params_class || !context_class || !callback_class || !lookup || !params_ctor || !params_source ||
-        !context_ctor || !context_kind || !context_callback || !callback_ctor) {
+    if (!n0 || !service_interface || !params_class || !context_class || !callback_class || !lookup || !params_ctor ||
+        !params_source || !context_ctor || !context_kind || !context_callback || !callback_ctor) {
         Detail(result.detail, sizeof(result.detail), "image classes not found (version mismatch?)");
     } else {
         service = env->CallStaticObjectMethod(n0, lookup, service_interface);
-        if (env->ExceptionCheck()) { env->ExceptionClear(); service = nullptr; }
+        if (env->ExceptionCheck()) {
+            env->ExceptionClear();
+            service = nullptr;
+        }
         jclass service_class = service ? env->GetObjectClass(service) : nullptr;
-        jmethodID send = service_class ? Method(env, service_class, "rj", "(Lda0/g;)Lkotlinx/coroutines/flow/j;") : nullptr;
+        jmethodID send =
+            service_class ? Method(env, service_class, "rj", "(Lda0/g;)Lkotlinx/coroutines/flow/j;") : nullptr;
         if (service_class) env->DeleteLocalRef(service_class);
         if (!service || !send) {
-            Detail(result.detail, sizeof(result.detail), service ? "image service has no rj() (version mismatch?)" : "image service unavailable");
+            Detail(result.detail, sizeof(result.detail),
+                   service ? "image service has no rj() (version mismatch?)" : "image service unavailable");
         } else {
             // The chat UI's own call, minus the UI: source 4 = "sent from a chat", a fresh
             // callback object for the pipeline to fill in, "msg_mgr_send_img" as the feature tag.
-            if (prepare) { env->CallStaticVoidMethod(prepare_class, prepare); if (env->ExceptionCheck()) env->ExceptionClear(); }
+            if (prepare) {
+                env->CallStaticVoidMethod(prepare_class, prepare);
+                if (env->ExceptionCheck()) env->ExceptionClear();
+            }
             callback = env->NewObject(callback_class, callback_ctor);
             context = env->NewObject(context_class, context_ctor);
             jpath = env->NewStringUTF(path);
             jself = env->NewStringUTF(self_id);
             jtalker = env->NewStringUTF(talker);
             jsource = env->NewStringUTF("msg_mgr_send_img");
-            if (env->ExceptionCheck()) { env->ExceptionClear(); callback = context = nullptr; }
+            if (env->ExceptionCheck()) {
+                env->ExceptionClear();
+                callback = context = nullptr;
+            }
             if (!callback || !context || !jpath || !jself || !jtalker || !jsource) {
                 Detail(result.detail, sizeof(result.detail), "image argument allocation failed");
             } else {
                 env->SetIntField(context, context_kind, 4);
                 env->SetObjectField(context, context_callback, callback);
-                params = env->NewObject(params_class, params_ctor, jpath, static_cast<jint>(0), jself, jtalker, context);
-                if (env->ExceptionCheck()) { env->ExceptionClear(); params = nullptr; }
+                params =
+                    env->NewObject(params_class, params_ctor, jpath, static_cast<jint>(0), jself, jtalker, context);
+                if (env->ExceptionCheck()) {
+                    env->ExceptionClear();
+                    params = nullptr;
+                }
                 if (!params) {
                     Detail(result.detail, sizeof(result.detail), "image parameters construction failed");
                 } else {
@@ -614,25 +692,32 @@ SendResult SendImage(const char *talker, const char *self_id, const char *path) 
                         env->ExceptionClear();
                         Detail(result.detail, sizeof(result.detail), "image pipeline threw");
                     } else {
-                        result.ok = true;  // launched; the progress flow is not needed
+                        result.ok = true; // launched; the progress flow is not needed
                     }
                 }
             }
         }
     }
-    jobject locals[] = {n0, service_interface, params_class, context_class, callback_class, prepare_class, service, callback, context, params, flow,
-                        jpath, jself, jtalker, jsource};
-    for (jobject local : locals) if (local) env->DeleteLocalRef(local);
+    jobject locals[] = {n0,      service_interface, params_class, context_class, callback_class, prepare_class,
+                        service, callback,          context,      params,        flow,           jpath,
+                        jself,   jtalker,           jsource};
+    for (jobject local : locals)
+        if (local) env->DeleteLocalRef(local);
     pthread_mutex_lock(&g_mu);
     g_attempt_ms = NowMs();
     g_last_ok = result.ok;
     g_last_net = -1;
     snprintf(g_last_target, sizeof(g_last_target), "%s", talker);
     snprintf(g_last_error, sizeof(g_last_error), "%s", result.ok ? "" : result.detail);
-    if (result.ok) ++g_media; else ++g_failed;
+    if (result.ok)
+        ++g_media;
+    else
+        ++g_failed;
     pthread_mutex_unlock(&g_mu);
-    if (result.ok) __android_log_print(ANDROID_LOG_INFO, "SatoriWx", "image handed to WeChat for %s", talker);
-    else __android_log_print(ANDROID_LOG_WARN, "SatoriWx", "image send to %s failed: %s", talker, result.detail);
+    if (result.ok)
+        __android_log_print(ANDROID_LOG_INFO, "SatoriWx", "image handed to WeChat for %s", talker);
+    else
+        __android_log_print(ANDROID_LOG_WARN, "SatoriWx", "image send to %s failed: %s", talker, result.detail);
     return result;
 }
 
@@ -675,7 +760,10 @@ SendResult SendRecall(const char *talker, const char *message_id) {
     // to build /cgi-bin/micromsg-bin/revokemsg. Reading it is the only way the client-side
     // checks (does it exist, did we send it) are the same ones the app itself applies.
     jobject store = env->GetStaticObjectField(g_k0, g_k0_store);
-    if (env->ExceptionCheck()) { env->ExceptionClear(); store = nullptr; }
+    if (env->ExceptionCheck()) {
+        env->ExceptionClear();
+        store = nullptr;
+    }
     if (!store) {
         env->DeleteLocalRef(dispatcher);
         Detail(result.detail, sizeof(result.detail), "message store unavailable");
@@ -683,7 +771,10 @@ SendResult SendRecall(const char *talker, const char *message_id) {
     }
     jstring jtalker = env->NewStringUTF(talker);
     jobject info = jtalker ? env->CallObjectMethod(store, g_j0_get, jtalker, static_cast<jlong>(local_id)) : nullptr;
-    if (env->ExceptionCheck()) { env->ExceptionClear(); info = nullptr; }
+    if (env->ExceptionCheck()) {
+        env->ExceptionClear();
+        info = nullptr;
+    }
     env->DeleteLocalRef(store);
     if (jtalker) env->DeleteLocalRef(jtalker);
     if (!info) {
@@ -705,7 +796,10 @@ SendResult SendRecall(const char *talker, const char *message_id) {
     jstring jhint = env->NewStringUTF("你撤回了一条消息");
     jstring jempty = env->NewStringUTF("");
     jobject scene = (jhint && jempty) ? env->NewObject(g_d1, g_d1_ctor, info, jhint, jempty) : nullptr;
-    if (env->ExceptionCheck()) { env->ExceptionClear(); scene = nullptr; }
+    if (env->ExceptionCheck()) {
+        env->ExceptionClear();
+        scene = nullptr;
+    }
     if (jhint) env->DeleteLocalRef(jhint);
     if (jempty) env->DeleteLocalRef(jempty);
     env->DeleteLocalRef(info);
@@ -715,7 +809,10 @@ SendResult SendRecall(const char *talker, const char *message_id) {
         return result;
     }
     jobject callback = env->NewObject(g_y2, g_y2_ctor);
-    if (env->ExceptionCheck()) { env->ExceptionClear(); callback = nullptr; }
+    if (env->ExceptionCheck()) {
+        env->ExceptionClear();
+        callback = nullptr;
+    }
     if (!callback) {
         env->DeleteLocalRef(scene);
         env->DeleteLocalRef(dispatcher);
@@ -737,14 +834,19 @@ SendResult SendRecall(const char *talker, const char *message_id) {
     env->DeleteLocalRef(dispatcher);
     env->DeleteLocalRef(scene);
     pthread_mutex_lock(&g_mu);
-    if (result.ok) ++g_recalled;
-    else if (result.rejected) ++g_rejected;
-    else ++g_failed;
+    if (result.ok)
+        ++g_recalled;
+    else if (result.rejected)
+        ++g_rejected;
+    else
+        ++g_failed;
     pthread_mutex_unlock(&g_mu);
-    if (result.ok) __android_log_print(ANDROID_LOG_INFO, "SatoriWx", "recalled %s in %s (netId %d)",
-                                       message_id, talker, result.net_id);
-    else __android_log_print(ANDROID_LOG_WARN, "SatoriWx", "recall %s in %s failed%s: %s",
-                             message_id, talker, result.rejected ? " (rejected)" : "", result.detail);
+    if (result.ok)
+        __android_log_print(ANDROID_LOG_INFO, "SatoriWx", "recalled %s in %s (netId %d)", message_id, talker,
+                            result.net_id);
+    else
+        __android_log_print(ANDROID_LOG_WARN, "SatoriWx", "recall %s in %s failed%s: %s", message_id, talker,
+                            result.rejected ? " (rejected)" : "", result.detail);
     return result;
 }
 } // namespace satori

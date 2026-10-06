@@ -9,8 +9,8 @@
 // It only observes what WeChat already persisted about the last login.
 namespace satori {
 struct Account {
-    bool exists = false;   // an account identity is present (wxid + uin)
-    bool online = false;   // WeChat's persisted isLogin flag, not a network probe
+    bool exists = false; // an account identity is present (wxid + uin)
+    bool online = false; // WeChat's persisted isLogin flag, not a network probe
     char wxid[80] = {};
     char uin[24] = {};
     char alias[128] = {};

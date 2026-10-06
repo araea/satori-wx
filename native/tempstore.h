@@ -14,8 +14,8 @@ void TempStoreSetDir(const char *dir);
 bool TempStoreAvailable();
 // Writes `data` under a fresh unguessable name derived from `filename`, records the content
 // type and a 5 minute expiry, and copies the stored name into `out`. False on any I/O error.
-bool TempStorePut(const char *filename, const char *content_type, const char *data, size_t size,
-                  char *out, size_t capacity);
+bool TempStorePut(const char *filename, const char *content_type, const char *data, size_t size, char *out,
+                  size_t capacity);
 // Streaming variant of TempStorePut for bodies that must not be held in memory (a video is
 // tens or hundreds of MiB): begin, write any number of chunks, then finish (or abort). The
 // writer reserves one of the store's slots for its whole life; nothing is visible to

@@ -12,17 +12,17 @@
 namespace satori {
 namespace {
 constexpr size_t kMaxFiles = 64;
-constexpr int64_t kTtlMs = 5 * 60 * 1000;  // Satori recommends 5 minutes for _tmp uploads.
+constexpr int64_t kTtlMs = 5 * 60 * 1000; // Satori recommends 5 minutes for _tmp uploads.
 
 struct Entry {
     char name[128];
     char path[1200];
     char content_type[128];
-    char original[256];     // the client's file name, as sent
+    char original[256]; // the client's file name, as sent
     size_t size;
     int64_t expires;
     bool used;
-    bool writing;           // reserved by a TempWriter that has not finished yet
+    bool writing; // reserved by a TempWriter that has not finished yet
 };
 Entry g_entries[kMaxFiles];
 char g_dir[1024];
@@ -49,7 +49,7 @@ bool EnsureDir() {
         g_dir_set = true;
     }
     if (mkdir(g_dir, 0700) && errno != EEXIST) return false;
-    struct stat info {};
+    struct stat info{};
     return !stat(g_dir, &info) && S_ISDIR(info.st_mode);
 }
 
@@ -66,7 +66,7 @@ void SweepOld(const char *dir, time_t max_age_s) {
         if (entry->d_name[0] == '.') continue;
         char path[1400];
         if (snprintf(path, sizeof(path), "%s/%s", dir, entry->d_name) >= static_cast<int>(sizeof(path))) continue;
-        struct stat info {};
+        struct stat info{};
         if (lstat(path, &info) || !S_ISREG(info.st_mode)) continue;
         if (info.st_mtime < cutoff) unlink(path);
     }
@@ -77,7 +77,8 @@ void SweepIfDue(int64_t now) {
     g_last_sweep = now ? now : 1;
     SweepOld(g_dir, 15 * 60);
     char staged[1100];
-    if (snprintf(staged, sizeof(staged), "%s/send", g_dir) < static_cast<int>(sizeof(staged))) SweepOld(staged, 6 * 3600);
+    if (snprintf(staged, sizeof(staged), "%s/send", g_dir) < static_cast<int>(sizeof(staged)))
+        SweepOld(staged, 6 * 3600);
 }
 
 void Purge() {
@@ -96,15 +97,17 @@ void Sanitize(const char *filename, char *out, size_t capacity) {
     size_t used = 0;
     for (const char *p = filename ? filename : ""; *p && used + 1 < capacity; ++p) {
         const char c = *p;
-        const bool safe = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
-                          (c >= '0' && c <= '9') || c == '.' || c == '_' || c == '-';
+        const bool safe = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '.' ||
+                          c == '_' || c == '-';
         if (safe) {
             if (!used && c == '.') continue;
             out[used++] = c;
         }
     }
-    if (!used) snprintf(out, capacity, "file");
-    else out[used] = 0;
+    if (!used)
+        snprintf(out, capacity, "file");
+    else
+        out[used] = 0;
 }
 
 void RandomHex(char *out, size_t bytes) {
@@ -137,8 +140,9 @@ bool SafeName(const char *name) {
     if (strstr(name, "..")) return false;
     for (size_t i = 0; i < size; ++i) {
         const char c = name[i];
-        if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') ||
-              c == '.' || c == '_' || c == '-')) return false;
+        if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '.' || c == '_' ||
+              c == '-'))
+            return false;
     }
     return true;
 }
@@ -179,10 +183,18 @@ TempWriter *TempStoreBegin(const char *filename, const char *content_type) {
     if (!EnsureDir()) return nullptr;
     Purge();
     Entry *slot = nullptr;
-    for (auto &entry : g_entries) if (!entry.used) { slot = &entry; break; }
-    if (!slot) return nullptr;  // The purge should have made room; never evict live data.
+    for (auto &entry : g_entries)
+        if (!entry.used) {
+            slot = &entry;
+            break;
+        }
+    if (!slot) return nullptr; // The purge should have made room; never evict live data.
     TempWriter *writer = nullptr;
-    for (auto &candidate : g_writers) if (!candidate.slot) { writer = &candidate; break; }
+    for (auto &candidate : g_writers)
+        if (!candidate.slot) {
+            writer = &candidate;
+            break;
+        }
     if (!writer) return nullptr;
     char safe[80], random[33];
     Sanitize(filename, safe, sizeof(safe));
@@ -233,8 +245,13 @@ bool TempStoreFinish(TempWriter *writer, char *out, size_t capacity) {
     if (!writer || !writer->slot || !out || !capacity) return false;
     Entry *slot = writer->slot;
     const int fd = writer->fd;
-    writer->fd = -1;  // closed here so a failure can report it
-    if (close(fd)) { unlink(slot->path); *slot = {}; Release(writer); return false; }
+    writer->fd = -1; // closed here so a failure can report it
+    if (close(fd)) {
+        unlink(slot->path);
+        *slot = {};
+        Release(writer);
+        return false;
+    }
     slot->size = writer->size;
     slot->expires = NowMs() + kTtlMs;
     slot->writing = false;
@@ -260,12 +277,15 @@ bool TempStoreOriginalName(const char *name, char *out, size_t capacity) {
     return false;
 }
 
-bool TempStorePut(const char *filename, const char *content_type, const char *data, size_t size,
-                  char *out, size_t capacity) {
+bool TempStorePut(const char *filename, const char *content_type, const char *data, size_t size, char *out,
+                  size_t capacity) {
     if (!data || !out || !capacity) return false;
     TempWriter *writer = TempStoreBegin(filename, content_type);
     if (!writer) return false;
-    if (!TempStoreWrite(writer, data, size)) { TempStoreAbort(writer); return false; }
+    if (!TempStoreWrite(writer, data, size)) {
+        TempStoreAbort(writer);
+        return false;
+    }
     return TempStoreFinish(writer, out, capacity);
 }
 
@@ -275,9 +295,16 @@ const TempFile *TempStoreGet(const char *name) {
     const int64_t now = NowMs();
     for (auto &entry : g_entries) {
         if (!entry.used || strcmp(entry.name, name)) continue;
-        if (entry.expires <= now) { unlink(entry.path); entry = {}; return nullptr; }
-        struct stat info {};
-        if (stat(entry.path, &info) || !S_ISREG(info.st_mode)) { entry = {}; return nullptr; }
+        if (entry.expires <= now) {
+            unlink(entry.path);
+            entry = {};
+            return nullptr;
+        }
+        struct stat info{};
+        if (stat(entry.path, &info) || !S_ISREG(info.st_mode)) {
+            entry = {};
+            return nullptr;
+        }
         static thread_local TempFile file;
         file.path = entry.path;
         file.content_type = entry.content_type;

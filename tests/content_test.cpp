@@ -8,7 +8,10 @@ namespace {
 int failures = 0;
 
 void Check(bool ok, const char *what) {
-    if (!ok) { fprintf(stderr, "FAIL: %s\n", what); ++failures; }
+    if (!ok) {
+        fprintf(stderr, "FAIL: %s\n", what);
+        ++failures;
+    }
 }
 
 // Runs PlainText into a roomy buffer and compares the result.
@@ -35,7 +38,7 @@ void Img(const char *content, const char *expected, const char *what) {
         ++failures;
     }
 }
-}
+} // namespace
 
 int main() {
     // Escaped text is the payload; entities come back as the characters they stand for.
@@ -74,8 +77,7 @@ int main() {
     Img("", "", "no images");
     Img("纯文本", "", "text only");
     Img("<img src=\"internal:wechat/u/_tmp/a.png\"/>", "internal:wechat/u/_tmp/a.png", "single image");
-    Img("<at id=\"1\"/><img src=\"a\"/><img src='b'/>看<img src=\"c\">",
-        "a|b|c", "several images, mixed quotes");
+    Img("<at id=\"1\"/><img src=\"a\"/><img src='b'/>看<img src=\"c\">", "a|b|c", "several images, mixed quotes");
     Img("<img src=\"x>y\"/>", "x>y", "quoted angle bracket");
     Img("<img width=\"1\" src=\"z\"/>", "z", "src after another attribute");
     Img("<img src=\"\"/>", "", "empty src drops");
@@ -83,8 +85,8 @@ int main() {
     Img("<image src=\"a\"/>", "", "only the img element counts");
     {
         char sources[4][satori::kImageSrcMax];
-        Check(satori::ImageSources("<img src=\"a\"/><img src=\"b\"/>", sources, 1) == 1 &&
-              !strcmp(sources[0], "a"), "max bounds the result");
+        Check(satori::ImageSources("<img src=\"a\"/><img src=\"b\"/>", sources, 1) == 1 && !strcmp(sources[0], "a"),
+              "max bounds the result");
     }
 
     // ---- OutgoingText: mentions and links ---------------------------------------------------------------
@@ -92,11 +94,19 @@ int main() {
         char out[512];
         satori::OutgoingMention mentions[4];
         size_t count = 0;
-        satori::OutgoingText("<at id=\"wxid_a\" name=\"甲\"/> 你好 <at id=\"wxid_b\" name=\"乙&amp;丙\"/>收到吗", out, sizeof(out), mentions, 4, &count, nullptr, nullptr);
+        satori::OutgoingText("<at id=\"wxid_a\" name=\"甲\"/> 你好 <at id=\"wxid_b\" name=\"乙&amp;丙\"/>收到吗", out,
+                             sizeof(out), mentions, 4, &count, nullptr, nullptr);
         Check(!strcmp(out, "@甲\xE2\x80\x85 你好 @乙&丙\xE2\x80\x85收到吗"), "mentions become @name + U+2005");
-        Check(count == 2 && !strcmp(mentions[0].id, "wxid_a") && !strcmp(mentions[1].id, "wxid_b") && !strcmp(mentions[1].name, "乙&丙"), "mention list, entity-decoded, in order");
+        Check(count == 2 && !strcmp(mentions[0].id, "wxid_a") && !strcmp(mentions[1].id, "wxid_b") &&
+                  !strcmp(mentions[1].name, "乙&丙"),
+              "mention list, entity-decoded, in order");
         // No name: the namer supplies one, and without a namer the id stands in.
-        struct Namer { static bool Name(void *, const char *id, char *name, size_t capacity) { snprintf(name, capacity, "昵称-%s", id); return true; } };
+        struct Namer {
+            static bool Name(void *, const char *id, char *name, size_t capacity) {
+                snprintf(name, capacity, "昵称-%s", id);
+                return true;
+            }
+        };
         satori::OutgoingText("<at id=\"wxid_c\"/>hi", out, sizeof(out), mentions, 4, &count, Namer::Name, nullptr);
         Check(!strcmp(out, "@昵称-wxid_c\xE2\x80\x85hi") && count == 1, "a namer resolves a missing name");
         satori::OutgoingText("<at id=\"wxid_c\"/>hi", out, sizeof(out), mentions, 4, &count, nullptr, nullptr);
@@ -105,16 +115,20 @@ int main() {
         Check(!strcmp(out, "@所有人\xE2\x80\x85开会") && count == 1 && !strcmp(mentions[0].id, "notify@all"), "@all");
         satori::OutgoingText("<at type=\"here\"/>x<at/>y", out, sizeof(out), mentions, 4, &count, nullptr, nullptr);
         Check(!strcmp(out, "xy") && count == 0, "audiences WeChat lacks, and an <at> without an id, are dropped");
-        satori::OutgoingText("<at id=\"1\" name=\"a\"/><at id=\"2\" name=\"b\"/><at id=\"3\" name=\"c\"/>", out, sizeof(out), mentions, 2, &count, nullptr, nullptr);
+        satori::OutgoingText("<at id=\"1\" name=\"a\"/><at id=\"2\" name=\"b\"/><at id=\"3\" name=\"c\"/>", out,
+                             sizeof(out), mentions, 2, &count, nullptr, nullptr);
         Check(count == 2, "the mention list is bounded");
         // Links keep their target.
-        satori::OutgoingText("看<a href=\"https://x.y/z?a=1&amp;b=2\">这里</a>吧", out, sizeof(out), nullptr, 0, nullptr, nullptr, nullptr);
+        satori::OutgoingText("看<a href=\"https://x.y/z?a=1&amp;b=2\">这里</a>吧", out, sizeof(out), nullptr, 0,
+                             nullptr, nullptr, nullptr);
         Check(!strcmp(out, "看这里 (https://x.y/z?a=1&b=2)吧"), "a link keeps its target after the words");
-        satori::OutgoingText("<a href=\"https://x.y\">https://x.y</a>", out, sizeof(out), nullptr, 0, nullptr, nullptr, nullptr);
+        satori::OutgoingText("<a href=\"https://x.y\">https://x.y</a>", out, sizeof(out), nullptr, 0, nullptr, nullptr,
+                             nullptr);
         Check(!strcmp(out, "https://x.y"), "a link whose text is the target is not repeated");
         satori::OutgoingText("<a>没有目标</a>", out, sizeof(out), nullptr, 0, nullptr, nullptr, nullptr);
         Check(!strcmp(out, "没有目标"), "an anchor without href is just text");
-        satori::OutgoingText("<at id=\"wxid_a\" name=\"甲\"/>x", out, sizeof(out), nullptr, 0, nullptr, nullptr, nullptr);
+        satori::OutgoingText("<at id=\"wxid_a\" name=\"甲\"/>x", out, sizeof(out), nullptr, 0, nullptr, nullptr,
+                             nullptr);
         Check(!strcmp(out, "x"), "PlainText still drops mentions");
     }
 
@@ -133,7 +147,11 @@ int main() {
             char joined[512] = {};
             for (size_t i = 0; i < count; ++i) {
                 if (i) strcat(joined, "|");
-                if (parts[i].kind) { strcat(joined, "["); strncat(joined, &parts[i].kind, 1); strcat(joined, ":"); }
+                if (parts[i].kind) {
+                    strcat(joined, "[");
+                    strncat(joined, &parts[i].kind, 1);
+                    strcat(joined, ":");
+                }
                 strncat(joined, content + parts[i].begin, parts[i].end - parts[i].begin);
                 if (parts[i].kind) strcat(joined, "]");
             }
@@ -147,13 +165,19 @@ int main() {
         Parts("<message>a</message><message>b</message>", "a|b", "containers are messages");
         Parts("a<message/>b", "a|b", "a self-closing <message/> is a separator");
         Parts("前<message>中</message>后", "前|中|后", "text around a container is a message too");
-        Parts("<message><author id=\"1\" name=\"A\"/>hi</message>", "<author id=\"1\" name=\"A\"/>hi", "the author stays inside its part");
-        Parts("<message forward><message>x</message></message>", "[m:<message forward><message>x</message></message>]", "a merge-forward is one part, its messages nested");
+        Parts("<message><author id=\"1\" name=\"A\"/>hi</message>", "<author id=\"1\" name=\"A\"/>hi",
+              "the author stays inside its part");
+        Parts("<message forward><message>x</message></message>", "[m:<message forward><message>x</message></message>]",
+              "a merge-forward is one part, its messages nested");
         Parts("<message forward><message>x</message><message><message>y</message></message></message>z",
-              "[m:<message forward><message>x</message><message><message>y</message></message></message>]|z", "nesting depth is balanced");
-        Parts("a<message forward><message>x</message></message>b", "a|[m:<message forward><message>x</message></message>]|b", "text around a forward is sent separately");
-        Parts("<message forward title=\"t\">x", "[m:<message forward title=\"t\">x]", "an unclosed forward runs to the end");
-        Parts("<message id=\"9\" forward=\"true\"/>", "[r:<message id=\"9\" forward=\"true\"/>]", "forward of one message by id");
+              "[m:<message forward><message>x</message><message><message>y</message></message></message>]|z",
+              "nesting depth is balanced");
+        Parts("a<message forward><message>x</message></message>b",
+              "a|[m:<message forward><message>x</message></message>]|b", "text around a forward is sent separately");
+        Parts("<message forward title=\"t\">x", "[m:<message forward title=\"t\">x]",
+              "an unclosed forward runs to the end");
+        Parts("<message id=\"9\" forward=\"true\"/>", "[r:<message id=\"9\" forward=\"true\"/>]",
+              "forward of one message by id");
         Parts("<MESSAGE FORWARD/>", "[r:<MESSAGE FORWARD/>]", "spelling case does not matter");
         Parts("<message forward=\"false\">t</message>", "t", "forward=false is not forwarding");
         Parts("<message id=\"forward\">t</message>", "t", "the word inside a value is not the attribute");
@@ -169,30 +193,38 @@ int main() {
         char value[64];
         const char *content = "<message forward title=\"周报\" id='7'>";
         Check(satori::FirstTag(content, "message", &tag), "found the tag");
-        Check(satori::TagAttribute(content, tag, "title", value, sizeof(value)) && !strcmp(value, "周报"), "an attribute after a bare one");
-        Check(satori::TagAttribute(content, tag, "id", value, sizeof(value)) && !strcmp(value, "7"), "and the one after that");
+        Check(satori::TagAttribute(content, tag, "title", value, sizeof(value)) && !strcmp(value, "周报"),
+              "an attribute after a bare one");
+        Check(satori::TagAttribute(content, tag, "id", value, sizeof(value)) && !strcmp(value, "7"),
+              "and the one after that");
         Check(!satori::TagAttribute(content, tag, "forward", value, sizeof(value)), "a bare attribute has no value");
     }
 
     // ---- ForwardChildren: the <message>s directly inside a merge-forward ---------------------------------------
     {
-        const char *content = "<message forward title=\"T\"><message id=\"5\"/> <message><author id=\"1\"/>hi</message><message>x</message></message>";
+        const char *content =
+            "<message forward title=\"T\"><message id=\"5\"/> <message><author id=\"1\"/>hi</message><message>x</message></message>";
         satori::MessagePart part[2];
         Check(satori::MessageParts(content, part, 2) == 1 && part[0].kind == 'm', "one forward part");
         satori::ForwardChild kids[8];
         const size_t count = satori::ForwardChildren(content, part[0].begin, part[0].end, kids, 8);
         Check(count == 3, "three children");
         if (count == 3) {
-            Check(kids[0].self_closing && kids[0].inner_begin == kids[0].inner_end, "a self-closing child has no inner");
-            Check(!strncmp(content + kids[1].inner_begin, "<author id=\"1\"/>hi", kids[1].inner_end - kids[1].inner_begin) &&
-                      kids[1].inner_end - kids[1].inner_begin == strlen("<author id=\"1\"/>hi"), "the inner stops before </message>");
-            Check(!strncmp(content + kids[2].inner_begin, "x", 1) && kids[2].inner_end - kids[2].inner_begin == 1, "third child");
+            Check(kids[0].self_closing && kids[0].inner_begin == kids[0].inner_end,
+                  "a self-closing child has no inner");
+            Check(!strncmp(content + kids[1].inner_begin, "<author id=\"1\"/>hi",
+                           kids[1].inner_end - kids[1].inner_begin) &&
+                      kids[1].inner_end - kids[1].inner_begin == strlen("<author id=\"1\"/>hi"),
+                  "the inner stops before </message>");
+            Check(!strncmp(content + kids[2].inner_begin, "x", 1) && kids[2].inner_end - kids[2].inner_begin == 1,
+                  "third child");
         }
         Check(satori::ForwardChildren(content, 0, 5, kids, 8) == 0, "not an element: no children");
         const char *nested = "<message forward><message>a<message>b</message>c</message></message>";
         satori::MessagePart nested_part[2];
         satori::MessageParts(nested, nested_part, 2);
-        Check(satori::ForwardChildren(nested, nested_part[0].begin, nested_part[0].end, kids, 8) == 1, "a nested <message> stays inside its parent");
+        Check(satori::ForwardChildren(nested, nested_part[0].begin, nested_part[0].end, kids, 8) == 1,
+              "a nested <message> stays inside its parent");
         Check(satori::ForwardChildren(content, part[0].begin, part[0].end, kids, 2) == 2, "children are bounded");
     }
 
@@ -203,11 +235,15 @@ int main() {
         const size_t count = satori::ImageSpans(content, spans, 4);
         Check(count == 2, "two <img> elements (not <image>)");
         if (count == 2) {
-            Check(!strncmp(content + spans[0].begin, "<img src=\"a&amp;b\"/>", spans[0].end - spans[0].begin), "first span covers the whole tag");
-            Check(!strncmp(content + spans[1].begin, "<IMG width=\"1\" src='c'>", spans[1].end - spans[1].begin), "second span, upper case and mixed quotes");
+            Check(!strncmp(content + spans[0].begin, "<img src=\"a&amp;b\"/>", spans[0].end - spans[0].begin),
+                  "first span covers the whole tag");
+            Check(!strncmp(content + spans[1].begin, "<IMG width=\"1\" src='c'>", spans[1].end - spans[1].begin),
+                  "second span, upper case and mixed quotes");
             char src[64];
-            Check(satori::TagAttribute(content, spans[0], "src", src, sizeof(src)) && !strcmp(src, "a&b"), "src is entity-decoded");
-            Check(satori::TagAttribute(content, spans[1], "src", src, sizeof(src)) && !strcmp(src, "c"), "src after another attribute");
+            Check(satori::TagAttribute(content, spans[0], "src", src, sizeof(src)) && !strcmp(src, "a&b"),
+                  "src is entity-decoded");
+            Check(satori::TagAttribute(content, spans[1], "src", src, sizeof(src)) && !strcmp(src, "c"),
+                  "src after another attribute");
             Check(!satori::TagAttribute(content, spans[1], "alt", src, sizeof(src)), "missing attribute");
         }
         Check(satori::ImageSpans("<img src=\"a\"", spans, 4) == 0, "an unterminated tag is not a span");
@@ -227,16 +263,20 @@ int main() {
 
     // ---- MediaSpans / FirstTag ----------------------------------------------------------------------------
     {
-        const char *content = "<quote id=\"1\"/>看<img src=\"a\"/>听<AUDIO src=\"b\"></audio>播<video src=\"c\" poster=\"d\"/>存<file title=\"x>y\" src=\"e\"/>末<image src=\"no\"/><filename/>";
+        const char *content =
+            "<quote id=\"1\"/>看<img src=\"a\"/>听<AUDIO src=\"b\"></audio>播<video src=\"c\" poster=\"d\"/>存<file title=\"x>y\" src=\"e\"/>末<image src=\"no\"/><filename/>";
         satori::MediaSpan spans[8];
         const size_t count = satori::MediaSpans(content, spans, 8);
         Check(count == 4, "four media elements: img, audio, video, file (not quote, image or filename)");
         if (count == 4) {
-            Check(spans[0].kind == 'i' && spans[1].kind == 'a' && spans[2].kind == 'v' && spans[3].kind == 'f', "kinds, in order");
+            Check(spans[0].kind == 'i' && spans[1].kind == 'a' && spans[2].kind == 'v' && spans[3].kind == 'f',
+                  "kinds, in order");
             const satori::ImageSpan file{spans[3].begin, spans[3].end};
             char title[32], src[32];
-            Check(satori::TagAttribute(content, file, "title", title, sizeof(title)) && !strcmp(title, "x>y"), "a '>' inside a quoted attribute stays inside the tag");
-            Check(satori::TagAttribute(content, file, "src", src, sizeof(src)) && !strcmp(src, "e"), "attributes after it are still found");
+            Check(satori::TagAttribute(content, file, "title", title, sizeof(title)) && !strcmp(title, "x>y"),
+                  "a '>' inside a quoted attribute stays inside the tag");
+            Check(satori::TagAttribute(content, file, "src", src, sizeof(src)) && !strcmp(src, "e"),
+                  "attributes after it are still found");
         }
         Check(satori::MediaSpans("<audio src=\"a\"></audio>", spans, 8) == 1, "a closing tag is not a second element");
         Check(satori::MediaSpans("<video/><video/><video/>", spans, 2) == 2, "media spans are bounded");
@@ -244,11 +284,16 @@ int main() {
         Check(satori::FirstTag(content, "quote", &quote) && quote.begin == 0, "the quote element is found");
         char id[16];
         Check(satori::TagAttribute(content, quote, "id", id, sizeof(id)) && !strcmp(id, "1"), "and its id");
-        Check(!satori::FirstTag("<quotes id=\"1\"/></quote>", "quote", &quote), "a longer name or a closing tag is not a quote");
-        Check(satori::FirstTag("字<QUOTE id='9'>", "quote", &quote) && quote.begin == strlen("字"), "case-insensitive, after other text");
+        Check(!satori::FirstTag("<quotes id=\"1\"/></quote>", "quote", &quote),
+              "a longer name or a closing tag is not a quote");
+        Check(satori::FirstTag("字<QUOTE id='9'>", "quote", &quote) && quote.begin == strlen("字"),
+              "case-insensitive, after other text");
     }
 
-    if (failures) { fprintf(stderr, "%d content test(s) failed\n", failures); return 1; }
+    if (failures) {
+        fprintf(stderr, "%d content test(s) failed\n", failures);
+        return 1;
+    }
     printf("content tests: PASS\n");
     return 0;
 }

@@ -9,8 +9,8 @@ struct Adapter {
     EventBus *bus;
     Account current;
     bool published;
-    int sn;       // sn of the login currently in the hub snapshot
-    int next_sn;  // allocated on add so a re-login never reuses an old sn
+    int sn;      // sn of the login currently in the hub snapshot
+    int next_sn; // allocated on add so a re-login never reuses an old sn
 };
 
 Adapter *CreateAdapter(const char *data_dir, EventBus *bus) {

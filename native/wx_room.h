@@ -11,8 +11,8 @@
 namespace satori {
 struct ActionResult {
     bool ok;
-    bool rejected;      // refused before dispatch
-    char detail[160];   // reason when ok is false
+    bool rejected;    // refused before dispatch
+    char detail[160]; // reason when ok is false
 };
 // qn.p (delchatroommember) with one member: kick, or leave when user == self.
 ActionResult RoomRemoveMember(const char *chatroom, const char *user);

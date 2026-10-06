@@ -12,17 +12,24 @@
 namespace {
 int failures = 0;
 void Check(bool ok, const char *what) {
-    if (!ok) { fprintf(stderr, "FAIL: %s\n", what); ++failures; }
+    if (!ok) {
+        fprintf(stderr, "FAIL: %s\n", what);
+        ++failures;
+    }
 }
 
-struct Body { char *data; size_t size; };
+struct Body {
+    char *data;
+    size_t size;
+};
 void Append(Body *b, const void *bytes, size_t n) {
     b->data = static_cast<char *>(realloc(b->data, b->size + n + 1));
     memcpy(b->data + b->size, bytes, n);
     b->size += n;
 }
 void AppendText(Body *b, const char *text) { Append(b, text, strlen(text)); }
-void Part(Body *b, const char *boundary, const char *name, const char *filename, const char *type, const void *data, size_t size) {
+void Part(Body *b, const char *boundary, const char *name, const char *filename, const char *type, const void *data,
+          size_t size) {
     char head[512];
     int n = snprintf(head, sizeof(head), "--%s\r\nContent-Disposition: form-data; name=\"%s\"", boundary, name);
     if (filename) n += snprintf(head + n, sizeof(head) - static_cast<size_t>(n), "; filename=\"%s\"", filename);
@@ -45,7 +52,11 @@ char *ReadAll(const char *path, size_t *size) {
     *size = static_cast<size_t>(ftell(f));
     fseek(f, 0, SEEK_SET);
     char *data = static_cast<char *>(malloc(*size + 1));
-    if (fread(data, 1, *size, f) != *size) { fclose(f); free(data); return nullptr; }
+    if (fread(data, 1, *size, f) != *size) {
+        fclose(f);
+        free(data);
+        return nullptr;
+    }
     fclose(f);
     return data;
 }
@@ -63,7 +74,7 @@ satori::UploadState Feed(satori::UploadStream *s, const Body &body, size_t chunk
     }
     return state;
 }
-}
+} // namespace
 
 int main() {
     const char *root = getenv("SATORI_TMPROOT");
@@ -83,11 +94,21 @@ int main() {
     srand(7);
     for (int i = 0; i < 40000; ++i) {
         const int pick = rand() % 50;
-        if (pick == 0) AppendText(&payload, "\r\n--");
-        else if (pick == 1) AppendText(&payload, "\r\n----satoriBoundary7MA4YWx");
-        else if (pick == 3) { AppendText(&payload, "\r\n--"); AppendText(&payload, boundary); AppendText(&payload, "Z"); }  // a whole delimiter that is only data
-        else if (pick == 2) AppendText(&payload, "\r");
-        else { const char byte = static_cast<char>(rand()); Append(&payload, &byte, 1); }
+        if (pick == 0)
+            AppendText(&payload, "\r\n--");
+        else if (pick == 1)
+            AppendText(&payload, "\r\n----satoriBoundary7MA4YWx");
+        else if (pick == 3) {
+            AppendText(&payload, "\r\n--");
+            AppendText(&payload, boundary);
+            AppendText(&payload, "Z");
+        } // a whole delimiter that is only data
+        else if (pick == 2)
+            AppendText(&payload, "\r");
+        else {
+            const char byte = static_cast<char>(rand());
+            Append(&payload, &byte, 1);
+        }
     }
     Body second{};
     AppendText(&second, "second part, short");
@@ -105,7 +126,9 @@ int main() {
         char what[120];
         snprintf(what, sizeof(what), "a valid body finishes (chunk %zu)", chunk);
         Check(state == satori::UploadState::Done, what);
-        Check(satori::UploadCount(s) == 2 && !strcmp(satori::UploadField(s, 0), "file") && !strcmp(satori::UploadField(s, 1), "other"), "both parts recorded, in order");
+        Check(satori::UploadCount(s) == 2 && !strcmp(satori::UploadField(s, 0), "file") &&
+                  !strcmp(satori::UploadField(s, 1), "other"),
+              "both parts recorded, in order");
         // Bytes must match exactly.
         const satori::TempFile *first = satori::TempStoreGet(satori::UploadStoredName(s, 0));
         size_t got_size = 0;
@@ -115,44 +138,66 @@ int main() {
         free(got);
         const satori::TempFile *other = satori::TempStoreGet(satori::UploadStoredName(s, 1));
         got = other ? ReadAll(other->path, &got_size) : nullptr;
-        Check(got && got_size == second.size && !memcmp(got, second.data, second.size), "the second part is stored byte for byte");
+        Check(got && got_size == second.size && !memcmp(got, second.data, second.size),
+              "the second part is stored byte for byte");
         free(got);
         char original[300] = {};
-        Check(satori::TempStoreOriginalName(satori::UploadStoredName(s, 1), original, sizeof(original)) && !strcmp(original, "报告.txt"),
+        Check(satori::TempStoreOriginalName(satori::UploadStoredName(s, 1), original, sizeof(original)) &&
+                  !strcmp(original, "报告.txt"),
               "the original (UTF-8) file name is kept");
         satori::UploadEnd(s);
     }
 
     // The buffered parser agrees on the good body...
     satori::Multipart parsed{};
-    Check(satori::ParseMultipart(type, body.data, body.size, &parsed) && parsed.count == 2, "buffered parser accepts the same body");
+    Check(satori::ParseMultipart(type, body.data, body.size, &parsed) && parsed.count == 2,
+          "buffered parser accepts the same body");
 
     // ...and both refuse the same broken ones.
-    struct Broken { const char *what; Body body; };
+    struct Broken {
+        const char *what;
+        Body body;
+    };
     Broken broken[8] = {};
     int count = 0;
-    {   // no closing boundary
-        Body b{}; Part(&b, boundary, "file", "a.bin", nullptr, "abc", 3);
+    { // no closing boundary
+        Body b{};
+        Part(&b, boundary, "file", "a.bin", nullptr, "abc", 3);
         broken[count++] = {"no closing boundary", b};
     }
-    {   // bytes after the closing boundary
-        Body b{}; Part(&b, boundary, "file", "a.bin", nullptr, "abc", 3); Close(&b, boundary); AppendText(&b, "junk");
+    { // bytes after the closing boundary
+        Body b{};
+        Part(&b, boundary, "file", "a.bin", nullptr, "abc", 3);
+        Close(&b, boundary);
+        AppendText(&b, "junk");
         broken[count++] = {"bytes after the end", b};
     }
-    {   // duplicate field
-        Body b{}; Part(&b, boundary, "file", "a.bin", nullptr, "abc", 3); Part(&b, boundary, "file", "b.bin", nullptr, "abc", 3); Close(&b, boundary);
+    { // duplicate field
+        Body b{};
+        Part(&b, boundary, "file", "a.bin", nullptr, "abc", 3);
+        Part(&b, boundary, "file", "b.bin", nullptr, "abc", 3);
+        Close(&b, boundary);
         broken[count++] = {"duplicate field name", b};
     }
-    {   // a part without a filename
-        Body b{}; Part(&b, boundary, "field", nullptr, nullptr, "abc", 3); Close(&b, boundary);
+    { // a part without a filename
+        Body b{};
+        Part(&b, boundary, "field", nullptr, nullptr, "abc", 3);
+        Close(&b, boundary);
         broken[count++] = {"a part without a filename", b};
     }
-    {   // wrong opening
-        Body b{}; AppendText(&b, "garbage before the boundary\r\n"); Part(&b, boundary, "file", "a.bin", nullptr, "abc", 3); Close(&b, boundary);
+    { // wrong opening
+        Body b{};
+        AppendText(&b, "garbage before the boundary\r\n");
+        Part(&b, boundary, "file", "a.bin", nullptr, "abc", 3);
+        Close(&b, boundary);
         broken[count++] = {"garbage before the first boundary", b};
     }
-    {   // an unknown part header
-        Body b{}; AppendText(&b, "--"); AppendText(&b, boundary); AppendText(&b, "\r\nX-Evil: 1\r\nContent-Disposition: form-data; name=\"f\"; filename=\"a\"\r\n\r\nabc\r\n"); Close(&b, boundary);
+    { // an unknown part header
+        Body b{};
+        AppendText(&b, "--");
+        AppendText(&b, boundary);
+        AppendText(&b, "\r\nX-Evil: 1\r\nContent-Disposition: form-data; name=\"f\"; filename=\"a\"\r\n\r\nabc\r\n");
+        Close(&b, boundary);
         broken[count++] = {"an unknown part header", b};
     }
     for (int i = 0; i < count; ++i) {
@@ -191,9 +236,14 @@ int main() {
         snprintf(listing, sizeof(listing), "ls '%s' | wc -l > '%s/count.txt'", dir, dir);
     }
 
-    free(payload.data); free(second.data); free(body.data);
+    free(payload.data);
+    free(second.data);
+    free(body.data);
     if (system(cleanup)) {}
-    if (failures) { fprintf(stderr, "%d upload stream failure(s)\n", failures); return 1; }
+    if (failures) {
+        fprintf(stderr, "%d upload stream failure(s)\n", failures);
+        return 1;
+    }
     puts("upload stream tests passed");
     return 0;
 }

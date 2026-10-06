@@ -3,12 +3,18 @@
 namespace satori {
 namespace {
 const char *const kFeatures[] = {
-    "message.get", "message.list",
-    "user.get", "friend.list",
-    "guild.get", "guild.list",
-    "guild.member.get", "guild.member.list",
-    "guild.role.list", "guild.member.role.list",
-    "channel.get", "channel.list",
+    "message.get",
+    "message.list",
+    "user.get",
+    "friend.list",
+    "guild.get",
+    "guild.list",
+    "guild.member.get",
+    "guild.member.list",
+    "guild.role.list",
+    "guild.member.role.list",
+    "channel.get",
+    "channel.list",
     "user.channel.create",
     "upload.create",
     "message.create",
@@ -27,10 +33,8 @@ const char *const kFeatures[] = {
 // the local "mute notifications" switch, which is not a moderation action). message.delete
 // is implemented, so it is not listed here.
 const char *const kUnsupported[] = {
-    "message.update",
-    "channel.create", "channel.mute",
-    "guild.member.mute",
-    "reaction.create", "reaction.delete", "reaction.clear", "reaction.list",
+    "message.update",    "channel.create",    "channel.mute",      "guild.member.mute",
+    "reaction.create",   "reaction.delete",   "reaction.clear",    "reaction.list",
     "guild.role.create", "guild.role.update", "guild.role.delete",
 };
 } // namespace

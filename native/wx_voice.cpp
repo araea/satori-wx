@@ -54,9 +54,11 @@ long long NowMs() {
 // Everything MediaExtractor and MediaCodec need, resolved once per call.
 struct Media {
     jclass extractor, codec, format, info;
-    jmethodID extractor_new, set_source, track_count, track_format, select_track, read_sample, sample_time, advance, extractor_release;
+    jmethodID extractor_new, set_source, track_count, track_format, select_track, read_sample, sample_time, advance,
+        extractor_release;
     jmethodID get_string, contains_key, get_integer, get_long;
-    jmethodID create_decoder, configure, start, dequeue_input, input_buffer, queue_input, dequeue_output, output_buffer, release_output, output_format, codec_stop, codec_release;
+    jmethodID create_decoder, configure, start, dequeue_input, input_buffer, queue_input, dequeue_output, output_buffer,
+        release_output, output_format, codec_stop, codec_release;
     jmethodID info_new;
     jfieldID info_offset, info_size, info_flags;
     bool Load(JNIEnv *env) {
@@ -78,8 +80,10 @@ struct Media {
         contains_key = Method(env, format, "containsKey", "(Ljava/lang/String;)Z");
         get_integer = Method(env, format, "getInteger", "(Ljava/lang/String;)I");
         get_long = Method(env, format, "getLong", "(Ljava/lang/String;)J");
-        create_decoder = StaticMethod(env, codec, "createDecoderByType", "(Ljava/lang/String;)Landroid/media/MediaCodec;");
-        configure = Method(env, codec, "configure", "(Landroid/media/MediaFormat;Landroid/view/Surface;Landroid/media/MediaCrypto;I)V");
+        create_decoder =
+            StaticMethod(env, codec, "createDecoderByType", "(Ljava/lang/String;)Landroid/media/MediaCodec;");
+        configure = Method(env, codec, "configure",
+                           "(Landroid/media/MediaFormat;Landroid/view/Surface;Landroid/media/MediaCrypto;I)V");
         start = Method(env, codec, "start", "()V");
         dequeue_input = Method(env, codec, "dequeueInputBuffer", "(J)I");
         input_buffer = Method(env, codec, "getInputBuffer", "(I)Ljava/nio/ByteBuffer;");
@@ -94,9 +98,10 @@ struct Media {
         info_offset = Field(env, info, "offset", "I");
         info_size = Field(env, info, "size", "I");
         info_flags = Field(env, info, "flags", "I");
-        return extractor && codec && format && info && extractor_new && set_source && track_count && track_format && select_track && read_sample &&
-               sample_time && advance && extractor_release && get_string && contains_key && get_integer && get_long && create_decoder && configure &&
-               start && dequeue_input && input_buffer && queue_input && dequeue_output && output_buffer && release_output && output_format &&
+        return extractor && codec && format && info && extractor_new && set_source && track_count && track_format &&
+               select_track && read_sample && sample_time && advance && extractor_release && get_string &&
+               contains_key && get_integer && get_long && create_decoder && configure && start && dequeue_input &&
+               input_buffer && queue_input && dequeue_output && output_buffer && release_output && output_format &&
                codec_stop && codec_release && info_new && info_offset && info_size && info_flags;
     }
 };
@@ -116,51 +121,90 @@ int FormatInt(JNIEnv *env, const Media &m, jobject format, const char *key, int 
 
 // Decodes any audio Android can play to interleaved 16-bit PCM (at most `max_frames` frames).
 // The result is malloc'd; `rate` and `channels` describe it. `truncated` is set when it stopped early.
-int16_t *DecodeWithMediaCodec(JNIEnv *env, const char *path, size_t max_frames_seconds, size_t *frames, int *rate, int *channels,
-                              bool *truncated, char *detail, size_t detail_size) {
+int16_t *DecodeWithMediaCodec(JNIEnv *env, const char *path, size_t max_frames_seconds, size_t *frames, int *rate,
+                              int *channels, bool *truncated, char *detail, size_t detail_size) {
     Media m{};
-    if (!m.Load(env)) { Detail(detail, detail_size, "Android's media classes are unavailable"); return nullptr; }
+    if (!m.Load(env)) {
+        Detail(detail, detail_size, "Android's media classes are unavailable");
+        return nullptr;
+    }
     int16_t *pcm = nullptr;
     size_t used = 0, capacity = 0;
     *frames = 0;
     *truncated = false;
     jobject extractor = env->NewObject(m.extractor, m.extractor_new);
-    if (env->ExceptionCheck()) { env->ExceptionClear(); extractor = nullptr; }
-    if (!extractor) { Detail(detail, detail_size, "no media extractor"); return nullptr; }
+    if (env->ExceptionCheck()) {
+        env->ExceptionClear();
+        extractor = nullptr;
+    }
+    if (!extractor) {
+        Detail(detail, detail_size, "no media extractor");
+        return nullptr;
+    }
     jobject codec = nullptr;
     bool ok = false;
     do {
         jstring jpath = env->NewStringUTF(path);
         env->CallVoidMethod(extractor, m.set_source, jpath);
         env->DeleteLocalRef(jpath);
-        if (env->ExceptionCheck()) { env->ExceptionClear(); Detail(detail, detail_size, "not audio Android can read"); break; }
+        if (env->ExceptionCheck()) {
+            env->ExceptionClear();
+            Detail(detail, detail_size, "not audio Android can read");
+            break;
+        }
         const jint tracks = env->CallIntMethod(extractor, m.track_count);
         int selected = -1;
         jobject format = nullptr;
         jstring mime = nullptr;
         for (jint i = 0; i < tracks && selected < 0; ++i) {
             jobject candidate = env->CallObjectMethod(extractor, m.track_format, i);
-            if (env->ExceptionCheck()) { env->ExceptionClear(); continue; }
+            if (env->ExceptionCheck()) {
+                env->ExceptionClear();
+                continue;
+            }
             jstring key = env->NewStringUTF("mime");
-            jstring kind = candidate ? static_cast<jstring>(env->CallObjectMethod(candidate, m.get_string, key)) : nullptr;
+            jstring kind =
+                candidate ? static_cast<jstring>(env->CallObjectMethod(candidate, m.get_string, key)) : nullptr;
             env->DeleteLocalRef(key);
-            if (env->ExceptionCheck()) { env->ExceptionClear(); kind = nullptr; }
+            if (env->ExceptionCheck()) {
+                env->ExceptionClear();
+                kind = nullptr;
+            }
             const char *text = kind ? env->GetStringUTFChars(kind, nullptr) : nullptr;
             const bool audio = text && !strncmp(text, "audio/", 6);
             if (text) env->ReleaseStringUTFChars(kind, text);
-            if (audio) { selected = i; format = candidate; mime = kind; }
-            else { if (candidate) env->DeleteLocalRef(candidate); if (kind) env->DeleteLocalRef(kind); }
+            if (audio) {
+                selected = i;
+                format = candidate;
+                mime = kind;
+            } else {
+                if (candidate) env->DeleteLocalRef(candidate);
+                if (kind) env->DeleteLocalRef(kind);
+            }
         }
-        if (selected < 0) { Detail(detail, detail_size, "no audio track"); break; }
+        if (selected < 0) {
+            Detail(detail, detail_size, "no audio track");
+            break;
+        }
         env->CallVoidMethod(extractor, m.select_track, selected);
         codec = env->CallStaticObjectMethod(m.codec, m.create_decoder, mime);
-        if (env->ExceptionCheck() || !codec) { env->ExceptionClear(); codec = nullptr; Detail(detail, detail_size, "no decoder for this audio format"); break; }
-        env->CallVoidMethod(codec, m.configure, format, static_cast<jobject>(nullptr), static_cast<jobject>(nullptr), static_cast<jint>(0));
+        if (env->ExceptionCheck() || !codec) {
+            env->ExceptionClear();
+            codec = nullptr;
+            Detail(detail, detail_size, "no decoder for this audio format");
+            break;
+        }
+        env->CallVoidMethod(codec, m.configure, format, static_cast<jobject>(nullptr), static_cast<jobject>(nullptr),
+                            static_cast<jint>(0));
         if (!env->ExceptionCheck()) env->CallVoidMethod(codec, m.start);
-        if (env->ExceptionCheck()) { env->ExceptionClear(); Detail(detail, detail_size, "the decoder would not start"); break; }
+        if (env->ExceptionCheck()) {
+            env->ExceptionClear();
+            Detail(detail, detail_size, "the decoder would not start");
+            break;
+        }
         *rate = FormatInt(env, m, format, "sample-rate", 44100);
         *channels = FormatInt(env, m, format, "channel-count", 2);
-        int encoding = 2;   // ENCODING_PCM_16BIT
+        int encoding = 2; // ENCODING_PCM_16BIT
         jobject info = env->NewObject(m.info, m.info_new);
         const long long stop_at = NowMs() + kDecodeBudgetMs;
         bool input_done = false, output_done = false;
@@ -169,24 +213,46 @@ int16_t *DecodeWithMediaCodec(JNIEnv *env, const char *path, size_t max_frames_s
             if (env->PushLocalFrame(16) != 0) break;
             if (!input_done) {
                 const jint index = env->CallIntMethod(codec, m.dequeue_input, static_cast<jlong>(10000));
-                if (env->ExceptionCheck()) { env->ExceptionClear(); env->PopLocalFrame(nullptr); Detail(detail, detail_size, "decoder failed"); goto finished; }
+                if (env->ExceptionCheck()) {
+                    env->ExceptionClear();
+                    env->PopLocalFrame(nullptr);
+                    Detail(detail, detail_size, "decoder failed");
+                    goto finished;
+                }
                 if (index >= 0) {
                     jobject buffer = env->CallObjectMethod(codec, m.input_buffer, index);
-                    const jint size = buffer ? env->CallIntMethod(extractor, m.read_sample, buffer, static_cast<jint>(0)) : -1;
-                    if (env->ExceptionCheck()) { env->ExceptionClear(); env->PopLocalFrame(nullptr); Detail(detail, detail_size, "decoder failed"); goto finished; }
+                    const jint size =
+                        buffer ? env->CallIntMethod(extractor, m.read_sample, buffer, static_cast<jint>(0)) : -1;
+                    if (env->ExceptionCheck()) {
+                        env->ExceptionClear();
+                        env->PopLocalFrame(nullptr);
+                        Detail(detail, detail_size, "decoder failed");
+                        goto finished;
+                    }
                     if (size < 0) {
-                        env->CallVoidMethod(codec, m.queue_input, index, 0, 0, static_cast<jlong>(0), 4 /* BUFFER_FLAG_END_OF_STREAM */);
+                        env->CallVoidMethod(codec, m.queue_input, index, 0, 0, static_cast<jlong>(0),
+                                            4 /* BUFFER_FLAG_END_OF_STREAM */);
                         input_done = true;
                     } else {
                         const jlong time = env->CallLongMethod(extractor, m.sample_time);
                         env->CallVoidMethod(codec, m.queue_input, index, 0, size, time, 0);
                         env->CallBooleanMethod(extractor, m.advance);
                     }
-                    if (env->ExceptionCheck()) { env->ExceptionClear(); env->PopLocalFrame(nullptr); Detail(detail, detail_size, "decoder failed"); goto finished; }
+                    if (env->ExceptionCheck()) {
+                        env->ExceptionClear();
+                        env->PopLocalFrame(nullptr);
+                        Detail(detail, detail_size, "decoder failed");
+                        goto finished;
+                    }
                 }
             }
             const jint out = env->CallIntMethod(codec, m.dequeue_output, info, static_cast<jlong>(10000));
-            if (env->ExceptionCheck()) { env->ExceptionClear(); env->PopLocalFrame(nullptr); Detail(detail, detail_size, "decoder failed"); goto finished; }
+            if (env->ExceptionCheck()) {
+                env->ExceptionClear();
+                env->PopLocalFrame(nullptr);
+                Detail(detail, detail_size, "decoder failed");
+                goto finished;
+            }
             if (out == -2 /* INFO_OUTPUT_FORMAT_CHANGED */) {
                 jobject changed = env->CallObjectMethod(codec, m.output_format);
                 if (changed && !env->ExceptionCheck()) {
@@ -198,7 +264,8 @@ int16_t *DecodeWithMediaCodec(JNIEnv *env, const char *path, size_t max_frames_s
                 limit_frames = max_frames_seconds * static_cast<size_t>(*rate);
             } else if (out >= 0) {
                 if (!limit_frames) limit_frames = max_frames_seconds * static_cast<size_t>(*rate);
-                const jint offset = env->GetIntField(info, m.info_offset), size = env->GetIntField(info, m.info_size), flags = env->GetIntField(info, m.info_flags);
+                const jint offset = env->GetIntField(info, m.info_offset), size = env->GetIntField(info, m.info_size),
+                           flags = env->GetIntField(info, m.info_flags);
                 jobject buffer = size > 0 ? env->CallObjectMethod(codec, m.output_buffer, out) : nullptr;
                 auto *data = buffer ? static_cast<const unsigned char *>(env->GetDirectBufferAddress(buffer)) : nullptr;
                 if (data && *channels > 0) {
@@ -207,7 +274,12 @@ int16_t *DecodeWithMediaCodec(JNIEnv *env, const char *path, size_t max_frames_s
                     if (used + samples > capacity) {
                         capacity = (used + samples) * 2;
                         auto *grown = static_cast<int16_t *>(realloc(pcm, capacity * sizeof(int16_t)));
-                        if (!grown) { env->CallVoidMethod(codec, m.release_output, out, JNI_FALSE); env->PopLocalFrame(nullptr); Detail(detail, detail_size, "out of memory"); goto finished; }
+                        if (!grown) {
+                            env->CallVoidMethod(codec, m.release_output, out, JNI_FALSE);
+                            env->PopLocalFrame(nullptr);
+                            Detail(detail, detail_size, "out of memory");
+                            goto finished;
+                        }
                         pcm = grown;
                     }
                     for (size_t i = 0; i < samples; ++i) {
@@ -226,11 +298,17 @@ int16_t *DecodeWithMediaCodec(JNIEnv *env, const char *path, size_t max_frames_s
                 env->CallVoidMethod(codec, m.release_output, out, JNI_FALSE);
                 if (env->ExceptionCheck()) env->ExceptionClear();
                 if (flags & 4) output_done = true;
-                if (limit_frames && *channels > 0 && used / static_cast<size_t>(*channels) > limit_frames) { *truncated = true; output_done = true; }
+                if (limit_frames && *channels > 0 && used / static_cast<size_t>(*channels) > limit_frames) {
+                    *truncated = true;
+                    output_done = true;
+                }
             }
             env->PopLocalFrame(nullptr);
         }
-        if (!output_done) { Detail(detail, detail_size, "decoding took too long"); break; }
+        if (!output_done) {
+            Detail(detail, detail_size, "decoding took too long");
+            break;
+        }
         ok = used > 0;
         if (!ok) Detail(detail, detail_size, "the file decoded to nothing");
     } while (false);
@@ -243,7 +321,10 @@ finished:
     }
     env->CallVoidMethod(extractor, m.extractor_release);
     if (env->ExceptionCheck()) env->ExceptionClear();
-    if (!ok || *channels < 1) { free(pcm); return nullptr; }
+    if (!ok || *channels < 1) {
+        free(pcm);
+        return nullptr;
+    }
     *frames = used / static_cast<size_t>(*channels);
     return pcm;
 }
@@ -262,8 +343,17 @@ bool EncodeSilk(JNIEnv *env, const int16_t *pcm, size_t count, const char *out_p
         return false;
     }
     const jlong handle = env->CallStaticLongMethod(recorder, init, 16000, 16000, 4, static_cast<jlong>(0));
-    if (env->ExceptionCheck()) { env->ExceptionClear(); env->DeleteLocalRef(recorder); Detail(detail, detail_size, "WeChat's SILK encoder would not start"); return false; }
-    if (!handle) { env->DeleteLocalRef(recorder); Detail(detail, detail_size, "WeChat's SILK encoder would not start"); return false; }
+    if (env->ExceptionCheck()) {
+        env->ExceptionClear();
+        env->DeleteLocalRef(recorder);
+        Detail(detail, detail_size, "WeChat's SILK encoder would not start");
+        return false;
+    }
+    if (!handle) {
+        env->DeleteLocalRef(recorder);
+        Detail(detail, detail_size, "WeChat's SILK encoder would not start");
+        return false;
+    }
     FILE *file = fopen(out_path, "wb");
     bool ok = file != nullptr;
     if (!ok) Detail(detail, detail_size, "cannot write %s: %s", out_path, strerror(errno));
@@ -274,16 +364,30 @@ bool EncodeSilk(JNIEnv *env, const int16_t *pcm, size_t count, const char *out_p
     for (size_t pos = 0; ok && pos < count; pos += 320) {
         const size_t take = count - pos < 320 ? count - pos : 320;
         memset(chunk, 0, sizeof(chunk));
-        memcpy(chunk, pcm + pos, take * sizeof(int16_t));    // little-endian 16-bit, the last packet zero-padded
+        memcpy(chunk, pcm + pos, take * sizeof(int16_t)); // little-endian 16-bit, the last packet zero-padded
         env->SetByteArrayRegion(in, 0, 640, reinterpret_cast<const jbyte *>(chunk));
-        const jint rc = env->CallStaticIntMethod(recorder, encode, in, static_cast<jshort>(640), out, produced, JNI_FALSE, handle);
-        if (env->ExceptionCheck()) { env->ExceptionClear(); Detail(detail, detail_size, "WeChat's SILK encoder threw"); ok = false; break; }
-        if (rc != 0) { Detail(detail, detail_size, "WeChat's SILK encoder failed (code %d)", static_cast<int>(rc)); ok = false; break; }
+        const jint rc =
+            env->CallStaticIntMethod(recorder, encode, in, static_cast<jshort>(640), out, produced, JNI_FALSE, handle);
+        if (env->ExceptionCheck()) {
+            env->ExceptionClear();
+            Detail(detail, detail_size, "WeChat's SILK encoder threw");
+            ok = false;
+            break;
+        }
+        if (rc != 0) {
+            Detail(detail, detail_size, "WeChat's SILK encoder failed (code %d)", static_cast<int>(rc));
+            ok = false;
+            break;
+        }
         jshort length = 0;
         env->GetShortArrayRegion(produced, 0, 1, &length);
         if (length > 0 && length <= 1280) {
             env->GetByteArrayRegion(out, 0, length, reinterpret_cast<jbyte *>(packet));
-            if (fwrite(packet, 1, static_cast<size_t>(length), file) != static_cast<size_t>(length)) { Detail(detail, detail_size, "cannot write the voice file"); ok = false; break; }
+            if (fwrite(packet, 1, static_cast<size_t>(length), file) != static_cast<size_t>(length)) {
+                Detail(detail, detail_size, "cannot write the voice file");
+                ok = false;
+                break;
+            }
             ++packets;
         }
     }
@@ -294,7 +398,10 @@ bool EncodeSilk(JNIEnv *env, const int16_t *pcm, size_t count, const char *out_p
     if (out) env->DeleteLocalRef(out);
     if (produced) env->DeleteLocalRef(produced);
     env->DeleteLocalRef(recorder);
-    if (ok && !packets) { Detail(detail, detail_size, "the encoder produced nothing"); ok = false; }
+    if (ok && !packets) {
+        Detail(detail, detail_size, "the encoder produced nothing");
+        ok = false;
+    }
     if (!ok) unlink(out_path);
     return ok;
 }
@@ -312,23 +419,31 @@ bool StagingPath(const char *in_path, char *out, size_t capacity) {
     static unsigned counter = 0;
     timespec now{};
     clock_gettime(CLOCK_REALTIME, &now);
-    return snprintf(out, capacity, "%s/voice-%lld-%u.silk", staging, static_cast<long long>(now.tv_sec) * 1000 + now.tv_nsec / 1000000, ++counter) < static_cast<int>(capacity);
+    return snprintf(out, capacity, "%s/voice-%lld-%u.silk", staging,
+                    static_cast<long long>(now.tv_sec) * 1000 + now.tv_nsec / 1000000,
+                    ++counter) < static_cast<int>(capacity);
 }
 
 unsigned char *ReadSmall(const char *path, size_t *size) {
     struct stat info{};
-    if (stat(path, &info) || !S_ISREG(info.st_mode) || info.st_size <= 0 || static_cast<size_t>(info.st_size) > kMaxSilkFile) return nullptr;
+    if (stat(path, &info) || !S_ISREG(info.st_mode) || info.st_size <= 0 ||
+        static_cast<size_t>(info.st_size) > kMaxSilkFile)
+        return nullptr;
     FILE *file = fopen(path, "rb");
     if (!file) return nullptr;
     auto *data = static_cast<unsigned char *>(malloc(static_cast<size_t>(info.st_size)));
-    if (data && fread(data, 1, static_cast<size_t>(info.st_size), file) != static_cast<size_t>(info.st_size)) { free(data); data = nullptr; }
+    if (data && fread(data, 1, static_cast<size_t>(info.st_size), file) != static_cast<size_t>(info.st_size)) {
+        free(data);
+        data = nullptr;
+    }
     fclose(file);
     if (data) *size = static_cast<size_t>(info.st_size);
     return data;
 }
 } // namespace
 
-VoicePrep VoicePrepare(const char *in_path, char *out_path, size_t out_capacity, unsigned *duration_ms, char *detail, size_t detail_size) {
+VoicePrep VoicePrepare(const char *in_path, char *out_path, size_t out_capacity, unsigned *duration_ms, char *detail,
+                       size_t detail_size) {
     *duration_ms = 0;
     // A stream that already is WeChat's voice format needs no work (and gets the 0x02 WeChat writes if it lacks it).
     size_t size = 0;
@@ -336,15 +451,25 @@ VoicePrep VoicePrepare(const char *in_path, char *out_path, size_t out_capacity,
         SilkInfo silk;
         const bool is_silk = SilkInspect(data, size, &silk) && silk.valid;
         if (is_silk) {
-            if (silk.duration_ms > kVoiceMaxMs) { free(data); return VoicePrep::TooLong; }
+            if (silk.duration_ms > kVoiceMaxMs) {
+                free(data);
+                return VoicePrep::TooLong;
+            }
             *duration_ms = silk.duration_ms;
-            if (silk.prefixed) { free(data); snprintf(out_path, out_capacity, "%s", in_path); return VoicePrep::Ready; }
+            if (silk.prefixed) {
+                free(data);
+                snprintf(out_path, out_capacity, "%s", in_path);
+                return VoicePrep::Ready;
+            }
             char staged[1300];
             FILE *file = StagingPath(in_path, staged, sizeof(staged)) ? fopen(staged, "wb") : nullptr;
             const bool wrote = file && fputc(0x02, file) != EOF && fwrite(data, 1, size, file) == size;
             if (file) fclose(file);
             free(data);
-            if (!wrote) { Detail(detail, detail_size, "cannot stage the voice file"); return VoicePrep::Failed; }
+            if (!wrote) {
+                Detail(detail, detail_size, "cannot stage the voice file");
+                return VoicePrep::Failed;
+            }
             snprintf(out_path, out_capacity, "%s", staged);
             return VoicePrep::Ready;
         }
@@ -354,29 +479,49 @@ VoicePrep VoicePrepare(const char *in_path, char *out_path, size_t out_capacity,
     int16_t *pcm = nullptr;
     size_t count = 0;
     bool truncated = false;
-    const size_t limit = static_cast<size_t>(kVoiceMaxMs / 1000 + 1) * 16000;   // one second past the limit, to tell "too long"
+    const size_t limit =
+        static_cast<size_t>(kVoiceMaxMs / 1000 + 1) * 16000; // one second past the limit, to tell "too long"
     bool have = WavToPcm16k(in_path, &pcm, &count, limit, &truncated);
     if (!have) {
         JNIEnv *env = static_cast<JNIEnv *>(ReflectEnv());
-        if (!env) { Detail(detail, detail_size, "JavaVM unavailable"); return VoicePrep::Failed; }
+        if (!env) {
+            Detail(detail, detail_size, "JavaVM unavailable");
+            return VoicePrep::Failed;
+        }
         if (!ReflectResolve(detail, detail_size)) return VoicePrep::Failed;
         size_t frames = 0;
         int rate = 0, channels = 0;
-        int16_t *raw = DecodeWithMediaCodec(env, in_path, kVoiceMaxMs / 1000 + 1, &frames, &rate, &channels, &truncated, detail, detail_size);
+        int16_t *raw = DecodeWithMediaCodec(env, in_path, kVoiceMaxMs / 1000 + 1, &frames, &rate, &channels, &truncated,
+                                            detail, detail_size);
         if (!raw) return VoicePrep::Failed;
         pcm = ResampleTo16kMono(raw, frames, channels, rate, &count);
         free(raw);
         have = pcm && count;
     }
-    if (!have) { free(pcm); Detail(detail, detail_size, "the audio could not be converted"); return VoicePrep::Failed; }
+    if (!have) {
+        free(pcm);
+        Detail(detail, detail_size, "the audio could not be converted");
+        return VoicePrep::Failed;
+    }
     const unsigned ms = static_cast<unsigned>(count * 1000 / 16000);
-    if (truncated || ms > kVoiceMaxMs) { free(pcm); return VoicePrep::TooLong; }
-    if (ms < 200) { free(pcm); Detail(detail, detail_size, "the audio is too short to be a voice message"); return VoicePrep::Failed; }
+    if (truncated || ms > kVoiceMaxMs) {
+        free(pcm);
+        return VoicePrep::TooLong;
+    }
+    if (ms < 200) {
+        free(pcm);
+        Detail(detail, detail_size, "the audio is too short to be a voice message");
+        return VoicePrep::Failed;
+    }
     char staged[1300];
     JNIEnv *env = static_cast<JNIEnv *>(ReflectEnv());
-    const bool ok = env && StagingPath(in_path, staged, sizeof(staged)) && EncodeSilk(env, pcm, count, staged, detail, detail_size);
+    const bool ok =
+        env && StagingPath(in_path, staged, sizeof(staged)) && EncodeSilk(env, pcm, count, staged, detail, detail_size);
     free(pcm);
-    if (!ok) { if (!detail[0]) Detail(detail, detail_size, "cannot create the voice file"); return VoicePrep::Failed; }
+    if (!ok) {
+        if (!detail[0]) Detail(detail, detail_size, "cannot create the voice file");
+        return VoicePrep::Failed;
+    }
     snprintf(out_path, out_capacity, "%s", staged);
     *duration_ms = ms;
     return VoicePrep::Ready;

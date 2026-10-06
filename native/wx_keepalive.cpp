@@ -65,7 +65,7 @@ volatile int g_auto_depth = 0;
 volatile bool g_sustain_wifi = false;
 volatile bool g_cpu_held = false;
 volatile bool g_wifi_held = false;
-bool g_untimed = false; // g_mu: the CPU lock we currently hold was taken without a timeout
+bool g_untimed = false;           // g_mu: the CPU lock we currently hold was taken without a timeout
 long long g_serving_since_ms = 0; // when online && listening most recently became true
 bool g_was_serving = false;
 volatile bool g_notify_ok = false;
@@ -106,10 +106,16 @@ void ReadText(const char *path, char *out, size_t size) {
     if (fd < 0) return;
     const ssize_t n = read(fd, out, size - 1);
     close(fd);
-    if (n <= 0) { out[0] = 0; return; }
+    if (n <= 0) {
+        out[0] = 0;
+        return;
+    }
     out[n] = 0;
     for (ssize_t i = 0; i < n; ++i)
-        if (out[i] == '\n' || out[i] == '\r') { out[i] = 0; break; }
+        if (out[i] == '\n' || out[i] == '\r') {
+            out[i] = 0;
+            break;
+        }
 }
 
 // Everything resolved from the host application once. Method IDs stay valid for framework
@@ -125,29 +131,26 @@ struct Java {
     jobject nm = nullptr;        // NotificationManager
     jobject lock = nullptr;      // PowerManager.WakeLock
     jobject wifi_lock = nullptr; // WifiManager.WifiLock
-    jclass cls_context = nullptr, cls_pm = nullptr, cls_nm = nullptr, cls_builder = nullptr,
-           cls_big = nullptr, cls_pi = nullptr, cls_intent = nullptr, cls_component = nullptr,
-           cls_channel = nullptr, cls_sbn = nullptr;
-    jmethodID get_service = nullptr, get_package_name = nullptr, get_app_context = nullptr,
-              get_app_info = nullptr, get_package_manager = nullptr, start_service = nullptr;
+    jclass cls_context = nullptr, cls_pm = nullptr, cls_nm = nullptr, cls_builder = nullptr, cls_big = nullptr,
+           cls_pi = nullptr, cls_intent = nullptr, cls_component = nullptr, cls_channel = nullptr, cls_sbn = nullptr;
+    jmethodID get_service = nullptr, get_package_name = nullptr, get_app_context = nullptr, get_app_info = nullptr,
+              get_package_manager = nullptr, start_service = nullptr;
     jfieldID app_icon = nullptr;
     jmethodID launch_intent = nullptr;
-    jmethodID nm_create = nullptr, nm_notify = nullptr, nm_enabled = nullptr, nm_active = nullptr,
-              nm_get = nullptr;
-    jmethodID builder_ctor = nullptr, b_icon = nullptr, b_title = nullptr, b_text = nullptr,
-              b_style = nullptr, b_ongoing = nullptr, b_alert = nullptr, b_when = nullptr,
-              b_category = nullptr, b_content_intent = nullptr, b_action = nullptr, b_build = nullptr,
-              b_color = nullptr;
+    jmethodID nm_create = nullptr, nm_notify = nullptr, nm_enabled = nullptr, nm_active = nullptr, nm_get = nullptr;
+    jmethodID builder_ctor = nullptr, b_icon = nullptr, b_title = nullptr, b_text = nullptr, b_style = nullptr,
+              b_ongoing = nullptr, b_alert = nullptr, b_when = nullptr, b_category = nullptr,
+              b_content_intent = nullptr, b_action = nullptr, b_build = nullptr, b_color = nullptr;
     jmethodID big_ctor = nullptr, big_set = nullptr;
     jmethodID pi_activity = nullptr, pi_broadcast = nullptr;
-    jmethodID intent_ctor = nullptr, intent_component = nullptr, intent_put_int = nullptr,
-              intent_put_string = nullptr, intent_put_bool = nullptr;
+    jmethodID intent_ctor = nullptr, intent_component = nullptr, intent_put_int = nullptr, intent_put_string = nullptr,
+              intent_put_bool = nullptr;
     jmethodID component_ctor = nullptr;
     jmethodID channel_ctor = nullptr, ch_desc = nullptr, ch_badge = nullptr;
-    jmethodID pm_new_lock = nullptr, lock_acquire = nullptr, lock_release = nullptr,
-              lock_held = nullptr, lock_refcount = nullptr, lock_acquire_timeout = nullptr;
-    jmethodID wifi_new_lock = nullptr, wlock_acquire = nullptr, wlock_release = nullptr,
-              wlock_held = nullptr, wlock_refcount = nullptr;
+    jmethodID pm_new_lock = nullptr, lock_acquire = nullptr, lock_release = nullptr, lock_held = nullptr,
+              lock_refcount = nullptr, lock_acquire_timeout = nullptr;
+    jmethodID wifi_new_lock = nullptr, wlock_acquire = nullptr, wlock_release = nullptr, wlock_held = nullptr,
+              wlock_refcount = nullptr;
     jmethodID sbn_id = nullptr;
     jint icon = 0;
 };
@@ -209,9 +212,12 @@ bool EnsureChannel(JNIEnv *env) {
     const char *const ids[] = {kChannel, kChannelFallback};
     for (const char *id : ids) {
         g_active_channel = id;
-        jobject channel = env->NewObject(g_j.cls_channel, g_j.channel_ctor, String(env, id),
-                                         String(env, kChannelName), kImportanceLow);
-        if (!channel) { Clear(env); continue; }
+        jobject channel = env->NewObject(g_j.cls_channel, g_j.channel_ctor, String(env, id), String(env, kChannelName),
+                                         kImportanceLow);
+        if (!channel) {
+            Clear(env);
+            continue;
+        }
         // The description and badge are cosmetic; a missing setter must not block channel creation.
         if (g_j.ch_desc) env->CallVoidMethod(channel, g_j.ch_desc, String(env, "知言 Satori 服务的运行状态"));
         if (g_j.ch_badge) env->CallVoidMethod(channel, g_j.ch_badge, JNI_FALSE);
@@ -221,10 +227,17 @@ bool EnsureChannel(JNIEnv *env) {
         env->DeleteLocalRef(channel);
         // getNotificationChannel() returns null for a missing or deleted channel: verify, because
         // createNotificationChannel() silently ignores a channel whose id a ROM refuses to undelete.
-        if (!g_j.nm_get) { g_channel_ok = true; return true; }
+        if (!g_j.nm_get) {
+            g_channel_ok = true;
+            return true;
+        }
         jobject existing = env->CallObjectMethod(g_j.nm, g_j.nm_get, String(env, id));
         Clear(env);
-        if (existing) { env->DeleteLocalRef(existing); g_channel_ok = true; return true; }
+        if (existing) {
+            env->DeleteLocalRef(existing);
+            g_channel_ok = true;
+            return true;
+        }
     }
     g_active_channel = kChannel;
     return false;
@@ -252,27 +265,32 @@ bool ResolveJava(JNIEnv *env) {
     g_j.cls_intent = static_cast<jclass>(env->NewGlobalRef(Class(env, "android/content/Intent")));
     g_j.cls_component = static_cast<jclass>(env->NewGlobalRef(Class(env, "android/content/ComponentName")));
     g_j.cls_channel = static_cast<jclass>(env->NewGlobalRef(Class(env, "android/app/NotificationChannel")));
-    g_j.cls_sbn = static_cast<jclass>(env->NewGlobalRef(Class(env, "android/service/notification/StatusBarNotification")));
+    g_j.cls_sbn =
+        static_cast<jclass>(env->NewGlobalRef(Class(env, "android/service/notification/StatusBarNotification")));
 
-    const bool resolved = g_j.cls_pm && g_j.cls_nm && g_j.cls_builder && g_j.cls_big && g_j.cls_pi &&
-                          g_j.cls_intent && g_j.cls_component && g_j.cls_channel && g_j.cls_sbn &&
-                          app_info_class && package_manager;
+    const bool resolved = g_j.cls_pm && g_j.cls_nm && g_j.cls_builder && g_j.cls_big && g_j.cls_pi && g_j.cls_intent &&
+                          g_j.cls_component && g_j.cls_channel && g_j.cls_sbn && app_info_class && package_manager;
     if (!resolved) return false;
 
     g_j.get_service = Method(env, g_j.cls_context, "getSystemService", "(Ljava/lang/String;)Ljava/lang/Object;");
     g_j.get_package_name = Method(env, g_j.cls_context, "getPackageName", "()Ljava/lang/String;");
     g_j.get_app_context = Method(env, g_j.cls_context, "getApplicationContext", "()Landroid/content/Context;");
     g_j.get_app_info = Method(env, g_j.cls_context, "getApplicationInfo", "()Landroid/content/pm/ApplicationInfo;");
-    g_j.get_package_manager = Method(env, g_j.cls_context, "getPackageManager", "()Landroid/content/pm/PackageManager;");
-    g_j.start_service = Method(env, g_j.cls_context, "startService", "(Landroid/content/Intent;)Landroid/content/ComponentName;");
+    g_j.get_package_manager =
+        Method(env, g_j.cls_context, "getPackageManager", "()Landroid/content/pm/PackageManager;");
+    g_j.start_service =
+        Method(env, g_j.cls_context, "startService", "(Landroid/content/Intent;)Landroid/content/ComponentName;");
     g_j.app_icon = Field(env, app_info_class, "icon", "I");
-    g_j.launch_intent = Method(env, package_manager, "getLaunchIntentForPackage", "(Ljava/lang/String;)Landroid/content/Intent;");
+    g_j.launch_intent =
+        Method(env, package_manager, "getLaunchIntentForPackage", "(Ljava/lang/String;)Landroid/content/Intent;");
 
     g_j.nm_create = Method(env, g_j.cls_nm, "createNotificationChannel", "(Landroid/app/NotificationChannel;)V");
-    g_j.nm_get = Method(env, g_j.cls_nm, "getNotificationChannel", "(Ljava/lang/String;)Landroid/app/NotificationChannel;");
+    g_j.nm_get =
+        Method(env, g_j.cls_nm, "getNotificationChannel", "(Ljava/lang/String;)Landroid/app/NotificationChannel;");
     g_j.nm_notify = Method(env, g_j.cls_nm, "notify", "(ILandroid/app/Notification;)V");
     g_j.nm_enabled = Method(env, g_j.cls_nm, "areNotificationsEnabled", "()Z");
-    g_j.nm_active = Method(env, g_j.cls_nm, "getActiveNotifications", "()[Landroid/service/notification/StatusBarNotification;");
+    g_j.nm_active =
+        Method(env, g_j.cls_nm, "getActiveNotifications", "()[Landroid/service/notification/StatusBarNotification;");
     g_j.sbn_id = Method(env, g_j.cls_sbn, "getId", "()I");
 
     // The chain signatures embed the full Builder descriptor (34 chars), so the buffer has
@@ -303,20 +321,21 @@ bool ResolveJava(JNIEnv *env) {
 
     g_j.builder_ctor = Method(env, g_j.cls_builder, "<init>", "(Landroid/content/Context;Ljava/lang/String;)V");
     g_j.big_ctor = Method(env, g_j.cls_big, "<init>", "()V");
-    g_j.big_set = Method(env, g_j.cls_big, "setBigText",
-                         "(Ljava/lang/CharSequence;)Landroid/app/Notification$BigTextStyle;");
+    g_j.big_set =
+        Method(env, g_j.cls_big, "setBigText", "(Ljava/lang/CharSequence;)Landroid/app/Notification$BigTextStyle;");
     if (!g_j.big_set)
-        g_j.big_set = Method(env, g_j.cls_big, "bigText",
-                             "(Ljava/lang/CharSequence;)Landroid/app/Notification$BigTextStyle;");
+        g_j.big_set =
+            Method(env, g_j.cls_big, "bigText", "(Ljava/lang/CharSequence;)Landroid/app/Notification$BigTextStyle;");
 
     const char *pi_sig = "(Landroid/content/Context;ILandroid/content/Intent;I)Landroid/app/PendingIntent;";
     g_j.pi_activity = StaticMethod(env, g_j.cls_pi, "getActivity", pi_sig);
     g_j.pi_broadcast = StaticMethod(env, g_j.cls_pi, "getBroadcast", pi_sig);
     g_j.intent_ctor = Method(env, g_j.cls_intent, "<init>", "()V");
-    g_j.intent_component = Method(env, g_j.cls_intent, "setComponent",
-                                  "(Landroid/content/ComponentName;)Landroid/content/Intent;");
+    g_j.intent_component =
+        Method(env, g_j.cls_intent, "setComponent", "(Landroid/content/ComponentName;)Landroid/content/Intent;");
     g_j.intent_put_int = Method(env, g_j.cls_intent, "putExtra", "(Ljava/lang/String;I)Landroid/content/Intent;");
-    g_j.intent_put_string = Method(env, g_j.cls_intent, "putExtra", "(Ljava/lang/String;Ljava/lang/String;)Landroid/content/Intent;");
+    g_j.intent_put_string =
+        Method(env, g_j.cls_intent, "putExtra", "(Ljava/lang/String;Ljava/lang/String;)Landroid/content/Intent;");
     g_j.intent_put_bool = Method(env, g_j.cls_intent, "putExtra", "(Ljava/lang/String;Z)Landroid/content/Intent;");
     g_j.component_ctor = Method(env, g_j.cls_component, "<init>", "(Ljava/lang/String;Ljava/lang/String;)V");
     g_j.channel_ctor = Method(env, g_j.cls_channel, "<init>", "(Ljava/lang/String;Ljava/lang/CharSequence;I)V");
@@ -348,11 +367,17 @@ bool ResolveJava(JNIEnv *env) {
 
     jclass power_class = env->GetObjectClass(power);
     jclass wifi_class = env->GetObjectClass(wifi);
-    g_j.pm_new_lock = Method(env, power_class, "newWakeLock", "(ILjava/lang/String;)Landroid/os/PowerManager$WakeLock;");
-    g_j.wifi_new_lock = Method(env, wifi_class, "createWifiLock", "(ILjava/lang/String;)Landroid/net/wifi/WifiManager$WifiLock;");
+    g_j.pm_new_lock =
+        Method(env, power_class, "newWakeLock", "(ILjava/lang/String;)Landroid/os/PowerManager$WakeLock;");
+    g_j.wifi_new_lock =
+        Method(env, wifi_class, "createWifiLock", "(ILjava/lang/String;)Landroid/net/wifi/WifiManager$WifiLock;");
     Clear(env);
-    jobject lock = g_j.pm_new_lock ? env->CallObjectMethod(power, g_j.pm_new_lock, kPartialWakeLock, String(env, kLockTag)) : nullptr;
-    jobject wifi_lock = g_j.wifi_new_lock ? env->CallObjectMethod(wifi, g_j.wifi_new_lock, kWifiFullHighPerf, String(env, kLockTag)) : nullptr;
+    jobject lock = g_j.pm_new_lock
+                       ? env->CallObjectMethod(power, g_j.pm_new_lock, kPartialWakeLock, String(env, kLockTag))
+                       : nullptr;
+    jobject wifi_lock = g_j.wifi_new_lock
+                            ? env->CallObjectMethod(wifi, g_j.wifi_new_lock, kWifiFullHighPerf, String(env, kLockTag))
+                            : nullptr;
     Clear(env);
     if (lock) {
         jclass lock_class = env->GetObjectClass(lock);
@@ -361,7 +386,10 @@ bool ResolveJava(JNIEnv *env) {
         g_j.lock_release = Method(env, lock_class, "release", "()V");
         g_j.lock_held = Method(env, lock_class, "isHeld", "()Z");
         g_j.lock_refcount = Method(env, lock_class, "setReferenceCounted", "(Z)V");
-        if (g_j.lock_refcount) { env->CallVoidMethod(lock, g_j.lock_refcount, JNI_FALSE); Clear(env); }
+        if (g_j.lock_refcount) {
+            env->CallVoidMethod(lock, g_j.lock_refcount, JNI_FALSE);
+            Clear(env);
+        }
         g_j.lock = env->NewGlobalRef(lock);
         env->DeleteLocalRef(lock_class);
     }
@@ -371,7 +399,10 @@ bool ResolveJava(JNIEnv *env) {
         g_j.wlock_release = Method(env, wlock_class, "release", "()V");
         g_j.wlock_held = Method(env, wlock_class, "isHeld", "()Z");
         g_j.wlock_refcount = Method(env, wlock_class, "setReferenceCounted", "(Z)V");
-        if (g_j.wlock_refcount) { env->CallVoidMethod(wifi_lock, g_j.wlock_refcount, JNI_FALSE); Clear(env); }
+        if (g_j.wlock_refcount) {
+            env->CallVoidMethod(wifi_lock, g_j.wlock_refcount, JNI_FALSE);
+            Clear(env);
+        }
         g_j.wifi_lock = env->NewGlobalRef(wifi_lock);
         env->DeleteLocalRef(wlock_class);
     }
@@ -395,7 +426,10 @@ bool ResolveJava(JNIEnv *env) {
         if (drawable) {
             jfieldID field = StaticField(env, drawable, "ic_dialog_info", "I");
             if (!field) field = StaticField(env, drawable, "stat_sys_download", "I");
-            if (field) { g_j.icon = env->GetStaticIntField(drawable, field); Clear(env); }
+            if (field) {
+                g_j.icon = env->GetStaticIntField(drawable, field);
+                Clear(env);
+            }
             env->DeleteLocalRef(drawable);
         }
     }
@@ -405,9 +439,9 @@ bool ResolveJava(JNIEnv *env) {
 
     // Only mark ready when every method called unconditionally below is present; a null
     // method ID would be a hard crash, not a Java exception.
-    const bool complete = g_j.lock && g_j.wifi_lock && g_j.builder_ctor && g_j.b_icon && g_j.b_title &&
-                          g_j.b_text && g_j.b_style && g_j.b_ongoing && g_j.b_alert && g_j.b_when &&
-                          g_j.b_category && g_j.b_build && g_j.big_ctor && g_j.big_set && g_j.nm_notify;
+    const bool complete = g_j.lock && g_j.wifi_lock && g_j.builder_ctor && g_j.b_icon && g_j.b_title && g_j.b_text &&
+                          g_j.b_style && g_j.b_ongoing && g_j.b_alert && g_j.b_when && g_j.b_category && g_j.b_build &&
+                          g_j.big_ctor && g_j.big_set && g_j.nm_notify;
     g_j.ok = complete;
     return complete;
 }
@@ -431,7 +465,8 @@ void ApplyLock(JNIEnv *env) {
                 env->CallVoidMethod(g_j.lock, g_j.lock_release);
                 Clear(env);
             }
-            if (!IsHeld(env, g_j.lock, g_j.lock_held) && g_j.lock_acquire) env->CallVoidMethod(g_j.lock, g_j.lock_acquire);
+            if (!IsHeld(env, g_j.lock, g_j.lock_held) && g_j.lock_acquire)
+                env->CallVoidMethod(g_j.lock, g_j.lock_acquire);
             g_untimed = true;
         } else if (g_j.lock_acquire_timeout) {
             // An automatic hold expires on its own if a send wedges; re-arms on every nested hold.
@@ -451,8 +486,10 @@ void ApplyLock(JNIEnv *env) {
     // just as badly as an upload fails behind it.
     const bool want_wifi = want_cpu || g_sustain_wifi;
     const bool wifi_held = IsHeld(env, g_j.wifi_lock, g_j.wlock_held);
-    if (want_wifi && !wifi_held && g_j.wlock_acquire) env->CallVoidMethod(g_j.wifi_lock, g_j.wlock_acquire);
-    else if (!want_wifi && wifi_held && g_j.wlock_release) env->CallVoidMethod(g_j.wifi_lock, g_j.wlock_release);
+    if (want_wifi && !wifi_held && g_j.wlock_acquire)
+        env->CallVoidMethod(g_j.wifi_lock, g_j.wlock_acquire);
+    else if (!want_wifi && wifi_held && g_j.wlock_release)
+        env->CallVoidMethod(g_j.wifi_lock, g_j.wlock_release);
     Clear(env);
     g_cpu_held = IsHeld(env, g_j.lock, g_j.lock_held);
     g_wifi_held = IsHeld(env, g_j.wifi_lock, g_j.wlock_held);
@@ -462,16 +499,25 @@ void ApplyLock(JNIEnv *env) {
 // Periodic restart of WeChat's own core service: a started service in the main process keeps
 // it at SERVICE_ADJ, above the freezer cutoff, without any hook.
 void Kick(JNIEnv *env) {
-    if (!g_j.start_service || !g_j.context || !g_j.cls_intent || !g_j.intent_ctor ||
-        !g_j.cls_component || !g_j.component_ctor || !g_j.intent_component) {
+    if (!g_j.start_service || !g_j.context || !g_j.cls_intent || !g_j.intent_ctor || !g_j.cls_component ||
+        !g_j.component_ctor || !g_j.intent_component) {
         snprintf(g_service_detail, sizeof(g_service_detail), "unavailable");
         return;
     }
     jobject intent = env->NewObject(g_j.cls_intent, g_j.intent_ctor);
-    if (!intent) { Clear(env); snprintf(g_service_detail, sizeof(g_service_detail), "intent-failed"); return; }
-    jobject component = env->NewObject(g_j.cls_component, g_j.component_ctor,
-                                       String(env, kHostPackage), String(env, kHostService));
-    if (!component) { Clear(env); env->DeleteLocalRef(intent); snprintf(g_service_detail, sizeof(g_service_detail), "component-failed"); return; }
+    if (!intent) {
+        Clear(env);
+        snprintf(g_service_detail, sizeof(g_service_detail), "intent-failed");
+        return;
+    }
+    jobject component =
+        env->NewObject(g_j.cls_component, g_j.component_ctor, String(env, kHostPackage), String(env, kHostService));
+    if (!component) {
+        Clear(env);
+        env->DeleteLocalRef(intent);
+        snprintf(g_service_detail, sizeof(g_service_detail), "component-failed");
+        return;
+    }
     env->CallObjectMethod(intent, g_j.intent_component, component);
     Clear(env);
     env->CallObjectMethod(g_j.context, g_j.start_service, intent);
@@ -491,10 +537,14 @@ void Kick(JNIEnv *env) {
 void FormatUptime(long long ms, char *out, size_t size) {
     if (ms < 0) ms = 0;
     const long long minutes = ms / 60000, hours = minutes / 60, days = hours / 24;
-    if (days > 0) snprintf(out, size, "已在线 %lld 天 %lld 小时", days, hours % 24);
-    else if (hours > 0) snprintf(out, size, "已在线 %lld 小时 %lld 分", hours, minutes % 60);
-    else if (minutes > 0) snprintf(out, size, "已在线 %lld 分", minutes);
-    else snprintf(out, size, "刚刚上线");
+    if (days > 0)
+        snprintf(out, size, "已在线 %lld 天 %lld 小时", days, hours % 24);
+    else if (hours > 0)
+        snprintf(out, size, "已在线 %lld 小时 %lld 分", hours, minutes % 60);
+    else if (minutes > 0)
+        snprintf(out, size, "已在线 %lld 分", minutes);
+    else
+        snprintf(out, size, "刚刚上线");
 }
 
 // Renders the resident entry from live state and returns its accent color. The online/listening
@@ -502,7 +552,8 @@ void FormatUptime(long long ms, char *out, size_t size) {
 // title plus `text`; `big` (the expanded body) repeats `text` and adds the uptime, and never the
 // title again. Nothing else belongs here: the wake-lock state is the button's own label, and
 // sending is always on, so there is no state to report for either.
-int RenderState(long long serving_ms, char *title, size_t title_size, char *text, size_t text_size, char *big, size_t big_size) {
+int RenderState(long long serving_ms, char *title, size_t title_size, char *text, size_t text_size, char *big,
+                size_t big_size) {
     const bool online = g_login_count > 0;
     const bool listening = g_server_ready;
     const int clients = g_client_count > 0 ? g_client_count : 0;
@@ -510,13 +561,17 @@ int RenderState(long long serving_ms, char *title, size_t title_size, char *text
     if (online && listening) {
         color = kColorOnline;
         snprintf(title, title_size, "知言 · 运行中");
-        if (clients == 0) snprintf(text, text_size, "等待客户端连接 · 端口 %u", g_port);
-        else snprintf(text, text_size, "已连接 %d 个客户端 · 端口 %u", clients, g_port);
+        if (clients == 0)
+            snprintf(text, text_size, "等待客户端连接 · 端口 %u", g_port);
+        else
+            snprintf(text, text_size, "已连接 %d 个客户端 · 端口 %u", clients, g_port);
     } else if (!online) {
         color = kColorWait;
         snprintf(title, title_size, "知言 · 等待登录");
-        if (listening) snprintf(text, text_size, "打开微信登录，即可连接服务");
-        else snprintf(text, text_size, "等待微信登录与本地服务启动");
+        if (listening)
+            snprintf(text, text_size, "打开微信登录，即可连接服务");
+        else
+            snprintf(text, text_size, "等待微信登录与本地服务启动");
     } else {
         snprintf(title, title_size, "知言 · 服务异常");
         snprintf(text, text_size, "本地端口 %u 未监听", g_port);
@@ -534,7 +589,10 @@ int RenderState(long long serving_ms, char *title, size_t title_size, char *text
 bool StillPosted(JNIEnv *env) {
     if (!g_j.nm_active || !g_j.nm || !g_j.sbn_id) return true;
     jobjectArray active = static_cast<jobjectArray>(env->CallObjectMethod(g_j.nm, g_j.nm_active));
-    if (env->ExceptionCheck()) { Clear(env); return true; }
+    if (env->ExceptionCheck()) {
+        Clear(env);
+        return true;
+    }
     if (!active) return true;
     bool found = false;
     const jsize count = env->GetArrayLength(active);
@@ -544,7 +602,10 @@ bool StillPosted(JNIEnv *env) {
         const jint id = env->CallIntMethod(sbn, g_j.sbn_id);
         Clear(env);
         env->DeleteLocalRef(sbn);
-        if (id == kNotifyId) { found = true; break; }
+        if (id == kNotifyId) {
+            found = true;
+            break;
+        }
     }
     env->DeleteLocalRef(active);
     return found;
@@ -561,15 +622,18 @@ void Notify(JNIEnv *env) {
     g_notify_enabled = enabled;
 
     char title[96], text[160], big[320], key[480];
-    const int color = RenderState(g_serving_since_ms > 0 ? NowMs() - g_serving_since_ms : 0, title, sizeof(title),
-                                  text, sizeof(text), big, sizeof(big));
+    const int color = RenderState(g_serving_since_ms > 0 ? NowMs() - g_serving_since_ms : 0, title, sizeof(title), text,
+                                  sizeof(text), big, sizeof(big));
     // Everything the entry shows: the collapsed row, the expanded body (uptime), the button label.
     snprintf(key, sizeof(key), "%s|%s|%d|%d", title, big, g_login_count, g_want_lock ? 1 : 0);
     const bool changed = strcmp(key, g_last_key) != 0;
     const long long now = NowMs();
     const bool alive = changed || StillPosted(env);
     if (!changed && (!enabled || (now - g_last_post_ms < kRepostGapMs) || alive)) return;
-    if (changed && !enabled) { snprintf(g_notify_detail, sizeof(g_notify_detail), "disabled"); return; }
+    if (changed && !enabled) {
+        snprintf(g_notify_detail, sizeof(g_notify_detail), "disabled");
+        return;
+    }
 
     // The channel can disappear (WeChat or ColorOS deleting it): recreate it right before posting.
     EnsureChannel(env);
@@ -598,25 +662,30 @@ void Notify(JNIEnv *env) {
     // Tap opens WeChat; the launcher intent already carries FLAG_ACTIVITY_NEW_TASK.
     if (g_j.launch_intent && g_j.get_package_manager && g_j.pi_activity && g_j.b_content_intent) {
         jobject manager = env->CallObjectMethod(g_j.context, g_j.get_package_manager);
-        jobject launch = manager ? env->CallObjectMethod(manager, g_j.launch_intent, String(env, kHostPackage)) : nullptr;
+        jobject launch =
+            manager ? env->CallObjectMethod(manager, g_j.launch_intent, String(env, kHostPackage)) : nullptr;
         Clear(env);
         if (manager) env->DeleteLocalRef(manager);
         if (launch) {
             jobject open = env->CallStaticObjectMethod(g_j.cls_pi, g_j.pi_activity, g_j.context, kReqOpen, launch,
                                                        kFlagUpdateCurrent | kFlagImmutable);
             Clear(env);
-            if (open) { env->CallObjectMethod(builder, g_j.b_content_intent, open); Clear(env); env->DeleteLocalRef(open); }
+            if (open) {
+                env->CallObjectMethod(builder, g_j.b_content_intent, open);
+                Clear(env);
+                env->DeleteLocalRef(open);
+            }
             env->DeleteLocalRef(launch);
         }
     }
 
     // Action button: a broadcast to the companion app, which forwards the toggle to
     // POST /v1/internal/wakelock. The module cannot host a receiver without loading code.
-    if (g_j.pi_broadcast && g_j.intent_ctor && g_j.intent_component && g_j.intent_put_int &&
-        g_j.intent_put_string && g_j.intent_put_bool && g_j.component_ctor && g_j.b_action) {
+    if (g_j.pi_broadcast && g_j.intent_ctor && g_j.intent_component && g_j.intent_put_int && g_j.intent_put_string &&
+        g_j.intent_put_bool && g_j.component_ctor && g_j.b_action) {
         jobject action = env->NewObject(g_j.cls_intent, g_j.intent_ctor);
-        jobject component = env->NewObject(g_j.cls_component, g_j.component_ctor,
-                                           String(env, kTogglerPackage), String(env, kTogglerReceiver));
+        jobject component = env->NewObject(g_j.cls_component, g_j.component_ctor, String(env, kTogglerPackage),
+                                           String(env, kTogglerReceiver));
         if (action && component) {
             env->CallObjectMethod(action, g_j.intent_component, component);
             env->CallObjectMethod(action, g_j.intent_put_int, String(env, "port"), static_cast<jint>(g_port));
@@ -678,7 +747,12 @@ void *Manager(void *) {
         JNIEnv *env = Env();
         if (env) {
             pthread_mutex_lock(&g_mu);
-            if (!g_j.ok && !g_j.started) { if (env->PushLocalFrame(256) == 0) { ResolveJava(env); env->PopLocalFrame(nullptr); } }
+            if (!g_j.ok && !g_j.started) {
+                if (env->PushLocalFrame(256) == 0) {
+                    ResolveJava(env);
+                    env->PopLocalFrame(nullptr);
+                }
+            }
             const bool ready = g_j.ok;
             const bool started = g_j.started; // resolution was attempted; do not retry and leak
             pthread_mutex_unlock(&g_mu);
@@ -689,7 +763,8 @@ void *Manager(void *) {
     }
     if (!g_j.ok) {
         snprintf(g_notify_detail, sizeof(g_notify_detail), "unavailable");
-        __android_log_print(ANDROID_LOG_WARN, "SatoriWx", "keepalive: application context never became usable; notification disabled");
+        __android_log_print(ANDROID_LOG_WARN, "SatoriWx",
+                            "keepalive: application context never became usable; notification disabled");
         return nullptr;
     }
     __android_log_print(ANDROID_LOG_INFO, "SatoriWx", "keepalive: resident notification armed");
@@ -719,8 +794,8 @@ void *Manager(void *) {
 }
 } // namespace
 
-int KeepaliveRender(long long serving_ms, char *title, size_t title_size, char *text, size_t text_size,
-                    char *big, size_t big_size) {
+int KeepaliveRender(long long serving_ms, char *title, size_t title_size, char *text, size_t text_size, char *big,
+                    size_t big_size) {
     return RenderState(serving_ms, title, title_size, text, text_size, big, big_size);
 }
 
@@ -745,9 +820,12 @@ void KeepaliveWakelock(int action, bool *held) {
     JNIEnv *env = Env();
     if (!env) return;
     pthread_mutex_lock(&g_mu);
-    if (action == 1) g_want_lock = true;
-    else if (action == 0) g_want_lock = false;
-    else g_want_lock = !g_want_lock;
+    if (action == 1)
+        g_want_lock = true;
+    else if (action == 0)
+        g_want_lock = false;
+    else
+        g_want_lock = !g_want_lock;
     if (g_j.ok && g_j.builder_ctor && env->PushLocalFrame(128) == 0) {
         ApplyLock(env);
         Notify(env);
@@ -764,7 +842,10 @@ void KeepaliveWakelockBegin() {
     pthread_mutex_lock(&g_mu);
     g_auto_depth = g_auto_depth + 1;
     JNIEnv *env = g_vm ? Env() : nullptr;
-    if (env && g_j.ok && env->PushLocalFrame(32) == 0) { ApplyLock(env); env->PopLocalFrame(nullptr); }
+    if (env && g_j.ok && env->PushLocalFrame(32) == 0) {
+        ApplyLock(env);
+        env->PopLocalFrame(nullptr);
+    }
     pthread_mutex_unlock(&g_mu);
 }
 
@@ -772,7 +853,10 @@ void KeepaliveWakelockEnd() {
     pthread_mutex_lock(&g_mu);
     if (g_auto_depth > 0) g_auto_depth = g_auto_depth - 1;
     JNIEnv *env = g_vm ? Env() : nullptr;
-    if (env && g_j.ok && env->PushLocalFrame(32) == 0) { ApplyLock(env); env->PopLocalFrame(nullptr); }
+    if (env && g_j.ok && env->PushLocalFrame(32) == 0) {
+        ApplyLock(env);
+        env->PopLocalFrame(nullptr);
+    }
     pthread_mutex_unlock(&g_mu);
 }
 
@@ -791,7 +875,8 @@ void KeepaliveStatus(cJSON *object) {
     cJSON_AddBoolToObject(keep, "wifi_held", g_wifi_held);
     cJSON_AddBoolToObject(keep, "sustain_wifi", g_sustain_wifi);
     cJSON_AddNumberToObject(keep, "clients", g_client_count);
-    cJSON_AddNumberToObject(keep, "uptime_ms", static_cast<double>(g_serving_since_ms > 0 ? NowMs() - g_serving_since_ms : 0));
+    cJSON_AddNumberToObject(keep, "uptime_ms",
+                            static_cast<double>(g_serving_since_ms > 0 ? NowMs() - g_serving_since_ms : 0));
     cJSON_AddStringToObject(keep, "service", g_service_detail);
     cJSON_AddStringToObject(keep, "notify", g_notify_detail);
     cJSON_AddNumberToObject(keep, "reposts", static_cast<double>(g_reposts));

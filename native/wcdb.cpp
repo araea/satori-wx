@@ -32,8 +32,7 @@ struct Wcdb {
 };
 
 namespace {
-template <typename T>
-bool Resolve(void *library, const char *name, T *target) {
+template <typename T> bool Resolve(void *library, const char *name, T *target) {
     void *symbol = dlsym(library, name);
     if (!symbol) return false;
     *target = reinterpret_cast<T>(symbol);
@@ -51,20 +50,22 @@ Wcdb *WcdbOpen(const char *library, const char *path, const void *key, int key_s
     return WcdbOpenEx(library, path, key, key_size, 0, 0, 0, read_only);
 }
 
-Wcdb *WcdbOpenEx(const char *library, const char *path, const void *key, int key_size,
-                 int page_size, int cipher_version, int pragmas_before_key, int read_only) {
+Wcdb *WcdbOpenEx(const char *library, const char *path, const void *key, int key_size, int page_size,
+                 int cipher_version, int pragmas_before_key, int read_only) {
     if (!library || !path) return nullptr;
     auto *db = static_cast<Wcdb *>(calloc(1, sizeof(Wcdb)));
     if (!db) return nullptr;
     db->library = dlopen(library, RTLD_NOW | RTLD_LOCAL);
-    if (!db->library) { Fail(db, dlerror()); free(db); return nullptr; }
+    if (!db->library) {
+        Fail(db, dlerror());
+        free(db);
+        return nullptr;
+    }
     if (!Resolve(db->library, "sqlite3_open_v2", &db->open_v2) ||
-        !Resolve(db->library, "sqlite3_close_v2", &db->close_v2) ||
-        !Resolve(db->library, "sqlite3_exec", &db->exec) ||
+        !Resolve(db->library, "sqlite3_close_v2", &db->close_v2) || !Resolve(db->library, "sqlite3_exec", &db->exec) ||
         !Resolve(db->library, "sqlite3_free", &db->free_memory) ||
         !Resolve(db->library, "sqlite3_prepare_v2", &db->prepare_v2) ||
-        !Resolve(db->library, "sqlite3_step", &db->step) ||
-        !Resolve(db->library, "sqlite3_finalize", &db->finalize) ||
+        !Resolve(db->library, "sqlite3_step", &db->step) || !Resolve(db->library, "sqlite3_finalize", &db->finalize) ||
         !Resolve(db->library, "sqlite3_column_count", &db->column_count) ||
         !Resolve(db->library, "sqlite3_column_name", &db->column_name) ||
         !Resolve(db->library, "sqlite3_column_text", &db->column_text) ||
@@ -94,8 +95,14 @@ Wcdb *WcdbOpenEx(const char *library, const char *path, const void *key, int key
         // callers try both orders when matching an unknown database.
         char pragma[96];
         if (pragmas_before_key) {
-            if (page_size > 0) { snprintf(pragma, sizeof(pragma), "PRAGMA cipher_page_size=%d", page_size); db->exec(db->connection, pragma, nullptr, nullptr, nullptr); }
-            if (cipher_version > 0) { snprintf(pragma, sizeof(pragma), "PRAGMA cipher_compatibility=%d", cipher_version); db->exec(db->connection, pragma, nullptr, nullptr, nullptr); }
+            if (page_size > 0) {
+                snprintf(pragma, sizeof(pragma), "PRAGMA cipher_page_size=%d", page_size);
+                db->exec(db->connection, pragma, nullptr, nullptr, nullptr);
+            }
+            if (cipher_version > 0) {
+                snprintf(pragma, sizeof(pragma), "PRAGMA cipher_compatibility=%d", cipher_version);
+                db->exec(db->connection, pragma, nullptr, nullptr, nullptr);
+            }
         }
         if (db->key(db->connection, key, key_size) != 0) {
             Fail(db, "sqlite3_key failed");
@@ -103,14 +110,22 @@ Wcdb *WcdbOpenEx(const char *library, const char *path, const void *key, int key
             return nullptr;
         }
         if (!pragmas_before_key) {
-            if (page_size > 0) { snprintf(pragma, sizeof(pragma), "PRAGMA cipher_page_size=%d", page_size); db->exec(db->connection, pragma, nullptr, nullptr, nullptr); }
-            if (cipher_version > 0) { snprintf(pragma, sizeof(pragma), "PRAGMA cipher_compatibility=%d", cipher_version); db->exec(db->connection, pragma, nullptr, nullptr, nullptr); }
+            if (page_size > 0) {
+                snprintf(pragma, sizeof(pragma), "PRAGMA cipher_page_size=%d", page_size);
+                db->exec(db->connection, pragma, nullptr, nullptr, nullptr);
+            }
+            if (cipher_version > 0) {
+                snprintf(pragma, sizeof(pragma), "PRAGMA cipher_compatibility=%d", cipher_version);
+                db->exec(db->connection, pragma, nullptr, nullptr, nullptr);
+            }
         }
     }
     return db;
 }
 
-void WcdbClose(Wcdb *db) { if (db) Release(db); }
+void WcdbClose(Wcdb *db) {
+    if (db) Release(db);
+}
 
 bool WcdbQuery(Wcdb *db, const char *sql, WcdbRow callback, void *context) {
     if (!db || !sql || !callback) return false;
@@ -161,5 +176,7 @@ const void *WcdbBlob(Wcdb *db, void *stmt, int column, int *size) {
     return data;
 }
 long long WcdbInt(Wcdb *db, void *stmt, int column) { return db && stmt ? db->column_int64(stmt, column) : 0; }
-bool WcdbIsNull(Wcdb *db, void *stmt, int column) { return !(db && stmt) || db->column_type(stmt, column) == 5 /* SQLITE_NULL */; }
+bool WcdbIsNull(Wcdb *db, void *stmt, int column) {
+    return !(db && stmt) || db->column_type(stmt, column) == 5 /* SQLITE_NULL */;
+}
 } // namespace satori

@@ -22,8 +22,10 @@ bool PrintRow(satori::Wcdb *db, void *stmt, void *context) {
     }
     for (int i = 0; i < columns; ++i) {
         if (i) printf(" | ");
-        if (satori::WcdbIsNull(db, stmt, i)) printf("NULL");
-        else printf("%s", satori::WcdbText(db, stmt, i));
+        if (satori::WcdbIsNull(db, stmt, i))
+            printf("NULL");
+        else
+            printf("%s", satori::WcdbText(db, stmt, i));
     }
     printf("\n");
     return true;
@@ -41,28 +43,43 @@ int main(int argc, char **argv) {
     if (key && !strncmp(key, "hex:", 4)) {
         const char *hex = key + 4;
         const size_t length = strlen(hex);
-        if (length % 2 || length / 2 >= sizeof(decoded)) { fprintf(stderr, "bad hex key\n"); return 2; }
+        if (length % 2 || length / 2 >= sizeof(decoded)) {
+            fprintf(stderr, "bad hex key\n");
+            return 2;
+        }
         for (size_t i = 0; i < length; i += 2) {
             unsigned value = 0;
-            if (sscanf(hex + i, "%2x", &value) != 1) { fprintf(stderr, "bad hex key\n"); return 2; }
+            if (sscanf(hex + i, "%2x", &value) != 1) {
+                fprintf(stderr, "bad hex key\n");
+                return 2;
+            }
             decoded[i / 2] = static_cast<char>(value);
         }
         key_size = static_cast<int>(length / 2);
     } else if (key && !strncmp(key, "text:", 5)) {
         key = key + 5;
         key_size = static_cast<int>(strlen(key));
-        if (key_size >= static_cast<int>(sizeof(decoded))) { fprintf(stderr, "key too long\n"); return 2; }
+        if (key_size >= static_cast<int>(sizeof(decoded))) {
+            fprintf(stderr, "key too long\n");
+            return 2;
+        }
         memcpy(decoded, key, static_cast<size_t>(key_size));
     } else if (key) {
         key_size = static_cast<int>(strlen(key));
-        if (key_size >= static_cast<int>(sizeof(decoded))) { fprintf(stderr, "key too long\n"); return 2; }
+        if (key_size >= static_cast<int>(sizeof(decoded))) {
+            fprintf(stderr, "key too long\n");
+            return 2;
+        }
         memcpy(decoded, key, static_cast<size_t>(key_size));
     }
-    satori::Wcdb *db = satori::WcdbOpenEx(argv[1], argv[2], key_size ? decoded : nullptr, key_size,
-                                          atoi(getenv("SATORI_WCDB_PAGE") ? getenv("SATORI_WCDB_PAGE") : "0"),
-                                          atoi(getenv("SATORI_WCDB_COMPAT") ? getenv("SATORI_WCDB_COMPAT") : "0"),
-                                          0, 1);
-    if (!db) { fprintf(stderr, "open failed (wrong key, wrong library, or file not readable)\n"); return 1; }
+    satori::Wcdb *db =
+        satori::WcdbOpenEx(argv[1], argv[2], key_size ? decoded : nullptr, key_size,
+                           atoi(getenv("SATORI_WCDB_PAGE") ? getenv("SATORI_WCDB_PAGE") : "0"),
+                           atoi(getenv("SATORI_WCDB_COMPAT") ? getenv("SATORI_WCDB_COMPAT") : "0"), 0, 1);
+    if (!db) {
+        fprintf(stderr, "open failed (wrong key, wrong library, or file not readable)\n");
+        return 1;
+    }
     bool header = false;
     const char *sql = argc > 4 ? argv[4] : "SELECT * FROM message ORDER BY createTime DESC LIMIT 20";
     printf("== %s ==\n", sql);

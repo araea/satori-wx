@@ -14,10 +14,10 @@ int16_t *ResampleTo16kMono(const int16_t *interleaved, size_t frames, int channe
 // file held more. False when the file is not a WAV this reader understands.
 bool WavToPcm16k(const char *path, int16_t **out, size_t *count, size_t max_samples, bool *truncated);
 struct SilkInfo {
-    bool valid;            // a SILK_V3 stream whose packets tile the file exactly
-    bool prefixed;         // it opens with WeChat's 0x02 byte before "#!SILK_V3"
+    bool valid;    // a SILK_V3 stream whose packets tile the file exactly
+    bool prefixed; // it opens with WeChat's 0x02 byte before "#!SILK_V3"
     unsigned packets;
-    unsigned duration_ms;  // 20 ms per packet, WeChat's packet size
+    unsigned duration_ms; // 20 ms per packet, WeChat's packet size
 };
 // Reads the SILK container: "[0x02]#!SILK_V3" then packets of (uint16 little-endian size, payload),
 // optionally ended by 0xFFFF.

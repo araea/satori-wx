@@ -15,7 +15,10 @@ namespace {
 int failures = 0;
 
 void Check(bool ok, const char *what) {
-    if (!ok) { fprintf(stderr, "FAIL: %s\n", what); ++failures; }
+    if (!ok) {
+        fprintf(stderr, "FAIL: %s\n", what);
+        ++failures;
+    }
 }
 
 // Resolves `url` and compares either the resolution result or the stored file name.
@@ -51,7 +54,10 @@ int main() {
     if (!base || !*base) base = ".";
     char directory[512];
     snprintf(directory, sizeof(directory), "%s/satori-tempstore-XXXXXX", base);
-    if (!mkdtemp(directory)) { fprintf(stderr, "mkdtemp failed\n"); return 2; }
+    if (!mkdtemp(directory)) {
+        fprintf(stderr, "mkdtemp failed\n");
+        return 2;
+    }
     satori::TempStoreSetDir(directory);
     Check(satori::TempStoreAvailable(), "store directory is usable");
 
@@ -62,7 +68,10 @@ int main() {
             char path[1200];
             snprintf(path, sizeof(path), "%s/%s", directory, relative);
             FILE *f = fopen(path, "wb");
-            if (f) { fputs("x", f); fclose(f); }
+            if (f) {
+                fputs("x", f);
+                fclose(f);
+            }
             const time_t then = time(nullptr) - age_s;
             const timeval times[2] = {{then, 0}, {then, 0}};
             utimes(path, times);
@@ -75,7 +84,8 @@ int main() {
         make("send/staged-old.mp4", 7 * 3600);
         make("send/staged-recent.mp4", 3600);
         char name0[128];
-        Check(satori::TempStorePut("first.bin", "application/octet-stream", "1", 1, name0, sizeof(name0)), "put after leftovers");
+        Check(satori::TempStorePut("first.bin", "application/octet-stream", "1", 1, name0, sizeof(name0)),
+              "put after leftovers");
         auto exists = [&](const char *relative) {
             char path[1200];
             snprintf(path, sizeof(path), "%s/%s", directory, relative);
@@ -86,9 +96,12 @@ int main() {
         Check(!exists("send/staged-old.mp4"), "a staged copy older than six hours is swept");
         Check(exists("send/staged-recent.mp4"), "a recent staged copy stays");
         char cleanup[1200];
-        snprintf(cleanup, sizeof(cleanup), "%s/orphan-fresh.bin", directory); unlink(cleanup);
-        snprintf(cleanup, sizeof(cleanup), "%s/send/staged-recent.mp4", directory); unlink(cleanup);
-        snprintf(cleanup, sizeof(cleanup), "%s/%s", directory, name0); unlink(cleanup);
+        snprintf(cleanup, sizeof(cleanup), "%s/orphan-fresh.bin", directory);
+        unlink(cleanup);
+        snprintf(cleanup, sizeof(cleanup), "%s/send/staged-recent.mp4", directory);
+        unlink(cleanup);
+        snprintf(cleanup, sizeof(cleanup), "%s/%s", directory, name0);
+        unlink(cleanup);
         rmdir(staged);
     }
 
@@ -125,7 +138,10 @@ int main() {
     char stray[1200];
     snprintf(stray, sizeof(stray), "%s/stray.png", directory);
     FILE *hand = fopen(stray, "wb");
-    if (hand) { fputs("x", hand); fclose(hand); }
+    if (hand) {
+        fputs("x", hand);
+        fclose(hand);
+    }
     Link("internal:wechat/wxid_self/_tmp/stray.png", false, nullptr, "hand-placed file is not a link");
 
     unlink(stray);
@@ -134,7 +150,10 @@ int main() {
     unlink(kept);
     rmdir(directory);
 
-    if (failures) { fprintf(stderr, "%d tempstore test(s) failed\n", failures); return 1; }
+    if (failures) {
+        fprintf(stderr, "%d tempstore test(s) failed\n", failures);
+        return 1;
+    }
     printf("tempstore tests: PASS\n");
     return 0;
 }

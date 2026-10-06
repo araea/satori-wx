@@ -11,12 +11,13 @@ namespace {
 int failures = 0;
 
 void Check(bool ok, const char *what) {
-    if (!ok) { fprintf(stderr, "FAIL: %s\n", what); ++failures; }
+    if (!ok) {
+        fprintf(stderr, "FAIL: %s\n", what);
+        ++failures;
+    }
 }
 
-const cJSON *Field(const cJSON *keep, const char *name) {
-    return cJSON_GetObjectItemCaseSensitive(keep, name);
-}
+const cJSON *Field(const cJSON *keep, const char *name) { return cJSON_GetObjectItemCaseSensitive(keep, name); }
 
 void CheckBool(const cJSON *keep, const char *name, bool expected) {
     const cJSON *field = Field(keep, name);
@@ -47,8 +48,8 @@ int main() {
     CheckNumber(keep, "auto", 0);
     CheckNumber(keep, "clients", 0);
     CheckNumber(keep, "uptime_ms", 0);
-    Check(Field(keep, "service") && Field(keep, "notify") && Field(keep, "wchan") &&
-          Field(keep, "oom_score_adj"), "diagnostic fields present");
+    Check(Field(keep, "service") && Field(keep, "notify") && Field(keep, "wchan") && Field(keep, "oom_score_adj"),
+          "diagnostic fields present");
     cJSON_Delete(status);
 
     // The connection count is what the notification and the Wi-Fi sustain read.
@@ -67,7 +68,9 @@ int main() {
     // says nothing about the wake lock (the button's own label does) or about sending (always on).
     {
         char title[96], text[160], big[320];
-        satori::g_login_count = 1; satori::g_server_ready = true; satori::g_client_count = 0;
+        satori::g_login_count = 1;
+        satori::g_server_ready = true;
+        satori::g_client_count = 0;
         satori::KeepaliveRender(0, title, sizeof(title), text, sizeof(text), big, sizeof(big));
         Check(!strcmp(title, "知言 · 运行中"), "notification: title while serving");
         Check(strstr(text, "等待客户端连接") != nullptr, "notification: waiting for a client");
@@ -75,11 +78,15 @@ int main() {
         Check(!strcmp(big, text), "notification: with no uptime the body is just the line");
 
         satori::g_client_count = 3;
-        satori::KeepaliveRender((2 * 3600 + 5 * 60) * 1000LL + 999, title, sizeof(title), text, sizeof(text), big, sizeof(big));
+        satori::KeepaliveRender((2 * 3600 + 5 * 60) * 1000LL + 999, title, sizeof(title), text, sizeof(text), big,
+                                sizeof(big));
         Check(strstr(text, "已连接 3 个客户端") != nullptr, "notification: client count in the line");
-        Check(!strstr(big, "知言") && !strstr(big, "运行中"), "notification: body has neither the app name nor the state again");
-        Check(strstr(big, text) == big && strstr(big, "\n已在线 2 小时 5 分") != nullptr, "notification: body is the line, then the uptime");
-        Check(!strstr(big, "唤醒锁") && !strstr(big, "CPU") && !strstr(big, "Wi-Fi"), "notification: no wake-lock detail");
+        Check(!strstr(big, "知言") && !strstr(big, "运行中"),
+              "notification: body has neither the app name nor the state again");
+        Check(strstr(big, text) == big && strstr(big, "\n已在线 2 小时 5 分") != nullptr,
+              "notification: body is the line, then the uptime");
+        Check(!strstr(big, "唤醒锁") && !strstr(big, "CPU") && !strstr(big, "Wi-Fi"),
+              "notification: no wake-lock detail");
         Check(!strstr(big, "发送") && !strstr(text, "发送"), "notification: no send-switch line");
 
         satori::KeepaliveRender(30 * 1000LL, title, sizeof(title), text, sizeof(text), big, sizeof(big));
@@ -91,11 +98,15 @@ int main() {
 
         satori::g_login_count = 0;
         satori::KeepaliveRender(0, title, sizeof(title), text, sizeof(text), big, sizeof(big));
-        Check(!strcmp(title, "知言 · 等待登录") && !strstr(big, "\n"), "notification: waiting for login has no uptime line");
-        satori::g_login_count = 1; satori::g_server_ready = false;
+        Check(!strcmp(title, "知言 · 等待登录") && !strstr(big, "\n"),
+              "notification: waiting for login has no uptime line");
+        satori::g_login_count = 1;
+        satori::g_server_ready = false;
         satori::KeepaliveRender(0, title, sizeof(title), text, sizeof(text), big, sizeof(big));
-        Check(!strcmp(title, "知言 · 服务异常") && strstr(text, "未监听") != nullptr, "notification: port not listening");
-        satori::g_server_ready = true; satori::g_client_count = 2;
+        Check(!strcmp(title, "知言 · 服务异常") && strstr(text, "未监听") != nullptr,
+              "notification: port not listening");
+        satori::g_server_ready = true;
+        satori::g_client_count = 2;
     }
 
     // The automatic hold is ref-counted and symmetric even with no JVM attached.
@@ -120,7 +131,10 @@ int main() {
     satori::g_client_count = 0;
     satori::g_server_ready = false;
     satori::g_login_count = 0;
-    if (failures) { fprintf(stderr, "keepalive tests: %d failure(s)\n", failures); return 1; }
+    if (failures) {
+        fprintf(stderr, "keepalive tests: %d failure(s)\n", failures);
+        return 1;
+    }
     printf("keepalive tests: PASS\n");
     return 0;
 }

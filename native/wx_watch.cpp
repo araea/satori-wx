@@ -22,10 +22,12 @@ bool Drain(int fd) {
     for (;;) {
         const ssize_t size = read(fd, buffer, sizeof(buffer));
         if (size <= 0) break;
-        for (char *at = buffer; at + sizeof(inotify_event) <= buffer + size; ) {
+        for (char *at = buffer; at + sizeof(inotify_event) <= buffer + size;) {
             const auto *event = reinterpret_cast<const inotify_event *>(at);
-            if (event->mask & IN_Q_OVERFLOW) changed = true;
-            else if (event->len && (!strcmp(event->name, "EnMicroMsg.db") || !strcmp(event->name, "EnMicroMsg.db-wal"))) changed = true;
+            if (event->mask & IN_Q_OVERFLOW)
+                changed = true;
+            else if (event->len && (!strcmp(event->name, "EnMicroMsg.db") || !strcmp(event->name, "EnMicroMsg.db-wal")))
+                changed = true;
             at += sizeof(inotify_event) + event->len;
         }
     }
@@ -42,13 +44,19 @@ int WatchOpen(const char *database) {
     *slash = 0;
     const int fd = inotify_init1(IN_NONBLOCK | IN_CLOEXEC);
     if (fd < 0) return -1;
-    if (inotify_add_watch(fd, directory, IN_MODIFY | IN_CLOSE_WRITE | IN_CREATE | IN_MOVED_TO) < 0) { close(fd); return -1; }
+    if (inotify_add_watch(fd, directory, IN_MODIFY | IN_CLOSE_WRITE | IN_CREATE | IN_MOVED_TO) < 0) {
+        close(fd);
+        return -1;
+    }
     return fd;
 }
 
 bool WatchWait(int fd, long long timeout_ms) {
     if (timeout_ms < 0) timeout_ms = 0;
-    if (fd < 0) { poll(nullptr, 0, static_cast<int>(timeout_ms)); return false; }
+    if (fd < 0) {
+        poll(nullptr, 0, static_cast<int>(timeout_ms));
+        return false;
+    }
     const long long deadline = MonotonicMs() + timeout_ms;
     for (;;) {
         const long long left = deadline - MonotonicMs();

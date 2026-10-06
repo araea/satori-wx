@@ -26,15 +26,19 @@ constexpr size_t kImages = 4;
 // upload while a scene runs, and a screen-off CPU/radio makes that transfer fail. The hold is
 // ref-counted and expires on its own, so a wedged send cannot keep the device awake.
 struct OutboundHold {
-    explicit OutboundHold(bool on) : on_(on) { if (on_) KeepaliveWakelockBegin(); }
-    ~OutboundHold() { if (on_) KeepaliveWakelockEnd(); }
+    explicit OutboundHold(bool on) : on_(on) {
+        if (on_) KeepaliveWakelockBegin();
+    }
+    ~OutboundHold() {
+        if (on_) KeepaliveWakelockEnd();
+    }
     bool on_;
 };
 
 bool IsOutbound(const char *name) {
-    return !strcmp(name, "message.create") || !strcmp(name, "message.delete") ||
-           !strcmp(name, "channel.delete") || !strcmp(name, "guild.member.kick") ||
-           !strcmp(name, "guild.member.role.set") || !strcmp(name, "guild.member.role.unset");
+    return !strcmp(name, "message.create") || !strcmp(name, "message.delete") || !strcmp(name, "channel.delete") ||
+           !strcmp(name, "guild.member.kick") || !strcmp(name, "guild.member.role.set") ||
+           !strcmp(name, "guild.member.role.unset");
 }
 
 const char *Text(const Request &request, const char *key) {
@@ -61,7 +65,12 @@ cJSON *SentMessage(Store *store, const char *channel_id, const char *content, lo
     cJSON *message = cJSON_CreateObject();
     cJSON *channel = cJSON_CreateObject();
     cJSON *user = cJSON_CreateObject();
-    if (!message || !channel || !user) { cJSON_Delete(message); cJSON_Delete(channel); cJSON_Delete(user); return nullptr; }
+    if (!message || !channel || !user) {
+        cJSON_Delete(message);
+        cJSON_Delete(channel);
+        cJSON_Delete(user);
+        return nullptr;
+    }
     cJSON_AddItemToObject(message, "channel", channel);
     cJSON_AddItemToObject(message, "user", user);
     char id[32];
@@ -106,7 +115,8 @@ bool MentionName(void *context, const char *id, char *name, size_t capacity) {
     const cJSON *fallback = cJSON_GetObjectItemCaseSensitive(user, "nick");
     if (!cJSON_IsString(fallback) || !*fallback->valuestring) fallback = cJSON_GetObjectItemCaseSensitive(user, "name");
     const char *chosen = cJSON_IsString(nick) && *nick->valuestring ? nick->valuestring
-                       : cJSON_IsString(fallback) ? fallback->valuestring : "";
+                         : cJSON_IsString(fallback)                 ? fallback->valuestring
+                                                                    : "";
     snprintf(name, capacity, "%s", chosen);
     cJSON_Delete(member);
     return *name != 0;
@@ -119,14 +129,14 @@ bool MentionName(void *context, const char *id, char *name, size_t capacity) {
 // the author wrote them. Every media source is resolved to a local file, and checked to be what it
 // claims, before the first message goes out: a bad link fails the whole request instead of leaving
 // half of it sent.
-constexpr size_t kMedia = 8;                        // media elements per request
+constexpr size_t kMedia = 8; // media elements per request
 constexpr size_t kSegments = 2 * kMedia + 1;
-constexpr size_t kImageMax = 8u << 20;              // decoded bytes accepted from an inline picture
-constexpr size_t kInlineMax = 12u << 20;            // ...and from any other inline media (a request is <= 16 MiB)
-constexpr int kImageConfirmMs = 6000;               // how long to wait for WeChat to insert the picture's row
-constexpr int kRowWaitMs = 6000;                    // ...and a video's row
-constexpr int kSettleMs = 8000;                     // ceiling for waiting on one file/video upload to finish
-constexpr int kRequestBudgetMs = 12000;             // ...and for all the waiting one request may do (the server thread is shared)
+constexpr size_t kImageMax = 8u << 20;   // decoded bytes accepted from an inline picture
+constexpr size_t kInlineMax = 12u << 20; // ...and from any other inline media (a request is <= 16 MiB)
+constexpr int kImageConfirmMs = 6000;    // how long to wait for WeChat to insert the picture's row
+constexpr int kRowWaitMs = 6000;         // ...and a video's row
+constexpr int kSettleMs = 8000;          // ceiling for waiting on one file/video upload to finish
+constexpr int kRequestBudgetMs = 12000;  // ...and for all the waiting one request may do (the server thread is shared)
 
 enum class Kind { Text, Image, Video, Audio, File };
 // What is actually sent. A <video> that is not an MP4 family container, or an <audio> in a format
@@ -137,13 +147,13 @@ enum class Route { Text, Image, Video, Voice, File };
 struct Segment {
     Kind kind = Kind::Text;
     Route route = Route::Text;
-    size_t begin = 0, end = 0;     // text: the slice of the content; media: the whole tag
-    char path[1200] = {};          // media: the local file
-    char poster[1200] = {};        // video: optional JPEG poster
-    char title[256] = {};          // file: the name the recipient sees
-    int duration_s = 0;            // video: play length in seconds
-    unsigned duration_ms = 0;      // voice: length in milliseconds
-    long long size = 0;            // media: bytes
+    size_t begin = 0, end = 0; // text: the slice of the content; media: the whole tag
+    char path[1200] = {};      // media: the local file
+    char poster[1200] = {};    // video: optional JPEG poster
+    char title[256] = {};      // file: the name the recipient sees
+    int duration_s = 0;        // video: play length in seconds
+    unsigned duration_ms = 0;  // voice: length in milliseconds
+    long long size = 0;        // media: bytes
 };
 
 // Magic bytes of the picture formats WeChat's pipeline takes.
@@ -189,7 +199,9 @@ const char *SniffExtension(const unsigned char *head, size_t size) {
     if (size >= 4 && !memcmp(head, "OggS", 4)) return "ogg";
     if (size >= 4 && !memcmp(head, "fLaC", 4)) return "flac";
     if (size >= 6 && !memcmp(head, "#!AMR\n", 6)) return "amr";
-    if (size >= 9 && (!memcmp(head, "#!SILK_V3", 9) || (head[0] == 0x02 && size >= 10 && !memcmp(head + 1, "#!SILK_V3", 9)))) return "silk";
+    if (size >= 9 &&
+        (!memcmp(head, "#!SILK_V3", 9) || (head[0] == 0x02 && size >= 10 && !memcmp(head + 1, "#!SILK_V3", 9))))
+        return "silk";
     if (size >= 4 && !memcmp(head, "%PDF", 4)) return "pdf";
     if (size >= 4 && !memcmp(head, "PK\x03\x04", 4)) return "zip";
     if (size >= 3 && !memcmp(head, "FLV", 3)) return "flv";
@@ -198,22 +210,26 @@ const char *SniffExtension(const unsigned char *head, size_t size) {
 
 // The extension a mime type suggests, for inline media that arrives with one.
 const char *MimeExtension(const char *mime) {
-    struct Entry { const char *prefix, *extension; };
-    static const Entry table[] = {
-        {"video/mp4", "mp4"}, {"video/quicktime", "mov"}, {"video/webm", "webm"}, {"video/x-matroska", "mkv"},
-        {"audio/mpeg", "mp3"}, {"audio/mp3", "mp3"}, {"audio/wav", "wav"}, {"audio/x-wav", "wav"}, {"audio/ogg", "ogg"},
-        {"audio/mp4", "m4a"}, {"audio/aac", "aac"}, {"audio/amr", "amr"}, {"audio/silk", "silk"}, {"audio/flac", "flac"},
-        {"application/pdf", "pdf"}, {"application/zip", "zip"}, {"text/plain", "txt"}, {"image/png", "png"},
-        {"image/jpeg", "jpg"}, {"image/gif", "gif"}, {"image/webp", "webp"},
+    struct Entry {
+        const char *prefix, *extension;
     };
-    for (const Entry &entry : table) if (mime && !strncasecmp(mime, entry.prefix, strlen(entry.prefix))) return entry.extension;
+    static const Entry table[] = {
+        {"video/mp4", "mp4"},   {"video/quicktime", "mov"}, {"video/webm", "webm"},     {"video/x-matroska", "mkv"},
+        {"audio/mpeg", "mp3"},  {"audio/mp3", "mp3"},       {"audio/wav", "wav"},       {"audio/x-wav", "wav"},
+        {"audio/ogg", "ogg"},   {"audio/mp4", "m4a"},       {"audio/aac", "aac"},       {"audio/amr", "amr"},
+        {"audio/silk", "silk"}, {"audio/flac", "flac"},     {"application/pdf", "pdf"}, {"application/zip", "zip"},
+        {"text/plain", "txt"},  {"image/png", "png"},       {"image/jpeg", "jpg"},      {"image/gif", "gif"},
+        {"image/webp", "webp"},
+    };
+    for (const Entry &entry : table)
+        if (mime && !strncasecmp(mime, entry.prefix, strlen(entry.prefix))) return entry.extension;
     return "";
 }
 
 // A decoded inline payload -> a temp file named `hint`.<extension> (the same store upload.create
 // uses, so it expires by itself). `title_hint` becomes the download name.
-const char *StoreInline(Kind kind, const unsigned char *bytes, size_t size, const char *mime, char *path, size_t capacity,
-                        char *sniffed_name, size_t sniffed_capacity) {
+const char *StoreInline(Kind kind, const unsigned char *bytes, size_t size, const char *mime, char *path,
+                        size_t capacity, char *sniffed_name, size_t sniffed_capacity) {
     if (kind == Kind::Image) {
         if (size > kImageMax) return "image_too_large";
         if (!LooksLikeImage(bytes, size)) return "media_unsupported";
@@ -223,12 +239,17 @@ const char *StoreInline(Kind kind, const unsigned char *bytes, size_t size, cons
     const char *extension = SniffExtension(bytes, size);
     if (!*extension) extension = MimeExtension(mime);
     if (!*extension) extension = kind == Kind::Image ? "jpg" : "bin";
-    const char *stem = kind == Kind::Image ? "picture" : kind == Kind::Video ? "video" : kind == Kind::Audio ? "audio" : "file";
+    const char *stem = kind == Kind::Image   ? "picture"
+                       : kind == Kind::Video ? "video"
+                       : kind == Kind::Audio ? "audio"
+                                             : "file";
     char filename[64];
     snprintf(filename, sizeof(filename), "%s.%s", stem, extension);
     if (sniffed_name) snprintf(sniffed_name, sniffed_capacity, "%s", filename);
     char name[160];
-    if (!TempStorePut(filename, "application/octet-stream", reinterpret_cast<const char *>(bytes), size, name, sizeof(name))) return "media_unresolved";
+    if (!TempStorePut(filename, "application/octet-stream", reinterpret_cast<const char *>(bytes), size, name,
+                      sizeof(name)))
+        return "media_unresolved";
     const TempFile *file = TempStoreGet(name);
     if (!file || strlen(file->path) >= capacity) return "media_unresolved";
     memcpy(path, file->path, strlen(file->path) + 1);
@@ -243,8 +264,9 @@ const char *DecodeBase64Media(Kind kind, const char *b64, size_t length, const c
     auto *bytes = static_cast<unsigned char *>(malloc(length / 4 * 3 + 4));
     if (!bytes) return "media_unresolved";
     const long size = Base64Decode(b64, length, bytes, length / 4 * 3 + 4);
-    const char *failure = size <= 0 ? "media_unresolved"
-                        : StoreInline(kind, bytes, static_cast<size_t>(size), mime, path, capacity, name, name_capacity);
+    const char *failure =
+        size <= 0 ? "media_unresolved"
+                  : StoreInline(kind, bytes, static_cast<size_t>(size), mime, path, capacity, name, name_capacity);
     free(bytes);
     return failure;
 }
@@ -254,7 +276,8 @@ const char *DecodeBase64Media(Kind kind, const char *b64, size_t length, const c
 // base64:// scheme (no mime, the format is sniffed from the magic bytes). WeChat has no public URL
 // for media and this build has no HTTP client, so a remote URL is refused with a message that says
 // what to do instead. `name` receives the client's file name when the source knows one.
-const char *ResolveSource(Kind kind, const char *src, char *path, size_t capacity, char *name, size_t name_capacity, const char **detail) {
+const char *ResolveSource(Kind kind, const char *src, char *path, size_t capacity, char *name, size_t name_capacity,
+                          const char **detail) {
     *detail = "";
     name[0] = 0;
     const bool image = kind == Kind::Image;
@@ -269,21 +292,36 @@ const char *ResolveSource(Kind kind, const char *src, char *path, size_t capacit
         const char *comma = strchr(src, ',');
         char header[128];
         const size_t header_size = comma ? static_cast<size_t>(comma - src) : 0;
-        if (!comma || header_size >= sizeof(header)) { *detail = "expected data:<mime>;base64,<data>"; return "media_unresolved"; }
+        if (!comma || header_size >= sizeof(header)) {
+            *detail = "expected data:<mime>;base64,<data>";
+            return "media_unresolved";
+        }
         memcpy(header, src, header_size);
         header[header_size] = 0;
-        if (!strcasestr(header, ";base64")) { *detail = "expected data:<mime>;base64,<data>"; return "media_unresolved"; }
-        if (image && strncasecmp(header, "data:image/", 11)) { *detail = "expected data:image/...;base64,..."; return "media_unsupported"; }
-        const char *failure = DecodeBase64Media(kind, comma + 1, strlen(comma + 1), src + 5, path, capacity, name, name_capacity);
+        if (!strcasestr(header, ";base64")) {
+            *detail = "expected data:<mime>;base64,<data>";
+            return "media_unresolved";
+        }
+        if (image && strncasecmp(header, "data:image/", 11)) {
+            *detail = "expected data:image/...;base64,...";
+            return "media_unsupported";
+        }
+        const char *failure =
+            DecodeBase64Media(kind, comma + 1, strlen(comma + 1), src + 5, path, capacity, name, name_capacity);
         if (failure) {
-            *detail = !strcmp(failure, too_large) ? (image ? "inline pictures are limited to 8 MiB" : "inline media is limited to 12 MiB: use upload.create") : "undecodable base64 payload";
+            *detail = !strcmp(failure, too_large) ? (image ? "inline pictures are limited to 8 MiB"
+                                                           : "inline media is limited to 12 MiB: use upload.create")
+                                                  : "undecodable base64 payload";
             return failure;
         }
-        name[0] = 0;   // an inline payload has no name of its own
+        name[0] = 0; // an inline payload has no name of its own
     } else if (!strncasecmp(src, "base64://", 9)) {
-        const char *failure = DecodeBase64Media(kind, src + 9, strlen(src + 9), "", path, capacity, name, name_capacity);
+        const char *failure =
+            DecodeBase64Media(kind, src + 9, strlen(src + 9), "", path, capacity, name, name_capacity);
         if (failure) {
-            *detail = !strcmp(failure, too_large) ? (image ? "inline pictures are limited to 8 MiB" : "inline media is limited to 12 MiB: use upload.create") : "expected base64://<base64-encoded data>";
+            *detail = !strcmp(failure, too_large) ? (image ? "inline pictures are limited to 8 MiB"
+                                                           : "inline media is limited to 12 MiB: use upload.create")
+                                                  : "expected base64://<base64-encoded data>";
             return failure;
         }
         name[0] = 0;
@@ -299,7 +337,7 @@ void CleanTitle(const char *in, char *out, size_t capacity) {
     size_t used = 0;
     for (const unsigned char *p = reinterpret_cast<const unsigned char *>(in); *p && used + 1 < capacity; ++p) {
         if (*p < 0x20 || *p == 0x7f || *p == '/' || *p == '\\') continue;
-        if (used + 4 >= capacity && *p >= 0x80) break;   // never cut a UTF-8 sequence in half
+        if (used + 4 >= capacity && *p >= 0x80) break; // never cut a UTF-8 sequence in half
         out[used++] = static_cast<char>(*p);
     }
     while (used && (out[used - 1] == ' ' || out[used - 1] == '.')) --used;
@@ -312,13 +350,22 @@ const char *Classify(Segment &segment, const char *tag_title, const char *origin
     unsigned char head[64] = {};
     size_t got = 0;
     struct stat info{};
-    if (stat(segment.path, &info) || !S_ISREG(info.st_mode)) { *detail = "the resolved file is missing"; return "media_unresolved"; }
+    if (stat(segment.path, &info) || !S_ISREG(info.st_mode)) {
+        *detail = "the resolved file is missing";
+        return "media_unresolved";
+    }
     segment.size = static_cast<long long>(info.st_size);
-    if (segment.size <= 0) { *detail = "the file is empty"; return "media_unresolved"; }
+    if (segment.size <= 0) {
+        *detail = "the file is empty";
+        return "media_unresolved";
+    }
     FileHead(segment.path, head, sizeof(head), &got);
     const char *extension = SniffExtension(head, got);
     if (segment.kind == Kind::Image) {
-        if (!LooksLikeImage(head, got)) { *detail = "the file is not a JPEG, PNG, GIF or WebP picture"; return "media_unsupported"; }
+        if (!LooksLikeImage(head, got)) {
+            *detail = "the file is not a JPEG, PNG, GIF or WebP picture";
+            return "media_unsupported";
+        }
         segment.route = Route::Image;
         return nullptr;
     }
@@ -356,7 +403,8 @@ const char *Classify(Segment &segment, const char *tag_title, const char *origin
         snprintf(title, sizeof(title), "%s.%s", stem, *extension ? extension : "bin");
     } else if (!strrchr(title, '.') && *extension) {
         const size_t used = strlen(title);
-        if (used + strlen(extension) + 2 < sizeof(title)) snprintf(title + used, sizeof(title) - used, ".%s", extension);
+        if (used + strlen(extension) + 2 < sizeof(title))
+            snprintf(title + used, sizeof(title) - used, ".%s", extension);
     }
     snprintf(segment.title, sizeof(segment.title), "%s", title);
     return nullptr;
@@ -365,9 +413,17 @@ const char *Classify(Segment &segment, const char *tag_title, const char *origin
 void EscapeAttribute(const char *text, char *out, size_t capacity) {
     size_t used = 0;
     for (; *text && used + 7 < capacity; ++text) {
-        const char *entity = *text == '&' ? "&amp;" : *text == '<' ? "&lt;" : *text == '>' ? "&gt;" : *text == '"' ? "&quot;" : nullptr;
-        if (entity) { const size_t n = strlen(entity); memcpy(out + used, entity, n); used += n; }
-        else out[used++] = *text;
+        const char *entity = *text == '&'   ? "&amp;"
+                             : *text == '<' ? "&lt;"
+                             : *text == '>' ? "&gt;"
+                             : *text == '"' ? "&quot;"
+                                            : nullptr;
+        if (entity) {
+            const size_t n = strlen(entity);
+            memcpy(out + used, entity, n);
+            used += n;
+        } else
+            out[used++] = *text;
     }
     out[used] = 0;
 }
@@ -378,7 +434,12 @@ cJSON *SentEnvelope(Store *store, const char *channel_id, const char *id, const 
     cJSON *message = cJSON_CreateObject();
     cJSON *channel = cJSON_CreateObject();
     cJSON *user = cJSON_CreateObject();
-    if (!message || !channel || !user) { cJSON_Delete(message); cJSON_Delete(channel); cJSON_Delete(user); return nullptr; }
+    if (!message || !channel || !user) {
+        cJSON_Delete(message);
+        cJSON_Delete(channel);
+        cJSON_Delete(user);
+        return nullptr;
+    }
     cJSON_AddItemToObject(message, "channel", channel);
     cJSON_AddItemToObject(message, "user", user);
     cJSON_AddStringToObject(message, "id", id);
@@ -398,14 +459,19 @@ cJSON *SentMediaMessage(Store *store, const char *channel_id, long long local_id
     if (cJSON *stored = StoreMessageGet(store, channel_id, id)) return stored;
     char content[900] = {};
     char link[300] = {};
-    const char *kind = segment.route == Route::Image ? "image" : segment.route == Route::Video ? "video" : segment.route == Route::Voice ? "voice" : "file";
+    const char *kind = segment.route == Route::Image   ? "image"
+                       : segment.route == Route::Video ? "video"
+                       : segment.route == Route::Voice ? "voice"
+                                                       : "file";
     const bool linked = MediaLink(StoreSelfId(store), kind, id, link, sizeof(link));
     if (segment.route == Route::Image) {
         snprintf(content, sizeof(content), "<img src=\"%s\"/>", linked ? link : "");
     } else if (segment.route == Route::Video) {
-        snprintf(content, sizeof(content), "<video src=\"%s\" duration=\"%d\"/>", linked ? link : "", segment.duration_s);
+        snprintf(content, sizeof(content), "<video src=\"%s\" duration=\"%d\"/>", linked ? link : "",
+                 segment.duration_s);
     } else if (segment.route == Route::Voice) {
-        snprintf(content, sizeof(content), "<audio src=\"%s\" duration=\"%.3f\"/>", linked ? link : "", segment.duration_ms / 1000.0);
+        snprintf(content, sizeof(content), "<audio src=\"%s\" duration=\"%.3f\"/>", linked ? link : "",
+                 segment.duration_ms / 1000.0);
     } else {
         char title[600];
         EscapeAttribute(segment.title, title, sizeof(title));
@@ -417,7 +483,8 @@ cJSON *SentMediaMessage(Store *store, const char *channel_id, long long local_id
 // A failure partway through a multi-message request says how much had already gone out.
 Response FailureAfter(const char *code, const char *detail, bool rejected, size_t already_sent) {
     Response response = Failure(code, detail, rejected);
-    if (response.body && already_sent) cJSON_AddNumberToObject(response.body, "sent", static_cast<double>(already_sent));
+    if (response.body && already_sent)
+        cJSON_AddNumberToObject(response.body, "sent", static_cast<double>(already_sent));
     return response;
 }
 
@@ -454,11 +521,15 @@ int SettleLimit(long long bytes) {
 // own name otherwise; the wxid when nothing better is known.
 void QuoteDisplayName(Store *store, const char *channel_id, QuoteRef &quote) {
     quote.display[0] = 0;
-    if (strstr(channel_id, "@chatroom") && MentionName(const_cast<char *>(channel_id), quote.sender, quote.display, sizeof(quote.display))) return;
+    if (strstr(channel_id, "@chatroom") &&
+        MentionName(const_cast<char *>(channel_id), quote.sender, quote.display, sizeof(quote.display)))
+        return;
     if (cJSON *user = StoreUserGet(store, quote.sender)) {
         const cJSON *nick = cJSON_GetObjectItemCaseSensitive(user, "nick");
         const cJSON *name = cJSON_GetObjectItemCaseSensitive(user, "name");
-        const char *chosen = cJSON_IsString(nick) && *nick->valuestring ? nick->valuestring : cJSON_IsString(name) ? name->valuestring : "";
+        const char *chosen = cJSON_IsString(nick) && *nick->valuestring ? nick->valuestring
+                             : cJSON_IsString(name)                     ? name->valuestring
+                                                                        : "";
         snprintf(quote.display, sizeof(quote.display), "%s", chosen);
         cJSON_Delete(user);
     }
@@ -468,7 +539,8 @@ void QuoteDisplayName(Store *store, const char *channel_id, QuoteRef &quote) {
 // The messages one <message> part stands for. `already_sent` is what earlier parts of the same
 // request delivered (a failure reports the total); `tolerate_blank` lets a part with nothing to send
 // (whitespace, an <author/> alone) pass as an empty list instead of failing the whole request.
-Response CreateOne(const Request &request, Store *store, const char *content, size_t already_sent, bool tolerate_blank) {
+Response CreateOne(const Request &request, Store *store, const char *content, size_t already_sent,
+                   bool tolerate_blank) {
     if (!store) return {503, nullptr};
     const char *channel_id = Text(request, "channel_id");
     if (!*channel_id || !*content) return {400, nullptr};
@@ -484,7 +556,8 @@ Response CreateOne(const Request &request, Store *store, const char *content, si
     bool quote_pending = quote_id[0] != 0;
     // Rows this request makes are ours, not the owner's typing: the event poller asks the store.
     struct SendWindow {
-        Store *store; const char *talker;
+        Store *store;
+        const char *talker;
         SendWindow(Store *s, const char *t) : store(s), talker(t) { StoreSendBegin(store, talker); }
         ~SendWindow() { StoreSendEnd(store, talker); }
     } send_window(store, channel_id);
@@ -494,16 +567,24 @@ Response CreateOne(const Request &request, Store *store, const char *content, si
     const size_t span_count = MediaSpans(content, spans, kMedia + 1);
     if (span_count > kMedia) return BadRequest("too_many_media", "at most 8 media elements per message.create");
     size_t images = 0;
-    for (size_t i = 0; i < span_count; ++i) if (spans[i].kind == 'i') ++images;
+    for (size_t i = 0; i < span_count; ++i)
+        if (spans[i].kind == 'i') ++images;
     if (images > kImages) return BadRequest("too_many_images", "at most 4 pictures per message.create");
     Segment segments[kSegments];
     size_t segment_count = 0, cursor = 0;
     for (size_t i = 0; i <= span_count; ++i) {
         const size_t stop = i < span_count ? spans[i].begin : strlen(content);
-        if (stop > cursor) { segments[segment_count].begin = cursor; segments[segment_count].end = stop; ++segment_count; }
+        if (stop > cursor) {
+            segments[segment_count].begin = cursor;
+            segments[segment_count].end = stop;
+            ++segment_count;
+        }
         if (i < span_count) {
             Segment &media = segments[segment_count];
-            media.kind = spans[i].kind == 'i' ? Kind::Image : spans[i].kind == 'v' ? Kind::Video : spans[i].kind == 'a' ? Kind::Audio : Kind::File;
+            media.kind = spans[i].kind == 'i'   ? Kind::Image
+                         : spans[i].kind == 'v' ? Kind::Video
+                         : spans[i].kind == 'a' ? Kind::Audio
+                                                : Kind::File;
             media.begin = spans[i].begin;
             media.end = spans[i].end;
             ++segment_count;
@@ -512,7 +593,11 @@ Response CreateOne(const Request &request, Store *store, const char *content, si
     }
 
     // Resolve every media element up front, and flatten every text segment to see which are blank.
-    struct Text { char plain[kOutgoingMax + 1]; char ids[2100]; bool blank; };
+    struct Text {
+        char plain[kOutgoingMax + 1];
+        char ids[2100];
+        bool blank;
+    };
     auto *texts = static_cast<Text *>(calloc(kSegments, sizeof(Text)));
     if (!texts) return {500, nullptr};
     size_t sendable = 0;
@@ -521,35 +606,50 @@ Response CreateOne(const Request &request, Store *store, const char *content, si
         if (segment.kind != Kind::Text) {
             const ImageSpan tag{segment.begin, segment.end};
             char *src = static_cast<char *>(malloc(strlen(content) + 1));
-            if (!src) { free(texts); return {500, nullptr}; }
+            if (!src) {
+                free(texts);
+                return {500, nullptr};
+            }
             src[0] = 0;
             const bool has_src = TagAttribute(content, tag, "src", src, strlen(content) + 1) && *src;
             const char *detail = "";
             char original[256] = {};
-            const char *failure = has_src ? ResolveSource(segment.kind, src, segment.path, sizeof(segment.path), original, sizeof(original), &detail)
+            const char *failure = has_src ? ResolveSource(segment.kind, src, segment.path, sizeof(segment.path),
+                                                          original, sizeof(original), &detail)
                                           : "media_unresolved";
             if (!has_src) detail = "the element has no src";
             free(src);
-            if (failure) { free(texts); return BadRequest(failure, detail); }
+            if (failure) {
+                free(texts);
+                return BadRequest(failure, detail);
+            }
             char title[256] = {};
             TagAttribute(content, tag, "title", title, sizeof(title));
             failure = Classify(segment, title, original, &detail);
-            if (failure) { free(texts); return BadRequest(failure, detail); }
+            if (failure) {
+                free(texts);
+                return BadRequest(failure, detail);
+            }
             if (segment.route == Route::Video) {
                 // An optional poster: a picture that cannot be read is simply not used.
                 char poster_src[1200] = {};
                 if (TagAttribute(content, tag, "poster", poster_src, sizeof(poster_src)) && *poster_src) {
                     char poster_original[256];
                     const char *poster_detail = "";
-                    if (ResolveSource(Kind::Image, poster_src, segment.poster, sizeof(segment.poster), poster_original, sizeof(poster_original), &poster_detail) ||
-                        !FileIsImage(segment.poster)) segment.poster[0] = 0;
+                    if (ResolveSource(Kind::Image, poster_src, segment.poster, sizeof(segment.poster), poster_original,
+                                      sizeof(poster_original), &poster_detail) ||
+                        !FileIsImage(segment.poster))
+                        segment.poster[0] = 0;
                 }
             }
             ++sendable;
             continue;
         }
         const size_t length = segment.end - segment.begin;
-        if (length > kOutgoingMax) { free(texts); return BadRequest("content_too_long", "a text run is limited to 4000 bytes"); }
+        if (length > kOutgoingMax) {
+            free(texts);
+            return BadRequest("content_too_long", "a text run is limited to 4000 bytes");
+        }
         char slice[kOutgoingMax + 1];
         memcpy(slice, content + segment.begin, length);
         slice[length] = 0;
@@ -558,15 +658,16 @@ Response CreateOne(const Request &request, Store *store, const char *content, si
         // mention list); anywhere else a mention has no meaning and is dropped like any element.
         OutgoingMention mentions[16];
         size_t mention_count = 0;
-        OutgoingText(slice, text.plain, sizeof(text.plain), group ? mentions : nullptr, 16, &mention_count, group ? MentionName : nullptr,
-                     const_cast<char *>(channel_id));
+        OutgoingText(slice, text.plain, sizeof(text.plain), group ? mentions : nullptr, 16, &mention_count,
+                     group ? MentionName : nullptr, const_cast<char *>(channel_id));
         for (size_t m = 0; m < mention_count; ++m) {
             const size_t used = strlen(text.ids);
             if (used + strlen(mentions[m].id) + 2 >= sizeof(text.ids)) break;
             snprintf(text.ids + used, sizeof(text.ids) - used, "%s%s", used ? "," : "", mentions[m].id);
         }
         char *tail = text.plain + strlen(text.plain);
-        while (tail > text.plain && (tail[-1] == '\n' || tail[-1] == '\r' || tail[-1] == ' ' || tail[-1] == '\t')) --tail;
+        while (tail > text.plain && (tail[-1] == '\n' || tail[-1] == '\r' || tail[-1] == ' ' || tail[-1] == '\t'))
+            --tail;
         *tail = 0;
         text.blank = !*text.plain;
         if (!text.blank) ++sendable;
@@ -577,7 +678,10 @@ Response CreateOne(const Request &request, Store *store, const char *content, si
     }
 
     cJSON *list = cJSON_CreateArray();
-    if (!list) { free(texts); return {500, nullptr}; }
+    if (!list) {
+        free(texts);
+        return {500, nullptr};
+    }
     const long long deadline = NowMs() + kRequestBudgetMs;
     size_t sent_count = already_sent;
     for (size_t i = 0; i < segment_count; ++i) {
@@ -586,7 +690,11 @@ Response CreateOne(const Request &request, Store *store, const char *content, si
         if (segment.route == Route::Image) {
             const long long before = StoreWatermark(store);
             SendResult sent = SendImage(channel_id, StoreSelfId(store), segment.path);
-            if (!sent.ok) { cJSON_Delete(list); free(texts); return FailureAfter("send_failed", sent.detail, sent.rejected, sent_count); }
+            if (!sent.ok) {
+                cJSON_Delete(list);
+                free(texts);
+                return FailureAfter("send_failed", sent.detail, sent.rejected, sent_count);
+            }
             // The pipeline is asynchronous: only a row in WeChat's own table proves it started.
             long long local_id = 0;
             bool confirmed = false;
@@ -595,13 +703,19 @@ Response CreateOne(const Request &request, Store *store, const char *content, si
                 if (!confirmed) Pause(40);
             }
             if (!confirmed) {
-                cJSON_Delete(list); free(texts);
+                cJSON_Delete(list);
+                free(texts);
                 // A row with empty content means WeChat's pipeline took the request and stalled
                 // (it rejects degenerate pictures, e.g. 1x1); say so instead of guessing.
                 long long stalled_id = 0;
                 if (StoreFindStalledImage(store, channel_id, before, &stalled_id))
-                    return FailureAfter("image_unconfirmed", "WeChat recorded the picture but its pipeline stalled (content empty); the image was not sent", false, sent_count);
-                return FailureAfter("image_unconfirmed", "WeChat did not record the picture within 6 seconds; it may still be sent", false, sent_count);
+                    return FailureAfter(
+                        "image_unconfirmed",
+                        "WeChat recorded the picture but its pipeline stalled (content empty); the image was not sent",
+                        false, sent_count);
+                return FailureAfter("image_unconfirmed",
+                                    "WeChat did not record the picture within 6 seconds; it may still be sent", false,
+                                    sent_count);
             }
             StoreNoteSent(store, local_id);
             message = SentMediaMessage(store, channel_id, local_id, segment);
@@ -613,20 +727,32 @@ Response CreateOne(const Request &request, Store *store, const char *content, si
             if (voice) {
                 const long long before = StoreWatermark(store);
                 SendResult sent = SendVoice(channel_id, segment.path, static_cast<int>(segment.duration_ms));
-                if (!sent.ok) { cJSON_Delete(list); free(texts); return FailureAfter("send_failed", sent.detail, sent.rejected, sent_count); }
+                if (!sent.ok) {
+                    cJSON_Delete(list);
+                    free(texts);
+                    return FailureAfter("send_failed", sent.detail, sent.rejected, sent_count);
+                }
                 bool found = false;
                 for (int waited = 0; waited < kRowWaitMs && !found; waited += 50) {
                     found = StoreFindSentVoice(store, channel_id, before, &local_id);
                     if (!found) Pause(50);
                 }
                 if (!found) {
-                    cJSON_Delete(list); free(texts);
-                    return FailureAfter("voice_unconfirmed", "WeChat did not record the voice message within 6 seconds; it may still be sent", false, sent_count);
+                    cJSON_Delete(list);
+                    free(texts);
+                    return FailureAfter(
+                        "voice_unconfirmed",
+                        "WeChat did not record the voice message within 6 seconds; it may still be sent", false,
+                        sent_count);
                 }
             } else if (video) {
                 const long long before = StoreWatermark(store);
                 SendResult sent = SendVideo(channel_id, segment.path, segment.poster, segment.duration_s);
-                if (!sent.ok) { cJSON_Delete(list); free(texts); return FailureAfter("send_failed", sent.detail, sent.rejected, sent_count); }
+                if (!sent.ok) {
+                    cJSON_Delete(list);
+                    free(texts);
+                    return FailureAfter("send_failed", sent.detail, sent.rejected, sent_count);
+                }
                 // The video task runs in WeChat's own coroutine; its row appears when it starts.
                 bool found = false;
                 for (int waited = 0; waited < kRowWaitMs && !found; waited += 50) {
@@ -634,12 +760,19 @@ Response CreateOne(const Request &request, Store *store, const char *content, si
                     if (!found) Pause(50);
                 }
                 if (!found) {
-                    cJSON_Delete(list); free(texts);
-                    return FailureAfter("video_unconfirmed", "WeChat did not record the video within 6 seconds; it may still be sent", false, sent_count);
+                    cJSON_Delete(list);
+                    free(texts);
+                    return FailureAfter("video_unconfirmed",
+                                        "WeChat did not record the video within 6 seconds; it may still be sent", false,
+                                        sent_count);
                 }
             } else {
                 SendResult sent = SendFile(channel_id, segment.path, segment.title);
-                if (!sent.ok) { cJSON_Delete(list); free(texts); return FailureAfter("send_failed", sent.detail, sent.rejected, sent_count); }
+                if (!sent.ok) {
+                    cJSON_Delete(list);
+                    free(texts);
+                    return FailureAfter("send_failed", sent.detail, sent.rejected, sent_count);
+                }
                 local_id = sent.local_id;
             }
             StoreNoteSent(store, local_id);
@@ -647,7 +780,8 @@ Response CreateOne(const Request &request, Store *store, const char *content, si
             // a rejected file) is worth telling the caller, a slow upload is left to finish.
             const int status = WaitSettled(store, local_id, SettleLimit(segment.size), deadline);
             if (status == 5) {
-                cJSON_Delete(list); free(texts);
+                cJSON_Delete(list);
+                free(texts);
                 char detail[120];
                 snprintf(detail, sizeof(detail), "WeChat could not upload the %s (its send status is failed)", what);
                 return FailureAfter("upload_failed", detail, false, sent_count);
@@ -673,15 +807,23 @@ Response CreateOne(const Request &request, Store *store, const char *content, si
                             if (!found) Pause(50);
                         }
                         if (!found) {
-                            cJSON_Delete(list); free(texts);
-                            return FailureAfter("send_unconfirmed", "WeChat did not record the reply within 6 seconds; it may still be sent", false, sent_count);
+                            cJSON_Delete(list);
+                            free(texts);
+                            return FailureAfter(
+                                "send_unconfirmed",
+                                "WeChat did not record the reply within 6 seconds; it may still be sent", false,
+                                sent_count);
                         }
                         sent.local_id = local_id;
                     }
                 }
             }
             if (!quoted) sent = SendText(channel_id, texts[i].plain, texts[i].ids);
-            if (!sent.ok) { cJSON_Delete(list); free(texts); return FailureAfter("send_failed", sent.detail, sent.rejected, sent_count); }
+            if (!sent.ok) {
+                cJSON_Delete(list);
+                free(texts);
+                return FailureAfter("send_failed", sent.detail, sent.rejected, sent_count);
+            }
             StoreNoteSent(store, sent.local_id);
             message = SentMessage(store, channel_id, texts[i].plain, sent.local_id);
             if (message && quoted) {
@@ -690,13 +832,18 @@ Response CreateOne(const Request &request, Store *store, const char *content, si
                 char escaped_id[80];
                 EscapeAttribute(quote_id, escaped_id, sizeof(escaped_id));
                 char combined[kOutgoingMax + 200];
-                snprintf(combined, sizeof(combined), "<quote id=\"%s\"/>%s", escaped_id, cJSON_IsString(field) ? field->valuestring : "");
+                snprintf(combined, sizeof(combined), "<quote id=\"%s\"/>%s", escaped_id,
+                         cJSON_IsString(field) ? field->valuestring : "");
                 cJSON_ReplaceItemInObjectCaseSensitive(message, "content", cJSON_CreateString(combined));
             }
         } else {
             continue;
         }
-        if (!message) { cJSON_Delete(list); free(texts); return {500, nullptr}; }
+        if (!message) {
+            cJSON_Delete(list);
+            free(texts);
+            return {500, nullptr};
+        }
         cJSON_AddItemToArray(list, message);
         ++sent_count;
     }
@@ -717,30 +864,35 @@ void ResolveAuthor(Store *store, const char *channel_id, ForwardEntry &entry) {
     if (!entry.author_id[0]) return;
     cJSON *user = StoreUserGet(store, entry.author_id);
     if (!entry.author_name[0]) {
-        if (strstr(channel_id, "@chatroom")) MentionName(const_cast<char *>(channel_id), entry.author_id, entry.author_name, sizeof(entry.author_name));
+        if (strstr(channel_id, "@chatroom"))
+            MentionName(const_cast<char *>(channel_id), entry.author_id, entry.author_name, sizeof(entry.author_name));
         if (!entry.author_name[0] && user) {
             const cJSON *nick = cJSON_GetObjectItemCaseSensitive(user, "nick");
             const cJSON *name = cJSON_GetObjectItemCaseSensitive(user, "name");
-            const char *chosen = cJSON_IsString(nick) && *nick->valuestring ? nick->valuestring : cJSON_IsString(name) ? name->valuestring : "";
+            const char *chosen = cJSON_IsString(nick) && *nick->valuestring ? nick->valuestring
+                                 : cJSON_IsString(name)                     ? name->valuestring
+                                                                            : "";
             snprintf(entry.author_name, sizeof(entry.author_name), "%s", chosen);
         }
         if (!entry.author_name[0]) snprintf(entry.author_name, sizeof(entry.author_name), "%s", entry.author_id);
     }
     if (!entry.author_avatar[0] && user) {
         const cJSON *avatar = cJSON_GetObjectItemCaseSensitive(user, "avatar");
-        if (cJSON_IsString(avatar) && strlen(avatar->valuestring) < sizeof(entry.author_avatar)) snprintf(entry.author_avatar, sizeof(entry.author_avatar), "%s", avatar->valuestring);
+        if (cJSON_IsString(avatar) && strlen(avatar->valuestring) < sizeof(entry.author_avatar))
+            snprintf(entry.author_avatar, sizeof(entry.author_avatar), "%s", avatar->valuestring);
     }
     cJSON_Delete(user);
 }
 
 struct PreparedForward {
     ForwardCard card;
-    char *reply;   // the Message.content to answer with
+    char *reply; // the Message.content to answer with
 };
 
 // Reads the container [part) of `content`, resolves its lines against the store and builds the card.
 // Success is {200, null}; anything else is the response to give.
-Response PrepareForward(const Request &request, Store *store, const char *content, const MessagePart &part, PreparedForward *out) {
+Response PrepareForward(const Request &request, Store *store, const char *content, const MessagePart &part,
+                        PreparedForward *out) {
     const char *channel_id = Text(request, "channel_id");
     const bool group = strstr(channel_id, "@chatroom") != nullptr;
     auto *entries = static_cast<ForwardEntry *>(calloc(kForwardMax, sizeof(ForwardEntry)));
@@ -748,7 +900,10 @@ Response PrepareForward(const Request &request, Store *store, const char *conten
     char title[200];
     ForwardError error{};
     const int count = ForwardParse(content, part.begin, part.end, entries, kForwardMax, title, sizeof(title), &error);
-    if (count < 0) { free(entries); return BadRequest(error.code, error.detail); }
+    if (count < 0) {
+        free(entries);
+        return BadRequest(error.code, error.detail);
+    }
     for (int i = 0; i < count; ++i) {
         ForwardEntry &entry = entries[i];
         if (entry.ref_id[0]) {
@@ -756,16 +911,22 @@ Response PrepareForward(const Request &request, Store *store, const char *conten
             if (!StoreQuoteTarget(store, channel_id, entry.ref_id, &target)) {
                 free(entries);
                 char detail[120];
-                snprintf(detail, sizeof(detail), "there is no message %s in this conversation to put in the merged forward", entry.ref_id);
+                snprintf(detail, sizeof(detail),
+                         "there is no message %s in this conversation to put in the merged forward", entry.ref_id);
                 return BadRequest("forward_message_not_found", detail);
             }
             if (target.row_type != 1) {
                 free(entries);
                 char detail[120];
-                snprintf(detail, sizeof(detail), "message %s is not a text message; only text can be put in a merged forward yet", entry.ref_id);
+                snprintf(detail, sizeof(detail),
+                         "message %s is not a text message; only text can be put in a merged forward yet",
+                         entry.ref_id);
                 return BadRequest("forward_media_unsupported", detail);
             }
-            if (strlen(target.text) > kForwardText) { free(entries); return BadRequest("content_too_long", "an embedded message is longer than 4000 bytes"); }
+            if (strlen(target.text) > kForwardText) {
+                free(entries);
+                return BadRequest("content_too_long", "an embedded message is longer than 4000 bytes");
+            }
             snprintf(entry.text, sizeof(entry.text), "%s", target.text);
             snprintf(entry.author_id, sizeof(entry.author_id), "%s", target.sender);
             entry.created_s = target.created_s;
@@ -783,12 +944,17 @@ Response PrepareForward(const Request &request, Store *store, const char *conten
     out->card = card;
     out->reply = ForwardContent(entries, static_cast<size_t>(count), title);
     free(entries);
-    if (!out->reply) { free(card.record); out->card.record = nullptr; return {500, nullptr}; }
+    if (!out->reply) {
+        free(card.record);
+        out->card.record = nullptr;
+        return {500, nullptr};
+    }
     return {200, nullptr};
 }
 
 // Sends one prepared card and answers with its Message.
-Response SendPreparedForward(const Request &request, Store *store, const PreparedForward &forward, size_t already_sent) {
+Response SendPreparedForward(const Request &request, Store *store, const PreparedForward &forward,
+                             size_t already_sent) {
     const char *channel_id = Text(request, "channel_id");
     const long long before = StoreWatermark(store);
     SendResult sent = SendForward(channel_id, forward.card.title, forward.card.desc, forward.card.record);
@@ -798,10 +964,14 @@ Response SendPreparedForward(const Request &request, Store *store, const Prepare
     for (int waited = 0; local_id <= 0 && waited < kRowWaitMs; waited += 50) {
         if (!StoreFindSentRecord(store, channel_id, before, &local_id)) Pause(50);
     }
-    if (local_id <= 0) return FailureAfter("send_unconfirmed", "WeChat did not record the chat record within 6 seconds; it may still be sent", false, already_sent);
+    if (local_id <= 0)
+        return FailureAfter("send_unconfirmed",
+                            "WeChat did not record the chat record within 6 seconds; it may still be sent", false,
+                            already_sent);
     StoreNoteSent(store, local_id);
     if (WaitSettled(store, local_id, kSettleMs, NowMs() + kSettleMs) == 5)
-        return FailureAfter("send_failed", "WeChat could not send the chat record (its send status is failed)", false, already_sent);
+        return FailureAfter("send_failed", "WeChat could not send the chat record (its send status is failed)", false,
+                            already_sent);
     char id[32];
     snprintf(id, sizeof(id), "%lld", local_id);
     cJSON *message = SentEnvelope(store, channel_id, id, forward.reply);
@@ -824,26 +994,41 @@ Response CreateMessages(const Request &request, Store *store) {
     const size_t count = MessageParts(content, parts, kParts + 1);
     if (count > kParts) return BadRequest("too_many_messages", "at most 16 <message> parts per message.create");
     for (size_t i = 0; i < count; ++i)
-        if (parts[i].kind == 'r') return BadRequest("forward_unsupported", "forwarding a single message by id is not supported; put it inside a <message forward> to merge-forward");
+        if (parts[i].kind == 'r')
+            return BadRequest(
+                "forward_unsupported",
+                "forwarding a single message by id is not supported; put it inside a <message forward> to merge-forward");
     if (count <= 1 && !strstr(content, "<message")) return CreateOne(request, store, content, 0, false);
 
     // Build every card first: a bad line fails the request before anything is sent.
     PreparedForward prepared[kParts] = {};
-    auto release = [&]() { for (size_t i = 0; i < count; ++i) { free(prepared[i].card.record); free(prepared[i].reply); } };
+    auto release = [&]() {
+        for (size_t i = 0; i < count; ++i) {
+            free(prepared[i].card.record);
+            free(prepared[i].reply);
+        }
+    };
     for (size_t i = 0; i < count; ++i) {
         if (parts[i].kind != 'm') continue;
         Response ready = PrepareForward(request, store, content, parts[i], &prepared[i]);
-        if (ready.status != 200) { release(); return ready; }
+        if (ready.status != 200) {
+            release();
+            return ready;
+        }
     }
 
     const char *channel_id = Text(request, "channel_id");
     struct SendWindow {
-        Store *store; const char *talker;
+        Store *store;
+        const char *talker;
         SendWindow(Store *s, const char *t) : store(s), talker(t) { StoreSendBegin(store, talker); }
         ~SendWindow() { StoreSendEnd(store, talker); }
     } send_window(store, channel_id);
     cJSON *all = cJSON_CreateArray();
-    if (!all) { release(); return {500, nullptr}; }
+    if (!all) {
+        release();
+        return {500, nullptr};
+    }
     size_t delivered = 0;
     for (size_t i = 0; i < count; ++i) {
         Response part;
@@ -856,7 +1041,11 @@ Response CreateMessages(const Request &request, Store *store) {
             }
         } else {
             char *slice = static_cast<char *>(malloc(parts[i].end - parts[i].begin + 1));
-            if (!slice) { cJSON_Delete(all); release(); return {500, nullptr}; }
+            if (!slice) {
+                cJSON_Delete(all);
+                release();
+                return {500, nullptr};
+            }
             memcpy(slice, content + parts[i].begin, parts[i].end - parts[i].begin);
             slice[parts[i].end - parts[i].begin] = 0;
             part = CreateOne(request, store, slice, delivered, true);
@@ -877,7 +1066,10 @@ Response CreateMessages(const Request &request, Store *store) {
         return part;
     }
     release();
-    if (!delivered) { cJSON_Delete(all); return {400, nullptr}; }
+    if (!delivered) {
+        cJSON_Delete(all);
+        return {400, nullptr};
+    }
     return {200, all};
 }
 
@@ -923,31 +1115,29 @@ Response Call(void *, const Request &request) {
         if (strcmp(role_id, "admin")) return Failure("role_not_supported", "only the admin role is mutable", false);
         const bool enable = !strcmp(name, "guild.member.role.set");
         ActionResult action = RoomSetAdmin(guild_id, user_id, enable);
-        if (!action.ok) return Failure(enable ? "role_set_failed" : "role_unset_failed", action.detail, action.rejected);
+        if (!action.ok)
+            return Failure(enable ? "role_set_failed" : "role_unset_failed", action.detail, action.rejected);
         return {200, cJSON_CreateObject()};
     }
 
     if (!strcmp(name, "message.get"))
         return Read(StoreMessageGet(store, Text(request, "channel_id"), Text(request, "message_id")));
     if (!strcmp(name, "message.list")) {
-        cJSON *list = StoreMessageList(store, Text(request, "channel_id"), Text(request, "next"), Text(request, "direction"),
-                                       Limit(request, 50), Text(request, "order"));
+        cJSON *list = StoreMessageList(store, Text(request, "channel_id"), Text(request, "next"),
+                                       Text(request, "direction"), Limit(request, 50), Text(request, "order"));
         return list ? Response{200, list} : Response{400, nullptr};
     }
-    if (!strcmp(name, "user.get"))
-        return Read(StoreUserGet(store, Text(request, "user_id")));
+    if (!strcmp(name, "user.get")) return Read(StoreUserGet(store, Text(request, "user_id")));
     if (!strcmp(name, "friend.list")) {
         cJSON *list = StoreFriendList(store, Text(request, "next"), Limit(request, 50));
         return list ? Response{200, list} : Response{400, nullptr};
     }
-    if (!strcmp(name, "guild.get"))
-        return Read(StoreGuildGet(store, Text(request, "guild_id")));
+    if (!strcmp(name, "guild.get")) return Read(StoreGuildGet(store, Text(request, "guild_id")));
     if (!strcmp(name, "guild.list")) {
         cJSON *list = StoreGuildList(store, Text(request, "next"), Limit(request, 50));
         return list ? Response{200, list} : Response{400, nullptr};
     }
-    if (!strcmp(name, "channel.get"))
-        return Read(StoreChannelGet(store, Text(request, "channel_id")));
+    if (!strcmp(name, "channel.get")) return Read(StoreChannelGet(store, Text(request, "channel_id")));
     if (!strcmp(name, "channel.list")) {
         cJSON *list = StoreChannelList(store, Text(request, "guild_id"), Text(request, "next"), Limit(request, 50));
         return list ? Response{200, list} : Response{400, nullptr};
@@ -966,8 +1156,7 @@ Response Call(void *, const Request &request) {
         cJSON *list = StoreMemberRoleList(store, Text(request, "guild_id"), Text(request, "user_id"));
         return list ? Response{200, list} : Response{404, nullptr};
     }
-    if (!strcmp(name, "user.channel.create"))
-        return Read(StoreChannelGet(store, Text(request, "user_id")));
+    if (!strcmp(name, "user.channel.create")) return Read(StoreChannelGet(store, Text(request, "user_id")));
     return {501, nullptr};
 }
 } // namespace

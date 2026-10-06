@@ -9,7 +9,7 @@
 //
 // Like every other write action there is no switch, no whitelist and no rate limit. Success
 // means the scene was accepted for dispatch, not that the server accepted the pat.
-#include "wx_room.h"  // ActionResult
+#include "wx_room.h" // ActionResult
 
 namespace satori {
 // Pats `user` in the chat `channel` (a wxid for a private chat, or <id>@chatroom).

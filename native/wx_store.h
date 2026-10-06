@@ -13,7 +13,8 @@ struct Store;
 // self_id is the account's own wxid (used as the author of sent messages).
 Store *CreateStore(const char *path, const void *key, int key_size, int compatibility, const char *self_id);
 // Same, with an explicit SQLCipher library (tests use a plain SQLite library).
-Store *CreateStoreEx(const char *library, const char *path, const void *key, int key_size, int compatibility, const char *self_id);
+Store *CreateStoreEx(const char *library, const char *path, const void *key, int key_size, int compatibility,
+                     const char *self_id);
 void DestroyStore(Store *store);
 bool StoreReady(Store *store);
 const char *StoreError(Store *store);
@@ -36,8 +37,8 @@ void StoreNoteSent(Store *store, long long local_id);
 // full) is *not* passed, so it is offered again on the next call instead of being lost; rows
 // that are not chat messages (system tips, call logs) are passed silently. `more` (optional)
 // reports that a full batch was read and another call should follow immediately.
-long long StorePoll(Store *store, long long since, int login_sn, bool (*emit)(void *context, const char *event), void *context,
-                    bool *more = nullptr);
+long long StorePoll(Store *store, long long since, int login_sn, bool (*emit)(void *context, const char *event),
+                    void *context, bool *more = nullptr);
 // Rows the poller had to drop because their event could never fit the bus.
 long long StoreSkipped(Store *store);
 // Satori BidiList of messages for a channel. `next` is a token from a previous result (empty:
@@ -45,7 +46,8 @@ long long StoreSkipped(Store *store);
 // asc|desc for the returned page (the default, asc, is oldest first whatever the direction). The
 // result carries `prev` (more older messages exist) and `next` (more newer ones do) tokens.
 // Null on a malformed token or unknown channel id. Caller frees.
-cJSON *StoreMessageList(Store *store, const char *channel_id, const char *next, const char *direction, int limit, const char *order);
+cJSON *StoreMessageList(Store *store, const char *channel_id, const char *next, const char *direction, int limit,
+                        const char *order);
 // One message by id within a channel (the local id, or WeChat's server id). Caller frees.
 cJSON *StoreMessageGet(Store *store, const char *channel_id, const char *message_id);
 // Resolves a message-media kind (image|voice|video|videothumb|emoji|file) of local message
@@ -76,7 +78,8 @@ cJSON *StoreMemberRoleList(Store *store, const char *guild_id, const char *user_
 // caller must treat as "unknown", never as "nothing changed" or "everything is gone".
 struct RoomStamp {
     char name[80];
-    long long modify_time, member_count, version;  // cheap fingerprint (chatroomVersion is the server-side roster version)
+    long long modify_time, member_count,
+        version; // cheap fingerprint (chatroomVersion is the server-side roster version)
 };
 int StoreRoomStamps(Store *store, RoomStamp *out, int max);
 // The room's member ids, ';'-separated, in a malloc'd string ("" for an empty roster).
@@ -86,7 +89,7 @@ char *StoreFriendIds(Store *store);
 struct RevokedRow {
     long long id;
     char talker[80];
-    long long create_time;  // of the original message
+    long long create_time; // of the original message
     int is_send;
 };
 // Recalled messages (WeChat rewrites the original row in place) created after `since_ms`.

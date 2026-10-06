@@ -17,8 +17,8 @@ int main(int argc, char **argv) {
         return 1;
     }
     printf("exists=%d online=%d\n", account.exists ? 1 : 0, account.online ? 1 : 0);
-    printf("wxid=%s\nuin=%s\nalias=%s\nnick=%s\nmobile=%s\n", account.wxid, account.uin,
-           account.alias, account.nickname, account.mobile);
+    printf("wxid=%s\nuin=%s\nalias=%s\nnick=%s\nmobile=%s\n", account.wxid, account.uin, account.alias,
+           account.nickname, account.mobile);
     char *event = satori::AccountEvent("login-added", account, 1);
     if (event) {
         printf("event=%s\n", event);

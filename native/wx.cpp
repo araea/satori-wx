@@ -38,10 +38,10 @@ static JavaVM *g_vm = nullptr;
 static char g_process[256] = {0};
 static bool g_bootstrap_started = false;
 
-static jclass g_xp_class = nullptr;            // 全局引用
-static jmethodID g_mid_on_set_cb = nullptr;    // static Object onSetCallback(Object, Object)
-static jmethodID g_mid_on_start_task = nullptr;// static void onStartTask(Object, Object)
-static jmethodID g_mid_on_pkg = nullptr;       // static void onPkg(String, Object)
+static jclass g_xp_class = nullptr;             // 全局引用
+static jmethodID g_mid_on_set_cb = nullptr;     // static Object onSetCallback(Object, Object)
+static jmethodID g_mid_on_start_task = nullptr; // static void onStartTask(Object, Object)
+static jmethodID g_mid_on_pkg = nullptr;        // static void onPkg(String, Object)
 
 // Java 助手就绪前的 setCallback 调用暂存（早钩在 natives 注册瞬间就位，而 Java 侧要等
 // Application；这半秒窗口内的调用先记下，等 Boot 装好钩后补做包装并回注原实现）。
@@ -122,53 +122,41 @@ struct Target {
     // 状态
     bool installed;
     void *orig;
-    uintptr_t *slot;     // ArtMethod 的 data_ 槽（verify 用）
+    uintptr_t *slot; // ArtMethod 的 data_ 槽（verify 用）
     char note[160];
 };
 
 // 原实现取自微信自己的 .so；回调对象在进原实现之前先过 Java 侧的包装。
 
 static Target kTargets[] = {
-        {"com.tencent.mars.mm.MMStnManager", "OnJniSetCallback",
-         "(Ljava/lang/Object;)V", K_SET_CB, true,
-         false, nullptr, nullptr, "class-missing"},
-        {"com.tencent.mars.stn.StnManager", "OnJniStartTask",
-         "(Lcom/tencent/mars/stn/StnManager$Task;)V", K_START_TASK, true,
-         false, nullptr, nullptr, "class-missing"},
-        {"com.tencent.mars.stn.StnManager", "OnJniSetCallback",
-         "(Ljava/lang/Object;)V", K_SET_CB, false,
-         false, nullptr, nullptr, "class-missing"},
-        {"com.tencent.mars.account.AccountManager", "OnJniSetCallback",
-         "(Ljava/lang/Object;)V", K_SET_CB, false,
-         false, nullptr, nullptr, "class-missing"},
-        {"com.tencent.mars.account.AccountManager", "OnJniEncodeWxPkg",
-         "([BI)[B", K_ENCODE, true,
-         false, nullptr, nullptr, "class-missing"},
-        {"com.tencent.mars.account.AccountManager", "OnJniDecodeWxPkg",
-         "([B[I[I)[B", K_DECODE, true,
-         false, nullptr, nullptr, "class-missing"},
-        // AppManager 是 mars 的中枢管理器（M1 边界里也有它的 SetCallback）——微信很可能
-        // 经它注册回调，v0.1.4 之前一直没挂钩。
-        {"com.tencent.mars.app.AppManager", "OnJniSetCallback",
-         "(Ljava/lang/Object;)V", K_SET_CB, true,
-         false, nullptr, nullptr, "class-missing"},
-        // WCDB 的值侧：INSERT 的 SQL 只有 ?N 占位符，值在 bind 调用里。聊天内容是 TEXT 列。
-        {"com.tencent.wcdb.core.PreparedStatement", "bindText",
-         "(JLjava/lang/String;I)V", K_LOG, false,
-         false, nullptr, nullptr, "class-missing"},
-        {"com.tencent.wcdb.core.PreparedStatement", "bindBLOB",
-         "(J[BI)V", K_LOG, false,
-         false, nullptr, nullptr, "class-missing"},
-        {"com.tencent.wcdb.core.Handle", "executeSQL",
-         "(JLjava/lang/String;)Z", K_LOG, false,
-         false, nullptr, nullptr, "class-missing"},
-        // 密钥捕获：只读 args 的 byte[]，绝不回调 WCDB（v0.2.2 的教训——回调内碰库会崩）。
-        {"com.tencent.wcdb.core.Database", "setCipherKey",
-         "(J[BII)V", K_LOG, false,
-         false, nullptr, nullptr, "class-missing"},
-        {"com.tencent.wcdb.database.SQLiteConnection", "nativeSetKey",
-         "(J[B)V", K_LOG, false,
-         false, nullptr, nullptr, "class-missing"},
+    {"com.tencent.mars.mm.MMStnManager", "OnJniSetCallback", "(Ljava/lang/Object;)V", K_SET_CB, true, false, nullptr,
+     nullptr, "class-missing"},
+    {"com.tencent.mars.stn.StnManager", "OnJniStartTask", "(Lcom/tencent/mars/stn/StnManager$Task;)V", K_START_TASK,
+     true, false, nullptr, nullptr, "class-missing"},
+    {"com.tencent.mars.stn.StnManager", "OnJniSetCallback", "(Ljava/lang/Object;)V", K_SET_CB, false, false, nullptr,
+     nullptr, "class-missing"},
+    {"com.tencent.mars.account.AccountManager", "OnJniSetCallback", "(Ljava/lang/Object;)V", K_SET_CB, false, false,
+     nullptr, nullptr, "class-missing"},
+    {"com.tencent.mars.account.AccountManager", "OnJniEncodeWxPkg", "([BI)[B", K_ENCODE, true, false, nullptr, nullptr,
+     "class-missing"},
+    {"com.tencent.mars.account.AccountManager", "OnJniDecodeWxPkg", "([B[I[I)[B", K_DECODE, true, false, nullptr,
+     nullptr, "class-missing"},
+    // AppManager 是 mars 的中枢管理器（M1 边界里也有它的 SetCallback）——微信很可能
+    // 经它注册回调，v0.1.4 之前一直没挂钩。
+    {"com.tencent.mars.app.AppManager", "OnJniSetCallback", "(Ljava/lang/Object;)V", K_SET_CB, true, false, nullptr,
+     nullptr, "class-missing"},
+    // WCDB 的值侧：INSERT 的 SQL 只有 ?N 占位符，值在 bind 调用里。聊天内容是 TEXT 列。
+    {"com.tencent.wcdb.core.PreparedStatement", "bindText", "(JLjava/lang/String;I)V", K_LOG, false, false, nullptr,
+     nullptr, "class-missing"},
+    {"com.tencent.wcdb.core.PreparedStatement", "bindBLOB", "(J[BI)V", K_LOG, false, false, nullptr, nullptr,
+     "class-missing"},
+    {"com.tencent.wcdb.core.Handle", "executeSQL", "(JLjava/lang/String;)Z", K_LOG, false, false, nullptr, nullptr,
+     "class-missing"},
+    // 密钥捕获：只读 args 的 byte[]，绝不回调 WCDB（v0.2.2 的教训——回调内碰库会崩）。
+    {"com.tencent.wcdb.core.Database", "setCipherKey", "(J[BII)V", K_LOG, false, false, nullptr, nullptr,
+     "class-missing"},
+    {"com.tencent.wcdb.database.SQLiteConnection", "nativeSetKey", "(J[B)V", K_LOG, false, false, nullptr, nullptr,
+     "class-missing"},
 };
 static constexpr int kTargetCount = sizeof(kTargets) / sizeof(kTargets[0]);
 
@@ -184,8 +172,7 @@ static void MySetCallback(JNIEnv *env, jobject thiz, jobject callback, Target *t
         g_pending_cb = callback ? env->NewGlobalRef(callback) : nullptr;
         g_pending_t = t;
         pthread_mutex_unlock(&g_pending_mu);
-        NLog("setcb pre-ready: stashed cb=%p thiz=%p (%s)", (void *) callback, (void *) thiz,
-             t->method);
+        NLog("setcb pre-ready: stashed cb=%p thiz=%p (%s)", (void *)callback, (void *)thiz, t->method);
         using OrigFn0 = void (*)(JNIEnv *, jobject, jobject);
         if (t->orig != nullptr) {
             reinterpret_cast<OrigFn0>(t->orig)(env, thiz, callback);
@@ -226,7 +213,10 @@ static void MyStartTask(JNIEnv *env, jobject thiz, jobject task, Target *t) {
 static void LogPkg(JNIEnv *env, const char *tag, jobject payload) {
     if (g_mid_on_pkg == nullptr) return;
     jstring s = env->NewStringUTF(tag);
-    if (s == nullptr) { env->ExceptionClear(); return; }
+    if (s == nullptr) {
+        env->ExceptionClear();
+        return;
+    }
     env->CallStaticVoidMethod(g_xp_class, g_mid_on_pkg, s, payload);
     env->DeleteLocalRef(s);
     if (env->ExceptionCheck()) {
@@ -238,45 +228,31 @@ static void LogPkg(JNIEnv *env, const char *tag, jobject payload) {
 static jbyteArray MyEncode(JNIEnv *env, jobject thiz, jbyteArray in, jint len, Target *t) {
     LogPkg(env, "encode.in", in);
     using OrigFn = jbyteArray (*)(JNIEnv *, jobject, jbyteArray, jint);
-    jbyteArray out = t->orig != nullptr
-        ? reinterpret_cast<OrigFn>(t->orig)(env, thiz, in, len) : nullptr;
+    jbyteArray out = t->orig != nullptr ? reinterpret_cast<OrigFn>(t->orig)(env, thiz, in, len) : nullptr;
     LogPkg(env, "encode.out", out);
     return out;
 }
 
-static jbyteArray MyDecode(JNIEnv *env, jobject thiz, jbyteArray in, jintArray a1,
-                           jintArray a2, Target *t) {
+static jbyteArray MyDecode(JNIEnv *env, jobject thiz, jbyteArray in, jintArray a1, jintArray a2, Target *t) {
     LogPkg(env, "decode.in", in);
     using OrigFn = jbyteArray (*)(JNIEnv *, jobject, jbyteArray, jintArray, jintArray);
-    jbyteArray out = t->orig != nullptr
-        ? reinterpret_cast<OrigFn>(t->orig)(env, thiz, in, a1, a2) : nullptr;
+    jbyteArray out = t->orig != nullptr ? reinterpret_cast<OrigFn>(t->orig)(env, thiz, in, a1, a2) : nullptr;
     LogPkg(env, "decode.out", out);
     return out;
 }
 
 // 为每个 Target 生成一个具名 JNI 函数（JNINativeMethod 需要独立地址）。
-static void WxSetCb0(JNIEnv *env, jobject thiz, jobject a0) {
-    MySetCallback(env, thiz, a0, &kTargets[0]);
-}
-static void WxStartTask1(JNIEnv *env, jobject thiz, jobject a0) {
-    MyStartTask(env, thiz, a0, &kTargets[1]);
-}
-static void WxSetCb2(JNIEnv *env, jobject thiz, jobject a0) {
-    MySetCallback(env, thiz, a0, &kTargets[2]);
-}
-static void WxSetCb3(JNIEnv *env, jobject thiz, jobject a0) {
-    MySetCallback(env, thiz, a0, &kTargets[3]);
-}
+static void WxSetCb0(JNIEnv *env, jobject thiz, jobject a0) { MySetCallback(env, thiz, a0, &kTargets[0]); }
+static void WxStartTask1(JNIEnv *env, jobject thiz, jobject a0) { MyStartTask(env, thiz, a0, &kTargets[1]); }
+static void WxSetCb2(JNIEnv *env, jobject thiz, jobject a0) { MySetCallback(env, thiz, a0, &kTargets[2]); }
+static void WxSetCb3(JNIEnv *env, jobject thiz, jobject a0) { MySetCallback(env, thiz, a0, &kTargets[3]); }
 static jbyteArray WxEncode4(JNIEnv *env, jobject thiz, jbyteArray a0, jint a1) {
     return MyEncode(env, thiz, a0, a1, &kTargets[4]);
 }
-static jbyteArray WxDecode5(JNIEnv *env, jobject thiz, jbyteArray a0, jintArray a1,
-                            jintArray a2) {
+static jbyteArray WxDecode5(JNIEnv *env, jobject thiz, jbyteArray a0, jintArray a1, jintArray a2) {
     return MyDecode(env, thiz, a0, a1, a2, &kTargets[5]);
 }
-static void WxSetCb6(JNIEnv *env, jobject thiz, jobject a0) {
-    MySetCallback(env, thiz, a0, &kTargets[6]);
-}
+static void WxSetCb6(JNIEnv *env, jobject thiz, jobject a0) { MySetCallback(env, thiz, a0, &kTargets[6]); }
 
 // WCDB 值侧：参数在 native 侧就地格式化（不走 Java 助手，随时可用），经 onPkg 落盘。
 static void LogArgs(JNIEnv *env, const char *tag, const char *fmt, ...) {
@@ -286,14 +262,17 @@ static void LogArgs(JNIEnv *env, const char *tag, const char *fmt, ...) {
     vsnprintf(buf, sizeof(buf), fmt, ap);
     va_end(ap);
     jstring s = env->NewStringUTF(buf);
-    if (s == nullptr) { env->ExceptionClear(); return; }
+    if (s == nullptr) {
+        env->ExceptionClear();
+        return;
+    }
     LogPkg(env, tag, s);
     env->DeleteLocalRef(s);
 }
 
 static void WxBindText7(JNIEnv *env, jobject thiz, jlong h, jstring s, jint i) {
     const char *c = s ? env->GetStringUTFChars(s, nullptr) : nullptr;
-    LogArgs(env, "bindText", "h=%lld i=%d text=%s", (long long) h, i, c ? c : "null");
+    LogArgs(env, "bindText", "h=%lld i=%d text=%s", (long long)h, i, c ? c : "null");
     if (c) env->ReleaseStringUTFChars(s, c);
     using F = void (*)(JNIEnv *, jobject, jlong, jstring, jint);
     if (kTargets[7].orig) reinterpret_cast<F>(kTargets[7].orig)(env, thiz, h, s, i);
@@ -304,9 +283,9 @@ static void WxBindBlob8(JNIEnv *env, jobject thiz, jlong h, jbyteArray a, jint i
         jsize n = env->GetArrayLength(a);
         jbyte tmp[16] = {0};
         env->GetByteArrayRegion(a, 0, n < 16 ? n : 16, tmp);
-        int off = snprintf(buf, sizeof(buf), "h=%lld i=%d blob(%d)[", (long long) h, i, n);
-        for (int k = 0; k < n && k < 8 && off < (int) sizeof(buf) - 4; k++) {
-            off += snprintf(buf + off, sizeof(buf) - off, "%02x", (unsigned char) tmp[k]);
+        int off = snprintf(buf, sizeof(buf), "h=%lld i=%d blob(%d)[", (long long)h, i, n);
+        for (int k = 0; k < n && k < 8 && off < (int)sizeof(buf) - 4; k++) {
+            off += snprintf(buf + off, sizeof(buf) - off, "%02x", (unsigned char)tmp[k]);
         }
         snprintf(buf + off, sizeof(buf) - off, "%s]", n > 8 ? "…" : "");
     }
@@ -316,7 +295,7 @@ static void WxBindBlob8(JNIEnv *env, jobject thiz, jlong h, jbyteArray a, jint i
 }
 static jboolean WxExecSql9(JNIEnv *env, jobject thiz, jlong h, jstring s) {
     const char *c = s ? env->GetStringUTFChars(s, nullptr) : nullptr;
-    LogArgs(env, "execSQL", "h=%lld sql=%s", (long long) h, c ? c : "null");
+    LogArgs(env, "execSQL", "h=%lld sql=%s", (long long)h, c ? c : "null");
     if (c) env->ReleaseStringUTFChars(s, c);
     using F = jboolean (*)(JNIEnv *, jobject, jlong, jstring);
     return kTargets[9].orig ? reinterpret_cast<F>(kTargets[9].orig)(env, thiz, h, s) : JNI_FALSE;
@@ -332,42 +311,40 @@ static void HexOf(JNIEnv *env, jbyteArray a, char *out, size_t out_size) {
     env->GetByteArrayRegion(a, 0, cap, tmp);
     size_t off = 0;
     for (jsize i = 0; i < cap && off + 3 < out_size; i++) {
-        off += (size_t) snprintf(out + off, out_size - off, "%02x", (unsigned char) tmp[i]);
+        off += (size_t)snprintf(out + off, out_size - off, "%02x", (unsigned char)tmp[i]);
     }
 }
 
 // 均为静态原生：JNI 第二参是 jclass。
-static void WxSetCipher10(JNIEnv *env, jclass, jlong h, jbyteArray key, jint page,
-                          jint ver) {
+static void WxSetCipher10(JNIEnv *env, jclass, jlong h, jbyteArray key, jint page, jint ver) {
     char hex[160];
     HexOf(env, key, hex, sizeof(hex));
-    LogArgs(env, "setCipherKey", "h=%lld page=%d ver=%d key=%s", (long long) h, page, ver,
-            hex[0] ? hex : "(null)");
+    LogArgs(env, "setCipherKey", "h=%lld page=%d ver=%d key=%s", (long long)h, page, ver, hex[0] ? hex : "(null)");
     using F = void (*)(JNIEnv *, jclass, jlong, jbyteArray, jint, jint);
     if (kTargets[10].orig) reinterpret_cast<F>(kTargets[10].orig)(env, nullptr, h, key, page, ver);
 }
 static void WxNativeSetKey11(JNIEnv *env, jclass, jlong h, jbyteArray key) {
     char hex[160];
     HexOf(env, key, hex, sizeof(hex));
-    LogArgs(env, "nativeSetKey", "h=%lld key=%s", (long long) h, hex[0] ? hex : "(null)");
+    LogArgs(env, "nativeSetKey", "h=%lld key=%s", (long long)h, hex[0] ? hex : "(null)");
     using F = void (*)(JNIEnv *, jclass, jlong, jbyteArray);
     if (kTargets[11].orig) reinterpret_cast<F>(kTargets[11].orig)(env, nullptr, h, key);
 }
 
 static void *TargetFnFor(int idx) {
     switch (idx) {
-        case 0: return (void *) &WxSetCb0;
-        case 1: return (void *) &WxStartTask1;
-        case 2: return (void *) &WxSetCb2;
-        case 3: return (void *) &WxSetCb3;
-        case 4: return (void *) &WxEncode4;
-        case 5: return (void *) &WxDecode5;
-        case 6: return (void *) &WxSetCb6;
-        case 7: return (void *) &WxBindText7;
-        case 8: return (void *) &WxBindBlob8;
-        case 9: return (void *) &WxExecSql9;
-        case 10: return (void *) &WxSetCipher10;
-        case 11: return (void *) &WxNativeSetKey11;
+        case 0: return (void *)&WxSetCb0;
+        case 1: return (void *)&WxStartTask1;
+        case 2: return (void *)&WxSetCb2;
+        case 3: return (void *)&WxSetCb3;
+        case 4: return (void *)&WxEncode4;
+        case 5: return (void *)&WxDecode5;
+        case 6: return (void *)&WxSetCb6;
+        case 7: return (void *)&WxBindText7;
+        case 8: return (void *)&WxBindBlob8;
+        case 9: return (void *)&WxExecSql9;
+        case 10: return (void *)&WxSetCipher10;
+        case 11: return (void *)&WxNativeSetKey11;
     }
     return nullptr;
 }
@@ -385,10 +362,10 @@ static void *TargetFnFor(int idx) {
  *  false = 可委托的真函数（第三方 .so 或匿名可执行映射，path 给出归属）。 */
 static bool IsArtStub(uintptr_t p, char *path, size_t path_size) {
     MapInfo info;
-    if (!MappingOf((const void *) p, &info) || !info.exec) return true;
+    if (!MappingOf((const void *)p, &info) || !info.exec) return true;
     if (info.path[0] == '\0') {
         snprintf(path, path_size, "(anon-exec)");
-        return false;   // 匿名可执行映射：真函数（YTAG 的 trampoline 常落在这）
+        return false; // 匿名可执行映射：真函数（YTAG 的 trampoline 常落在这）
     }
     if (strstr(info.path, "/system/") != nullptr) return true;
     if (strstr(info.path, "/apex/") != nullptr) return true;
@@ -423,7 +400,7 @@ static int WriteDataFor(JNIEnv *env, Target *t, int idx, jclass cls) {
     auto *words = reinterpret_cast<uintptr_t *>(mid);
     uintptr_t cur = __atomic_load_n(&words[2], __ATOMIC_SEQ_CST);
     uintptr_t ours = reinterpret_cast<uintptr_t>(TargetFnFor(idx));
-    if (cur == ours) {   // 上一次重试已写成功
+    if (cur == ours) { // 上一次重试已写成功
         t->installed = true;
         t->slot = &words[2];
         snprintf(t->note, sizeof(t->note), "already-ours %s", t->method);
@@ -432,8 +409,7 @@ static int WriteDataFor(JNIEnv *env, Target *t, int idx, jclass cls) {
 
     char path[512];
     if (IsArtStub(cur, path, sizeof(path))) {
-        snprintf(t->note, sizeof(t->note), "stub data_=%p (%s.%s)", (void *) cur,
-                 t->cls, t->method);
+        snprintf(t->note, sizeof(t->note), "stub data_=%p (%s.%s)", (void *)cur, t->cls, t->method);
         return 3;
     }
 
@@ -441,11 +417,10 @@ static int WriteDataFor(JNIEnv *env, Target *t, int idx, jclass cls) {
     char before[240] = {0};
     size_t boff = 0;
     for (int i = 0; i < 8 && boff < sizeof(before) - 1; i++) {
-        boff += (size_t) snprintf(before + boff, sizeof(before) - boff, "%s%lx",
-                                  i ? " " : "", (unsigned long) words[i]);
+        boff += (size_t)snprintf(before + boff, sizeof(before) - boff, "%s%lx", i ? " " : "", (unsigned long)words[i]);
     }
 
-    t->orig = (void *) cur;
+    t->orig = (void *)cur;
     t->slot = &words[2];
     __atomic_store_n(&words[2], ours, __ATOMIC_SEQ_CST);
     if (__atomic_load_n(&words[2], __ATOMIC_SEQ_CST) != ours) {
@@ -453,15 +428,14 @@ static int WriteDataFor(JNIEnv *env, Target *t, int idx, jclass cls) {
         return 4;
     }
     t->installed = true;
-    snprintf(t->note, sizeof(t->note), "installed orig=%p in %s (%s)", t->orig,
-             BaseOf(path), t->method);
+    snprintf(t->note, sizeof(t->note), "installed orig=%p in %s (%s)", t->orig, BaseOf(path), t->method);
     NLog("install: %s.%s %s | before: %s", t->cls, t->method, t->note, before);
     return 1;
 }
 
 static int InstallOne(JNIEnv *env, jobject loader, Target *t, int idx) {
     if (t->installed) return 0;
-    jclass cls = env->FindClass(t->cls);   // 内嵌 loader 的父是宿主，直接找得到
+    jclass cls = env->FindClass(t->cls); // 内嵌 loader 的父是宿主，直接找得到
     if (cls == nullptr) {
         env->ExceptionClear();
         snprintf(t->note, sizeof(t->note), "class-missing %s", t->cls);
@@ -480,8 +454,8 @@ static jstring NativeInstallHooks(JNIEnv *env, jclass, jobject loader) {
     for (int i = 0; i < kTargetCount; i++) {
         int r = InstallOne(env, loader, &kTargets[i], i);
         if (kTargets[i].required && r >= 2) all_required = false;
-        off += (size_t) snprintf(status + off, sizeof(status) - off, "%s%s=%s",
-                                 off ? "; " : "", kTargets[i].method, kTargets[i].note);
+        off += (size_t)snprintf(status + off, sizeof(status) - off, "%s%s=%s", off ? "; " : "", kTargets[i].method,
+                                kTargets[i].note);
         if (off >= sizeof(status) - 1) break;
     }
     // 状态没变化就不重复落盘（重试循环每 500ms 一次，全量打会把 native.log 刷成几百 KB）。
@@ -527,8 +501,7 @@ static jstring NativeFlushPending(JNIEnv *env, jclass) {
     reinterpret_cast<OrigFn>(t->orig)(env, thiz, wrapped);
     env->DeleteGlobalRef(thiz);
     env->DeleteGlobalRef(cb);
-    NLog("pending setcb flushed via %s (wrapped=%s)", t->method,
-         wrapped != cb ? "yes" : "no");
+    NLog("pending setcb flushed via %s (wrapped=%s)", t->method, wrapped != cb ? "yes" : "no");
     return env->NewStringUTF(wrapped != cb ? "flush: wrapped" : "flush: passthrough");
 }
 
@@ -548,10 +521,9 @@ static jstring NativeVerifyHooks(JNIEnv *env, jclass) {
         if (cur != ours) {
             __atomic_store_n(t->slot, ours, __ATOMIC_SEQ_CST);
             g_flips++;
-            NLog("verify: %s flipped to %p, rewrote (%d time)", t->method, (void *) cur,
-                 g_flips);
-            off += (size_t) snprintf(status + off, sizeof(status) - off, "%s%s=FLIPPED(%d)",
-                                     off ? "; " : "", t->method, g_flips);
+            NLog("verify: %s flipped to %p, rewrote (%d time)", t->method, (void *)cur, g_flips);
+            off += (size_t)snprintf(status + off, sizeof(status) - off, "%s%s=FLIPPED(%d)", off ? "; " : "", t->method,
+                                    g_flips);
         }
     }
     char out[1600];
@@ -563,8 +535,7 @@ static jstring NativeHookInfo(JNIEnv *env, jclass) {
     char buf[512] = {0};
     size_t off = 0;
     for (int i = 0; i < kTargetCount && off < sizeof(buf) - 1; i++) {
-        off += (size_t) snprintf(buf + off, sizeof(buf) - off, "%s%s", i ? "; " : "",
-                                 kTargets[i].note);
+        off += (size_t)snprintf(buf + off, sizeof(buf) - off, "%s%s", i ? "; " : "", kTargets[i].note);
     }
     return env->NewStringUTF(buf);
 }
@@ -597,15 +568,14 @@ static jstring NativePatchMethod(JNIEnv *env, jclass, jobject method, jint idx) 
     if (IsArtStub(cur, path, sizeof(path))) {
         return env->NewStringUTF("retry:stub");
     }
-    t->orig = (void *) cur;
+    t->orig = (void *)cur;
     t->slot = &words[2];
     __atomic_store_n(&words[2], ours, __ATOMIC_SEQ_CST);
     if (__atomic_load_n(&words[2], __ATOMIC_SEQ_CST) != ours) {
         return env->NewStringUTF("write-did-not-stick");
     }
     t->installed = true;
-    snprintf(t->note, sizeof(t->note), "installed-via-reflect orig=%p in %s (%s)", t->orig,
-             BaseOf(path), t->method);
+    snprintf(t->note, sizeof(t->note), "installed-via-reflect orig=%p in %s (%s)", t->orig, BaseOf(path), t->method);
     NLog("install(reflect): %s.%s %s", t->cls, t->method, t->note);
     return env->NewStringUTF("ok");
 }
@@ -635,19 +605,17 @@ static bool AllRequiredInstalled() {
 
 static void RestoreGlobalRN() {
     if (__atomic_exchange_n(&g_rn_active, 0, __ATOMIC_SEQ_CST) == 0) return;
-    mprotect((void *) g_rn_page, g_rn_page_size, g_rn_prot | PROT_WRITE);
+    mprotect((void *)g_rn_page, g_rn_page_size, g_rn_prot | PROT_WRITE);
     *g_rn_slot = g_orig_rn;
     if (g_rn_prot != (PROT_READ | PROT_WRITE)) {
-        mprotect((void *) g_rn_page, g_rn_page_size, g_rn_prot);
+        mprotect((void *)g_rn_page, g_rn_page_size, g_rn_prot);
     }
     NLog("global RegisterNatives restored");
 }
 
-static jint MyGlobalRegisterNatives(JNIEnv *env, jclass clazz,
-                                    const JNINativeMethod *methods, jint n) {
+static jint MyGlobalRegisterNatives(JNIEnv *env, jclass clazz, const JNINativeMethod *methods, jint n) {
     using OrigRn = jint (*)(JNIEnv *, jclass, const JNINativeMethod *, jint);
-    jint r = g_orig_rn != nullptr
-        ? reinterpret_cast<OrigRn>(g_orig_rn)(env, clazz, methods, n) : JNI_ERR;
+    jint r = g_orig_rn != nullptr ? reinterpret_cast<OrigRn>(g_orig_rn)(env, clazz, methods, n) : JNI_ERR;
     if (r == JNI_OK && __atomic_load_n(&g_rn_active, __ATOMIC_SEQ_CST)) {
         pthread_mutex_lock(&g_rn_mu);
         for (jint i = 0; i < n; i++) {
@@ -655,8 +623,7 @@ static jint MyGlobalRegisterNatives(JNIEnv *env, jclass clazz,
             const char *sig = methods[i].signature ? methods[i].signature : "";
             for (int k = 0; k < kTargetCount; k++) {
                 Target *t = &kTargets[k];
-                if (t->installed || strcmp(name, t->method) != 0 ||
-                    strcmp(sig, t->sig) != 0) {
+                if (t->installed || strcmp(name, t->method) != 0 || strcmp(sig, t->sig) != 0) {
                     continue;
                 }
                 // 此时 data_ 已落成微信（或 YTAG）的实现；同步直写，必然早于 SetCallback。
@@ -675,14 +642,13 @@ static jint MyGlobalRegisterNatives(JNIEnv *env, jclass clazz,
 static bool PatchGlobalRN(JNIEnv *env) {
     g_jni_table = env->functions;
     auto *slot = &g_jni_table->RegisterNatives;
-    g_rn_slot = reinterpret_cast<void **>(
-            const_cast<void *>(reinterpret_cast<const void *>(slot)));
+    g_rn_slot = reinterpret_cast<void **>(const_cast<void *>(reinterpret_cast<const void *>(slot)));
     g_orig_rn = *g_rn_slot;
 
     long ps = sysconf(_SC_PAGESIZE);
     if (ps <= 0) ps = 4096;
-    g_rn_page_size = (size_t) ps;
-    g_rn_page = (uintptr_t) g_rn_slot & ~((uintptr_t) ps - 1);
+    g_rn_page_size = (size_t)ps;
+    g_rn_page = (uintptr_t)g_rn_slot & ~((uintptr_t)ps - 1);
     int prot = -1;
     FILE *f = fopen("/proc/self/maps", "re");
     if (f != nullptr) {
@@ -691,7 +657,7 @@ static bool PatchGlobalRN(JNIEnv *env) {
             uintptr_t s = 0, e = 0;
             char perms[8] = {0};
             if (sscanf(line, "%lx-%lx %7s", &s, &e, perms) != 3) continue;
-            if ((uintptr_t) g_rn_slot >= s && (uintptr_t) g_rn_slot < e) {
+            if ((uintptr_t)g_rn_slot >= s && (uintptr_t)g_rn_slot < e) {
                 prot = 0;
                 if (strchr(perms, 'r')) prot |= PROT_READ;
                 if (strchr(perms, 'w')) prot |= PROT_WRITE;
@@ -701,15 +667,18 @@ static bool PatchGlobalRN(JNIEnv *env) {
         }
         fclose(f);
     }
-    if (prot < 0) { NLog("global RN: cannot read page prot, skip"); return false; }
+    if (prot < 0) {
+        NLog("global RN: cannot read page prot, skip");
+        return false;
+    }
     g_rn_prot = prot;
-    if (mprotect((void *) g_rn_page, g_rn_page_size, prot | PROT_WRITE) != 0) {
+    if (mprotect((void *)g_rn_page, g_rn_page_size, prot | PROT_WRITE) != 0) {
         NLog("global RN: mprotect failed: %s", strerror(errno));
         return false;
     }
-    *g_rn_slot = (void *) &MyGlobalRegisterNatives;
+    *g_rn_slot = (void *)&MyGlobalRegisterNatives;
     if (prot != (PROT_READ | PROT_WRITE)) {
-        mprotect((void *) g_rn_page, g_rn_page_size, prot);
+        mprotect((void *)g_rn_page, g_rn_page_size, prot);
     }
     __atomic_store_n(&g_rn_active, 1, __ATOMIC_SEQ_CST);
     NLog("global RegisterNatives wrapped (orig=%p)", g_orig_rn);
@@ -738,18 +707,17 @@ static void StartEarly(JNIEnv *env) {
  *  → mInitialApplication。 */
 static jobject WaitForApplication(JNIEnv *env, int timeout_ms) {
     jclass at_cls = env->FindClass("android/app/ActivityThread");
-    if (at_cls == nullptr) { env->ExceptionClear(); return nullptr; }
-    jmethodID current_app = env->GetStaticMethodID(at_cls, "currentApplication",
-                                                   "()Landroid/app/Application;");
+    if (at_cls == nullptr) {
+        env->ExceptionClear();
+        return nullptr;
+    }
+    jmethodID current_app = env->GetStaticMethodID(at_cls, "currentApplication", "()Landroid/app/Application;");
     env->ExceptionClear();
-    jmethodID current_at = env->GetStaticMethodID(at_cls, "currentActivityThread",
-                                                  "()Landroid/app/ActivityThread;");
+    jmethodID current_at = env->GetStaticMethodID(at_cls, "currentActivityThread", "()Landroid/app/ActivityThread;");
     env->ExceptionClear();
-    jmethodID get_app = env->GetMethodID(at_cls, "getApplication",
-                                         "()Landroid/app/Application;");
+    jmethodID get_app = env->GetMethodID(at_cls, "getApplication", "()Landroid/app/Application;");
     env->ExceptionClear();
-    jfieldID initial_app = env->GetFieldID(at_cls, "mInitialApplication",
-                                           "Landroid/app/Application;");
+    jfieldID initial_app = env->GetFieldID(at_cls, "mInitialApplication", "Landroid/app/Application;");
     env->ExceptionClear();
     if (current_app == nullptr && current_at == nullptr) {
         NLog("ActivityThread has no currentApplication/currentActivityThread");
@@ -759,19 +727,31 @@ static jobject WaitForApplication(JNIEnv *env, int timeout_ms) {
         jobject a = nullptr;
         if (current_app != nullptr) {
             a = env->CallStaticObjectMethod(at_cls, current_app);
-            if (env->ExceptionCheck()) { env->ExceptionClear(); a = nullptr; }
+            if (env->ExceptionCheck()) {
+                env->ExceptionClear();
+                a = nullptr;
+            }
         }
         if (a == nullptr && current_at != nullptr) {
             jobject at = env->CallStaticObjectMethod(at_cls, current_at);
-            if (env->ExceptionCheck()) { env->ExceptionClear(); at = nullptr; }
+            if (env->ExceptionCheck()) {
+                env->ExceptionClear();
+                at = nullptr;
+            }
             if (at != nullptr) {
                 if (get_app != nullptr) {
                     a = env->CallObjectMethod(at, get_app);
-                    if (env->ExceptionCheck()) { env->ExceptionClear(); a = nullptr; }
+                    if (env->ExceptionCheck()) {
+                        env->ExceptionClear();
+                        a = nullptr;
+                    }
                 }
                 if (a == nullptr && initial_app != nullptr) {
                     a = env->GetObjectField(at, initial_app);
-                    if (env->ExceptionCheck()) { env->ExceptionClear(); a = nullptr; }
+                    if (env->ExceptionCheck()) {
+                        env->ExceptionClear();
+                        a = nullptr;
+                    }
                 }
             }
         }
@@ -783,51 +763,74 @@ static jobject WaitForApplication(JNIEnv *env, int timeout_ms) {
 
 static jobject HostLoaderFromApplication(JNIEnv *env, jobject app) {
     jclass context_cls = env->FindClass("android/content/Context");
-    jmethodID get_loader = env->GetMethodID(context_cls, "getClassLoader",
-                                            "()Ljava/lang/ClassLoader;");
-    if (get_loader == nullptr) { env->ExceptionClear(); return nullptr; }
+    jmethodID get_loader = env->GetMethodID(context_cls, "getClassLoader", "()Ljava/lang/ClassLoader;");
+    if (get_loader == nullptr) {
+        env->ExceptionClear();
+        return nullptr;
+    }
     jobject loader = env->CallObjectMethod(app, get_loader);
-    if (env->ExceptionCheck()) { env->ExceptionClear(); return nullptr; }
+    if (env->ExceptionCheck()) {
+        env->ExceptionClear();
+        return nullptr;
+    }
     return loader;
 }
 
 static jobject MakeEmbeddedLoader(JNIEnv *env, jobject parent) {
     const auto *begin = satori_dex_start;
     size_t size = static_cast<size_t>(satori_dex_end - satori_dex_start);
-    if (size == 0) { NLog("embedded dex is empty"); return nullptr; }
+    if (size == 0) {
+        NLog("embedded dex is empty");
+        return nullptr;
+    }
     jobject buffer = env->NewDirectByteBuffer(const_cast<uint8_t *>(begin), size);
-    if (buffer == nullptr) { NLog("NewDirectByteBuffer failed"); return nullptr; }
+    if (buffer == nullptr) {
+        NLog("NewDirectByteBuffer failed");
+        return nullptr;
+    }
     jclass loader_cls = env->FindClass("dalvik/system/InMemoryDexClassLoader");
-    if (loader_cls == nullptr) { env->ExceptionClear(); return nullptr; }
-    jmethodID ctor = env->GetMethodID(loader_cls, "<init>",
-                                      "(Ljava/nio/ByteBuffer;Ljava/lang/ClassLoader;)V");
-    if (ctor == nullptr) { env->ExceptionClear(); return nullptr; }
+    if (loader_cls == nullptr) {
+        env->ExceptionClear();
+        return nullptr;
+    }
+    jmethodID ctor = env->GetMethodID(loader_cls, "<init>", "(Ljava/nio/ByteBuffer;Ljava/lang/ClassLoader;)V");
+    if (ctor == nullptr) {
+        env->ExceptionClear();
+        return nullptr;
+    }
     jobject loader = env->NewObject(loader_cls, ctor, buffer, parent);
-    if (loader == nullptr) { env->ExceptionClear(); return nullptr; }
+    if (loader == nullptr) {
+        env->ExceptionClear();
+        return nullptr;
+    }
     return loader;
 }
 
 static bool StartJava(JNIEnv *env, jobject loader, const char *process) {
     jclass boot = WxLoadClass(env, loader, "com.satori.wx.Boot");
-    if (boot == nullptr) { NLog("com.satori.wx.Boot not found in embedded dex"); return false; }
-    jmethodID start = env->GetStaticMethodID(boot, "start",
-                                             "(Ljava/lang/String;Ljava/lang/ClassLoader;)V");
-    if (start == nullptr) { NLog("Boot.start(String, ClassLoader) not found"); return false; }
+    if (boot == nullptr) {
+        NLog("com.satori.wx.Boot not found in embedded dex");
+        return false;
+    }
+    jmethodID start = env->GetStaticMethodID(boot, "start", "(Ljava/lang/String;Ljava/lang/ClassLoader;)V");
+    if (start == nullptr) {
+        NLog("Boot.start(String, ClassLoader) not found");
+        return false;
+    }
 
     jclass xp = WxLoadClass(env, loader, kXpClass);
-    if (xp == nullptr) { NLog("Xp class not found"); return false; }
+    if (xp == nullptr) {
+        NLog("Xp class not found");
+        return false;
+    }
     static const JNINativeMethod kXpMethods[] = {
-            {"nativeInstallHooks", "(Ljava/lang/ClassLoader;)Ljava/lang/String;",
-             reinterpret_cast<void *>(&NativeInstallHooks)},
-            {"nativeHookInfo", "()Ljava/lang/String;",
-             reinterpret_cast<void *>(&NativeHookInfo)},
-            {"nativeVerifyHooks", "()Ljava/lang/String;",
-             reinterpret_cast<void *>(&NativeVerifyHooks)},
-            {"nativeFlushPending", "()Ljava/lang/String;",
-             reinterpret_cast<void *>(&NativeFlushPending)},
-            {"nativePatchMethod",
-             "(Ljava/lang/reflect/Method;I)Ljava/lang/String;",
-             reinterpret_cast<void *>(&NativePatchMethod)},
+        {"nativeInstallHooks", "(Ljava/lang/ClassLoader;)Ljava/lang/String;",
+         reinterpret_cast<void *>(&NativeInstallHooks)},
+        {"nativeHookInfo", "()Ljava/lang/String;", reinterpret_cast<void *>(&NativeHookInfo)},
+        {"nativeVerifyHooks", "()Ljava/lang/String;", reinterpret_cast<void *>(&NativeVerifyHooks)},
+        {"nativeFlushPending", "()Ljava/lang/String;", reinterpret_cast<void *>(&NativeFlushPending)},
+        {"nativePatchMethod", "(Ljava/lang/reflect/Method;I)Ljava/lang/String;",
+         reinterpret_cast<void *>(&NativePatchMethod)},
     };
     if (env->RegisterNatives(xp, kXpMethods, 5) != JNI_OK) {
         env->ExceptionDescribe();
@@ -836,13 +839,10 @@ static bool StartJava(JNIEnv *env, jobject loader, const char *process) {
         return false;
     }
     g_xp_class = static_cast<jclass>(env->NewGlobalRef(xp));
-    g_mid_on_set_cb = env->GetStaticMethodID(
-            xp, "onSetCallback",
-            "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;");
-    g_mid_on_start_task = env->GetStaticMethodID(xp, "onStartTask",
-                                                 "(Ljava/lang/Object;Ljava/lang/Object;)V");
-    g_mid_on_pkg = env->GetStaticMethodID(xp, "onPkg",
-                                          "(Ljava/lang/String;Ljava/lang/Object;)V");
+    g_mid_on_set_cb =
+        env->GetStaticMethodID(xp, "onSetCallback", "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;");
+    g_mid_on_start_task = env->GetStaticMethodID(xp, "onStartTask", "(Ljava/lang/Object;Ljava/lang/Object;)V");
+    g_mid_on_pkg = env->GetStaticMethodID(xp, "onPkg", "(Ljava/lang/String;Ljava/lang/Object;)V");
     if (env->ExceptionCheck()) {
         env->ExceptionDescribe();
         env->ExceptionClear();
@@ -864,22 +864,37 @@ static bool StartJava(JNIEnv *env, jobject loader, const char *process) {
 static void *BootstrapThread(void *) {
     bool attached = false;
     JNIEnv *env = WxGetEnv(g_vm, &attached);
-    if (env == nullptr) { NLog("cannot attach bootstrap thread"); return nullptr; }
+    if (env == nullptr) {
+        NLog("cannot attach bootstrap thread");
+        return nullptr;
+    }
 
     // 先放开 hidden API：下面要问的 ActivityThread 那几个入口都是 hidden 的。
     WxExemptHiddenApis(env);
 
     jobject app = WaitForApplication(env, 120000);
-    if (app == nullptr) { NLog("Application never appeared"); WxReleaseEnv(g_vm, attached); return nullptr; }
+    if (app == nullptr) {
+        NLog("Application never appeared");
+        WxReleaseEnv(g_vm, attached);
+        return nullptr;
+    }
     NLog("application ready in %s", g_process);
 
     jobject host = HostLoaderFromApplication(env, app);
-    if (host == nullptr) { NLog("no host classloader"); WxReleaseEnv(g_vm, attached); return nullptr; }
+    if (host == nullptr) {
+        NLog("no host classloader");
+        WxReleaseEnv(g_vm, attached);
+        return nullptr;
+    }
     NLog("host classloader captured");
 
     // 内嵌 dex 的父加载器用宿主的：模块代码可以直接按名字引用微信的类。
     jobject loader = MakeEmbeddedLoader(env, host);
-    if (loader == nullptr) { NLog("cannot create embedded dex loader"); WxReleaseEnv(g_vm, attached); return nullptr; }
+    if (loader == nullptr) {
+        NLog("cannot create embedded dex loader");
+        WxReleaseEnv(g_vm, attached);
+        return nullptr;
+    }
 
     StartJava(env, loader, g_process);
     WxReleaseEnv(g_vm, attached);
@@ -891,7 +906,7 @@ static void *BootstrapThread(void *) {
 class WxModule : public zygisk::ModuleBase {
 public:
     void onLoad(zygisk::Api *api, JNIEnv *env) override {
-        (void) api;
+        (void)api;
         env_ = env;
         env->GetJavaVM(&g_vm);
     }
@@ -909,7 +924,7 @@ public:
     void postAppSpecialize(const zygisk::AppSpecializeArgs *) override {
         if (g_process[0] == '\0' || g_bootstrap_started) return;
         g_bootstrap_started = true;
-        StartEarly(env_);   // 抢在微信任何业务代码之前包住全局 RegisterNatives
+        StartEarly(env_); // 抢在微信任何业务代码之前包住全局 RegisterNatives
         pthread_t t;
         if (pthread_create(&t, nullptr, BootstrapThread, nullptr) == 0) {
             pthread_detach(t);

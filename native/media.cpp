@@ -25,34 +25,53 @@ struct Md5 {
             0xf4292244, 0x432aff97, 0xab9423a7, 0xfc93a039, 0x655b59c3, 0x8f0ccc92, 0xffeff47d, 0x85845dd1,
             0x6fa87e4f, 0xfe2ce6e0, 0xa3014314, 0x4e0811a1, 0xf7537e82, 0xbd3af235, 0x2ad7d2bb, 0xeb86d391};
         static const unsigned s[64] = {7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22,
-                                       5, 9, 14, 20, 5, 9, 14, 20, 5, 9, 14, 20, 5, 9, 14, 20,
+                                       5, 9,  14, 20, 5, 9,  14, 20, 5, 9,  14, 20, 5, 9,  14, 20,
                                        4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23,
                                        6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21};
         uint32_t m[16];
         for (int i = 0; i < 16; ++i)
-            m[i] = uint32_t(chunk[i * 4]) | uint32_t(chunk[i * 4 + 1]) << 8 | uint32_t(chunk[i * 4 + 2]) << 16 | uint32_t(chunk[i * 4 + 3]) << 24;
+            m[i] = uint32_t(chunk[i * 4]) | uint32_t(chunk[i * 4 + 1]) << 8 | uint32_t(chunk[i * 4 + 2]) << 16 |
+                   uint32_t(chunk[i * 4 + 3]) << 24;
         uint32_t a = state[0], b = state[1], c = state[2], d = state[3];
         for (unsigned i = 0; i < 64; ++i) {
             uint32_t f;
             unsigned g;
-            if (i < 16) { f = (b & c) | (~b & d); g = i; }
-            else if (i < 32) { f = (d & b) | (~d & c); g = (5 * i + 1) % 16; }
-            else if (i < 48) { f = b ^ c ^ d; g = (3 * i + 5) % 16; }
-            else { f = c ^ (b | ~d); g = (7 * i) % 16; }
+            if (i < 16) {
+                f = (b & c) | (~b & d);
+                g = i;
+            } else if (i < 32) {
+                f = (d & b) | (~d & c);
+                g = (5 * i + 1) % 16;
+            } else if (i < 48) {
+                f = b ^ c ^ d;
+                g = (3 * i + 5) % 16;
+            } else {
+                f = c ^ (b | ~d);
+                g = (7 * i) % 16;
+            }
             const uint32_t next = d;
-            d = c; c = b;
+            d = c;
+            c = b;
             b = b + Rotl(a + f + k[i] + m[g], s[i]);
             a = next;
         }
-        state[0] += a; state[1] += b; state[2] += c; state[3] += d;
+        state[0] += a;
+        state[1] += b;
+        state[2] += c;
+        state[3] += d;
     }
     void Update(const unsigned char *data, size_t size) {
         length += size;
         while (size) {
             const size_t take = 64 - used < size ? 64 - used : size;
             memcpy(block + used, data, take);
-            used += take; data += take; size -= take;
-            if (used == 64) { Transform(block); used = 0; }
+            used += take;
+            data += take;
+            size -= take;
+            if (used == 64) {
+                Transform(block);
+                used = 0;
+            }
         }
     }
     void Final(unsigned char out[16]) {
@@ -71,7 +90,8 @@ struct Md5 {
 
 // ---- SHA-256 --------------------------------------------------------------------------------
 struct Sha {
-    uint32_t state[8] = {0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19};
+    uint32_t state[8] = {0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a,
+                         0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19};
     uint64_t length = 0;
     unsigned char block[64];
     size_t used = 0;
@@ -87,13 +107,15 @@ struct Sha {
             0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2};
         uint32_t w[64];
         for (int i = 0; i < 16; ++i)
-            w[i] = uint32_t(chunk[i * 4]) << 24 | uint32_t(chunk[i * 4 + 1]) << 16 | uint32_t(chunk[i * 4 + 2]) << 8 | uint32_t(chunk[i * 4 + 3]);
+            w[i] = uint32_t(chunk[i * 4]) << 24 | uint32_t(chunk[i * 4 + 1]) << 16 | uint32_t(chunk[i * 4 + 2]) << 8 |
+                   uint32_t(chunk[i * 4 + 3]);
         for (int i = 16; i < 64; ++i) {
             const uint32_t s0 = Rotr(w[i - 15], 7) ^ Rotr(w[i - 15], 18) ^ (w[i - 15] >> 3);
             const uint32_t s1 = Rotr(w[i - 2], 17) ^ Rotr(w[i - 2], 19) ^ (w[i - 2] >> 10);
             w[i] = w[i - 16] + s0 + w[i - 7] + s1;
         }
-        uint32_t a = state[0], b = state[1], c = state[2], d = state[3], e = state[4], f = state[5], g = state[6], h = state[7];
+        uint32_t a = state[0], b = state[1], c = state[2], d = state[3], e = state[4], f = state[5], g = state[6],
+                 h = state[7];
         for (int i = 0; i < 64; ++i) {
             const uint32_t s1 = Rotr(e, 6) ^ Rotr(e, 11) ^ Rotr(e, 25);
             const uint32_t ch = (e & f) ^ (~e & g);
@@ -101,17 +123,36 @@ struct Sha {
             const uint32_t s0 = Rotr(a, 2) ^ Rotr(a, 13) ^ Rotr(a, 22);
             const uint32_t maj = (a & b) ^ (a & c) ^ (b & c);
             const uint32_t t2 = s0 + maj;
-            h = g; g = f; f = e; e = d + t1; d = c; c = b; b = a; a = t1 + t2;
+            h = g;
+            g = f;
+            f = e;
+            e = d + t1;
+            d = c;
+            c = b;
+            b = a;
+            a = t1 + t2;
         }
-        state[0] += a; state[1] += b; state[2] += c; state[3] += d; state[4] += e; state[5] += f; state[6] += g; state[7] += h;
+        state[0] += a;
+        state[1] += b;
+        state[2] += c;
+        state[3] += d;
+        state[4] += e;
+        state[5] += f;
+        state[6] += g;
+        state[7] += h;
     }
     void Update(const unsigned char *data, size_t size) {
         length += size;
         while (size) {
             const size_t take = 64 - used < size ? 64 - used : size;
             memcpy(block + used, data, take);
-            used += take; data += take; size -= take;
-            if (used == 64) { Transform(block); used = 0; }
+            used += take;
+            data += take;
+            size -= take;
+            if (used == 64) {
+                Transform(block);
+                used = 0;
+            }
         }
     }
     void Final(unsigned char out[32]) {
@@ -132,7 +173,10 @@ bool g_key_set = false;
 
 void Hex(const unsigned char *bytes, size_t n, char *out) {
     static const char digits[] = "0123456789abcdef";
-    for (size_t i = 0; i < n; ++i) { out[i * 2] = digits[bytes[i] >> 4]; out[i * 2 + 1] = digits[bytes[i] & 15]; }
+    for (size_t i = 0; i < n; ++i) {
+        out[i * 2] = digits[bytes[i] >> 4];
+        out[i * 2 + 1] = digits[bytes[i] & 15];
+    }
     out[n * 2] = 0;
 }
 } // namespace
@@ -153,10 +197,15 @@ void Sha256(const void *data, size_t size, unsigned char out[32]) {
 
 void HmacSha256(const void *key, size_t key_size, const void *data, size_t size, unsigned char out[32]) {
     unsigned char block[64] = {};
-    if (key_size > 64) Sha256(key, key_size, block);
-    else if (key_size) memcpy(block, key, key_size);
+    if (key_size > 64)
+        Sha256(key, key_size, block);
+    else if (key_size)
+        memcpy(block, key, key_size);
     unsigned char inner_pad[64], outer_pad[64];
-    for (int i = 0; i < 64; ++i) { inner_pad[i] = block[i] ^ 0x36; outer_pad[i] = block[i] ^ 0x5c; }
+    for (int i = 0; i < 64; ++i) {
+        inner_pad[i] = block[i] ^ 0x36;
+        outer_pad[i] = block[i] ^ 0x5c;
+    }
     Sha inner;
     inner.Update(inner_pad, 64);
     inner.Update(static_cast<const unsigned char *>(data), size);
@@ -178,7 +227,8 @@ void MediaSign(const char *user, const char *kind, const char *id, char out[kMed
     char message[512];
     const int n = snprintf(message, sizeof(message), "%s\n%s\n%s", user ? user : "", kind ? kind : "", id ? id : "");
     unsigned char digest[32];
-    HmacSha256(g_key, sizeof(g_key), message, n > 0 && static_cast<size_t>(n) < sizeof(message) ? static_cast<size_t>(n) : 0, digest);
+    HmacSha256(g_key, sizeof(g_key), message,
+               n > 0 && static_cast<size_t>(n) < sizeof(message) ? static_cast<size_t>(n) : 0, digest);
     Hex(digest, 8, out);
 }
 

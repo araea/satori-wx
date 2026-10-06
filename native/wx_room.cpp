@@ -26,7 +26,7 @@ jmethodID g_p_ctor = nullptr, g_p_do = nullptr;
 jmethodID g_b_ctor = nullptr, g_e_ctor = nullptr;
 jmethodID g_z2_d = nullptr;
 jmethodID g_linked_ctor = nullptr, g_list_add = nullptr;
-jfieldID g_i_f = nullptr;  // com.tencent.mm.modelbase.i.f : the request object
+jfieldID g_i_f = nullptr; // com.tencent.mm.modelbase.i.f : the request object
 
 void Detail(char *out, size_t size, const char *format, ...) {
     if (!out || !size) return;
@@ -60,7 +60,10 @@ jfieldID Field(JNIEnv *env, jclass cls, const char *name, const char *signature)
 bool Resolve(JNIEnv *env, char *detail, size_t size) {
     if (g_ready) return true;
     char reason[160] = {};
-    if (!ReflectResolve(reason, sizeof(reason))) { Detail(detail, size, "%s", reason); return false; }
+    if (!ReflectResolve(reason, sizeof(reason))) {
+        Detail(detail, size, "%s", reason);
+        return false;
+    }
     auto load = [](const char *name) { return static_cast<jclass>(ReflectLoad(name)); };
     jclass p = load("qn.p"), b = load("qn.b"), e = load("qn.e");
     jclass z2 = load("com.tencent.mm.modelbase.z2");
@@ -73,7 +76,8 @@ bool Resolve(JNIEnv *env, char *detail, size_t size) {
         g_p_do = Method(env, p, "doScene", do_scene);
         g_b_ctor = Method(env, b, "<init>", "(Ljava/lang/String;Ljava/util/LinkedList;)V");
         g_e_ctor = Method(env, e, "<init>", "(Ljava/lang/String;Ljava/util/LinkedList;)V");
-        g_z2_d = StaticMethod(env, z2, "d", "(Lcom/tencent/mm/modelbase/o;Lcom/tencent/mm/modelbase/e3;Z)Lcom/tencent/mm/modelbase/m1;");
+        g_z2_d = StaticMethod(
+            env, z2, "d", "(Lcom/tencent/mm/modelbase/o;Lcom/tencent/mm/modelbase/e3;Z)Lcom/tencent/mm/modelbase/m1;");
         g_i_f = Field(env, i, "f", "Lcom/tencent/mm/modelbase/o;");
         g_linked_ctor = Method(env, linked, "<init>", "()V");
         g_list_add = Method(env, linked, "add", "(Ljava/lang/Object;)Z");
@@ -112,10 +116,17 @@ jobject NewStringList(JNIEnv *env, const char *user) {
     jobject list = env->NewObject(g_linked, g_linked_ctor);
     if (!list) return nullptr;
     jstring text = env->NewStringUTF(user);
-    if (!text) { env->DeleteLocalRef(list); return nullptr; }
+    if (!text) {
+        env->DeleteLocalRef(list);
+        return nullptr;
+    }
     env->CallBooleanMethod(list, g_list_add, text);
     env->DeleteLocalRef(text);
-    if (env->ExceptionCheck()) { env->ExceptionClear(); env->DeleteLocalRef(list); return nullptr; }
+    if (env->ExceptionCheck()) {
+        env->ExceptionClear();
+        env->DeleteLocalRef(list);
+        return nullptr;
+    }
     return list;
 }
 
@@ -123,7 +134,10 @@ jobject NewStringList(JNIEnv *env, const char *user) {
 // inherited `f` field after the constructor ran.
 bool DispatchCgi(JNIEnv *env, jobject scene, ActionResult *result) {
     jobject request = env->GetObjectField(scene, g_i_f);
-    if (env->ExceptionCheck()) { env->ExceptionClear(); request = nullptr; }
+    if (env->ExceptionCheck()) {
+        env->ExceptionClear();
+        request = nullptr;
+    }
     if (!request) {
         Detail(result->detail, sizeof(result->detail), "cgi request unavailable");
         return false;
@@ -158,8 +172,10 @@ bool Prepare(ActionResult *result, JNIEnv **env) {
 }
 
 void Log(const char *action, const char *target, const ActionResult &result) {
-    if (result.ok) __android_log_print(ANDROID_LOG_INFO, "SatoriWx", "%s %s dispatched", action, target);
-    else __android_log_print(ANDROID_LOG_WARN, "SatoriWx", "%s %s failed: %s", action, target, result.detail);
+    if (result.ok)
+        __android_log_print(ANDROID_LOG_INFO, "SatoriWx", "%s %s dispatched", action, target);
+    else
+        __android_log_print(ANDROID_LOG_WARN, "SatoriWx", "%s %s failed: %s", action, target, result.detail);
 }
 } // namespace
 
@@ -174,10 +190,16 @@ ActionResult RoomRemoveMember(const char *chatroom, const char *user) {
     jobject list = NewStringList(env, user);
     jstring room = env->NewStringUTF(chatroom);
     jobject scene = (list && room) ? env->NewObject(g_p, g_p_ctor, room, list, static_cast<jint>(0)) : nullptr;
-    if (env->ExceptionCheck()) { env->ExceptionClear(); scene = nullptr; }
+    if (env->ExceptionCheck()) {
+        env->ExceptionClear();
+        scene = nullptr;
+    }
     if (room) env->DeleteLocalRef(room);
     if (list) env->DeleteLocalRef(list);
-    if (!scene) { Detail(result.detail, sizeof(result.detail), "delchatroommember scene construction failed"); return result; }
+    if (!scene) {
+        Detail(result.detail, sizeof(result.detail), "delchatroommember scene construction failed");
+        return result;
+    }
     const int net = ReflectDispatchScene(scene, reinterpret_cast<void *>(g_p_do), result.detail, sizeof(result.detail));
     env->DeleteLocalRef(scene);
     result.ok = net >= 0;
@@ -195,11 +217,18 @@ ActionResult RoomSetAdmin(const char *chatroom, const char *user, bool enable) {
     if (!Prepare(&result, &env)) return result;
     jobject list = NewStringList(env, user);
     jstring room = env->NewStringUTF(chatroom);
-    jobject scene = (list && room) ? env->NewObject(enable ? g_b : g_e, enable ? g_b_ctor : g_e_ctor, room, list) : nullptr;
-    if (env->ExceptionCheck()) { env->ExceptionClear(); scene = nullptr; }
+    jobject scene =
+        (list && room) ? env->NewObject(enable ? g_b : g_e, enable ? g_b_ctor : g_e_ctor, room, list) : nullptr;
+    if (env->ExceptionCheck()) {
+        env->ExceptionClear();
+        scene = nullptr;
+    }
     if (room) env->DeleteLocalRef(room);
     if (list) env->DeleteLocalRef(list);
-    if (!scene) { Detail(result.detail, sizeof(result.detail), "chatroom admin scene construction failed"); return result; }
+    if (!scene) {
+        Detail(result.detail, sizeof(result.detail), "chatroom admin scene construction failed");
+        return result;
+    }
     DispatchCgi(env, scene, &result);
     env->DeleteLocalRef(scene);
     Log(enable ? "room.admin.add" : "room.admin.del", chatroom, result);

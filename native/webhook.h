@@ -13,7 +13,9 @@
 // client, so https:// URLs are rejected at registration; this is documented.
 namespace satori {
 struct WebHooks;
-struct WebHookCounters { unsigned long long sent, failed, dropped; };
+struct WebHookCounters {
+    unsigned long long sent, failed, dropped;
+};
 
 WebHooks *CreateWebHooks();
 void DestroyWebHooks(WebHooks *hooks);

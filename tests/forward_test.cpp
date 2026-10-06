@@ -13,10 +13,16 @@ namespace {
 int failures = 0;
 
 void Check(bool ok, const char *what) {
-    if (!ok) { fprintf(stderr, "FAIL: %s\n", what); ++failures; }
+    if (!ok) {
+        fprintf(stderr, "FAIL: %s\n", what);
+        ++failures;
+    }
 }
 void Eq(const char *got, const char *want, const char *what) {
-    if (strcmp(got, want)) { fprintf(stderr, "FAIL: %s\n  got:  %s\n  want: %s\n", what, got, want); ++failures; }
+    if (strcmp(got, want)) {
+        fprintf(stderr, "FAIL: %s\n  got:  %s\n  want: %s\n", what, got, want);
+        ++failures;
+    }
 }
 
 struct Parsed {
@@ -33,12 +39,15 @@ Parsed *Parse(const char *content) {
     const size_t count = satori::MessageParts(content, parts, 4);
     size_t at = 0;
     while (at < count && parts[at].kind != 'm') ++at;
-    if (at == count) { parsed->count = -2; return parsed; }
+    if (at == count) {
+        parsed->count = -2;
+        return parsed;
+    }
     parsed->count = satori::ForwardParse(content, parts[at].begin, parts[at].end, parsed->entries, satori::kForwardMax,
                                          parsed->title, sizeof(parsed->title), &parsed->error);
     return parsed;
 }
-}
+} // namespace
 
 int main() {
     // ---- reading the container --------------------------------------------------------------------------
@@ -67,8 +76,9 @@ int main() {
         free(p);
     }
     {
-        Parsed *p = Parse("<message forward><message><author>Carol</author>text</message>"
-                          "<message><author id=\"9\" avatar=\"internal:wechat/x/_tmp/a\"/>no avatar url</message></message>");
+        Parsed *p =
+            Parse("<message forward><message><author>Carol</author>text</message>"
+                  "<message><author id=\"9\" avatar=\"internal:wechat/x/_tmp/a\"/>no avatar url</message></message>");
         Check(p->count == 2, "two lines");
         if (p->count == 2) {
             Eq(p->entries[0].author_name, "Carol", "the author element's text names the author");
@@ -78,7 +88,8 @@ int main() {
         free(p);
     }
     {
-        Parsed *p = Parse("<message forward><message id=\"12\"/><message id=\"13\">own words</message><message>  </message><message>\n</message></message>");
+        Parsed *p = Parse(
+            "<message forward><message id=\"12\"/><message id=\"13\">own words</message><message>  </message><message>\n</message></message>");
         Check(p->count == 2, "blank messages are skipped");
         if (p->count == 2) {
             Eq(p->entries[0].ref_id, "12", "an id alone embeds that message");
@@ -89,9 +100,12 @@ int main() {
         free(p);
     }
     {
-        Parsed *p = Parse("<message forward><message><at id=\"7\" name=\"Dan\"/> see <a href=\"https://e.com\">this</a></message></message>");
+        Parsed *p = Parse(
+            "<message forward><message><at id=\"7\" name=\"Dan\"/> see <a href=\"https://e.com\">this</a></message></message>");
         Check(p->count == 1, "one line");
-        if (p->count == 1) Eq(p->entries[0].text, "@Dan\xE2\x80\x85 see this (https://e.com)", "mentions and links read as they do in a text message");
+        if (p->count == 1)
+            Eq(p->entries[0].text, "@Dan\xE2\x80\x85 see this (https://e.com)",
+               "mentions and links read as they do in a text message");
         free(p);
     }
     {
@@ -199,9 +213,11 @@ int main() {
         // Wrap it the way the sender does, then read it back the way a receiver does.
         const size_t size = strlen(card.record) + 128;
         char *appmsg = static_cast<char *>(malloc(size));
-        snprintf(appmsg, size, "<msg><appmsg><type>19</type><recorditem><![CDATA[%s]]></recorditem></appmsg></msg>", card.record);
+        snprintf(appmsg, size, "<msg><appmsg><type>19</type><recorditem><![CDATA[%s]]></recorditem></appmsg></msg>",
+                 card.record);
         char *inner = static_cast<char *>(malloc(size));
-        Check(satori::XmlGetText(satori::XmlDocument(appmsg), "msg/appmsg/recorditem", inner, size), "the recorditem is found");
+        Check(satori::XmlGetText(satori::XmlDocument(appmsg), "msg/appmsg/recorditem", inner, size),
+              "the recorditem is found");
         Check(!strcmp(inner, card.record), "the CDATA gives the record back unchanged");
         satori::XmlSlice list;
         Check(satori::XmlPath(satori::XmlDocument(inner), "recordinfo/datalist", &list), "a datalist");
@@ -220,13 +236,17 @@ int main() {
         Eq(text, "1790686908", "an embedded message keeps its own time");
         Check(satori::XmlGetText(item, "fromnewmsgid", text, sizeof(text)), "its server id");
         Eq(text, "6937305540124271325", "server id survives");
-        Check(satori::XmlGetText(item, "sourcetime", text, sizeof(text)) && strlen(text) == 19 && text[4] == '-' && text[10] == ' ', "a readable time");
+        Check(satori::XmlGetText(item, "sourcetime", text, sizeof(text)) && strlen(text) == 19 && text[4] == '-' &&
+                  text[10] == ' ',
+              "a readable time");
         Check(satori::XmlChildAt(list, "dataitem", 1, &item, &attrs), "second item");
         Check(satori::XmlGetText(item, "srcMsgCreateTime", text, sizeof(text)), "its time");
         Eq(text, "1790690000", "a written line is stamped with the send time");
         Check(!satori::XmlGetText(item, "sourceheadurl", text, sizeof(text)), "no avatar, no element");
         Check(!satori::XmlGetText(item, "fromnewmsgid", text, sizeof(text)), "no server id, no element");
-        Check(satori::XmlPath(satori::XmlDocument(inner), "recordinfo/title", &item) && satori::XmlGetText(satori::XmlDocument(inner), "recordinfo/desc", text, sizeof(text)), "title and desc");
+        Check(satori::XmlPath(satori::XmlDocument(inner), "recordinfo/title", &item) &&
+                  satori::XmlGetText(satori::XmlDocument(inner), "recordinfo/desc", text, sizeof(text)),
+              "title and desc");
         free(inner);
         free(appmsg);
         free(card.record);
@@ -239,7 +259,9 @@ int main() {
         body[4000] = 0;
         Fill(i, "u1", "Alice", body);
     }
-    Check(!satori::ForwardBuild(entries, 100, "", false, 1790000000, &card, &error) && !strcmp(error.code, "forward_too_large"), "a record over 256 KiB is refused");
+    Check(!satori::ForwardBuild(entries, 100, "", false, 1790000000, &card, &error) &&
+              !strcmp(error.code, "forward_too_large"),
+          "a record over 256 KiB is refused");
 
     // The reply echoes the container.
     Fill(0, "u1", "Alice", "a < b");
@@ -248,13 +270,18 @@ int main() {
     char *content = satori::ForwardContent(entries, 2, "T\"1");
     Check(content != nullptr, "content");
     if (content) {
-        Eq(content, "<message forward title=\"T&quot;1\"><message><author id=\"u1\" name=\"Alice\" avatar=\"https://e.com/a\"/>a &lt; b</message>"
-                    "<message><author name=\"微信用户\"/>anon</message></message>", "the echoed container");
+        Eq(content,
+           "<message forward title=\"T&quot;1\"><message><author id=\"u1\" name=\"Alice\" avatar=\"https://e.com/a\"/>a &lt; b</message>"
+           "<message><author name=\"微信用户\"/>anon</message></message>",
+           "the echoed container");
         free(content);
     }
     free(entries);
 
-    if (failures) { fprintf(stderr, "forward tests: %d failure(s)\n", failures); return 1; }
+    if (failures) {
+        fprintf(stderr, "forward tests: %d failure(s)\n", failures);
+        return 1;
+    }
     printf("forward tests: PASS\n");
     return 0;
 }

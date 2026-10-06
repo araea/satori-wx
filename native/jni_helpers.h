@@ -33,32 +33,41 @@ inline void WxReleaseEnv(JavaVM *vm, bool attached) {
 inline jclass WxLoadClass(JNIEnv *env, jobject loader, const char *name) {
     if (loader == nullptr) return nullptr;
     jclass loader_cls = env->FindClass("java/lang/ClassLoader");
-    if (loader_cls == nullptr) { env->ExceptionClear(); return nullptr; }
-    jmethodID load_class = env->GetMethodID(loader_cls, "loadClass",
-                                            "(Ljava/lang/String;)Ljava/lang/Class;");
-    if (load_class == nullptr) { env->ExceptionClear(); return nullptr; }
+    if (loader_cls == nullptr) {
+        env->ExceptionClear();
+        return nullptr;
+    }
+    jmethodID load_class = env->GetMethodID(loader_cls, "loadClass", "(Ljava/lang/String;)Ljava/lang/Class;");
+    if (load_class == nullptr) {
+        env->ExceptionClear();
+        return nullptr;
+    }
     jstring n = env->NewStringUTF(name);
     auto cls = static_cast<jclass>(env->CallObjectMethod(loader, load_class, n));
     env->DeleteLocalRef(n);
-    if (env->ExceptionCheck()) { env->ExceptionClear(); return nullptr; }
+    if (env->ExceptionCheck()) {
+        env->ExceptionClear();
+        return nullptr;
+    }
     return cls;
 }
 
 /** 关掉 hidden API 限制：Java 侧要反射宿主内部类时用。 */
 inline void WxExemptHiddenApis(JNIEnv *env) {
     jclass vm_runtime = env->FindClass("dalvik/system/VMRuntime");
-    if (vm_runtime == nullptr) { env->ExceptionClear(); return; }
-    jmethodID get_runtime = env->GetStaticMethodID(vm_runtime, "getRuntime",
-                                                   "()Ldalvik/system/VMRuntime;");
-    jmethodID set_exemptions = env->GetMethodID(vm_runtime, "setHiddenApiExemptions",
-                                                "([Ljava/lang/String;)V");
+    if (vm_runtime == nullptr) {
+        env->ExceptionClear();
+        return;
+    }
+    jmethodID get_runtime = env->GetStaticMethodID(vm_runtime, "getRuntime", "()Ldalvik/system/VMRuntime;");
+    jmethodID set_exemptions = env->GetMethodID(vm_runtime, "setHiddenApiExemptions", "([Ljava/lang/String;)V");
     if (get_runtime == nullptr || set_exemptions == nullptr) {
         env->ExceptionClear();
         return;
     }
     jobject runtime = env->CallStaticObjectMethod(vm_runtime, get_runtime);
     jclass string_cls = env->FindClass("java/lang/String");
-    jstring all = env->NewStringUTF("L");  // 前缀 "L" 覆盖所有类
+    jstring all = env->NewStringUTF("L"); // 前缀 "L" 覆盖所有类
     jobjectArray arr = env->NewObjectArray(1, string_cls, all);
     env->CallVoidMethod(runtime, set_exemptions, arr);
     if (env->ExceptionCheck()) {

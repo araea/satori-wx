@@ -13,11 +13,15 @@ namespace {
 int failures = 0;
 
 void Check(bool ok, const char *what) {
-    if (!ok) { fprintf(stderr, "FAIL: %s\n", what); ++failures; }
+    if (!ok) {
+        fprintf(stderr, "FAIL: %s\n", what);
+        ++failures;
+    }
 }
 
 bool HasFeature(const char *const *list, size_t count, const char *name) {
-    for (size_t i = 0; i < count; ++i) if (!strcmp(list[i], name)) return true;
+    for (size_t i = 0; i < count; ++i)
+        if (!strcmp(list[i], name)) return true;
     return false;
 }
 
@@ -26,7 +30,11 @@ bool Parse(const char *body, satori::Config *config) {
     int fds[2];
     if (pipe(fds)) return false;
     const size_t size = strlen(body);
-    if (write(fds[1], body, size) != static_cast<ssize_t>(size)) { close(fds[0]); close(fds[1]); return false; }
+    if (write(fds[1], body, size) != static_cast<ssize_t>(size)) {
+        close(fds[0]);
+        close(fds[1]);
+        return false;
+    }
     close(fds[1]);
     const bool ok = satori::ReadConfig(fds[0], config);
     close(fds[0]);
@@ -67,7 +75,8 @@ void TestFeatures() {
     Check(!HasFeature(no, unsupported, "channel.delete"), "channel.delete is not unsupported");
     // A method must never be both implemented and unsupported.
     list = satori::WeChatFeatures(&count);
-    for (size_t i = 0; i < unsupported; ++i) Check(!HasFeature(list, count, no[i]), "feature and unsupported sets are disjoint");
+    for (size_t i = 0; i < unsupported; ++i)
+        Check(!HasFeature(list, count, no[i]), "feature and unsupported sets are disjoint");
 }
 
 void TestConfig() {

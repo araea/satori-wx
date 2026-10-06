@@ -19,6 +19,11 @@ int LiveLoginSn();
 // it, and scanner events dropped because the bus stayed full. `open` is false until the store is.
 // `watching` is true while the poller is woken by change notices on the database directory (it
 // then reacts to a new message within milliseconds); false means it is polling blindly.
-struct LiveStats { bool open; long long emitted, skipped, dropped; bool watching; long long wakes; };
+struct LiveStats {
+    bool open;
+    long long emitted, skipped, dropped;
+    bool watching;
+    long long wakes;
+};
 void LiveStatsGet(LiveStats *stats);
 } // namespace satori

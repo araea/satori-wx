@@ -25,8 +25,7 @@ public:
             if (sscanf(line, "%lx-%lx %4s", &begin, &end, perms) != 3) continue;
             const uintptr_t address = reinterpret_cast<uintptr_t>(slot);
             if (address < begin || address >= end || end - address < sizeof(T)) continue;
-            prot_ = (perms[0] == 'r' ? PROT_READ : 0) |
-                    (perms[1] == 'w' ? PROT_WRITE : 0) |
+            prot_ = (perms[0] == 'r' ? PROT_READ : 0) | (perms[1] == 'w' ? PROT_WRITE : 0) |
                     (perms[2] == 'x' ? PROT_EXEC : 0);
             break;
         }
@@ -37,8 +36,8 @@ public:
         if (!original_ || original_ == replacement_) return false;
         if (mprotect(page_, size_, prot_ | PROT_WRITE) != 0) return false;
         T expected = original_;
-        installed_ = __atomic_compare_exchange_n(slot_, &expected, replacement_, false,
-                                                  __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE);
+        installed_ =
+            __atomic_compare_exchange_n(slot_, &expected, replacement_, false, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE);
         protection_ok_ = mprotect(page_, size_, prot_) == 0;
         return installed_;
     }
@@ -49,8 +48,8 @@ public:
         if (!installed_) return "not-installed";
         if (mprotect(page_, size_, prot_ | PROT_WRITE) != 0) return "write-enable-failed";
         T expected = replacement_;
-        const bool restored = __atomic_compare_exchange_n(slot_, &expected, original_, false,
-                                                          __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE);
+        const bool restored =
+            __atomic_compare_exchange_n(slot_, &expected, original_, false, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE);
         protection_ok_ = mprotect(page_, size_, prot_) == 0;
         if (restored || expected != replacement_) installed_ = false;
         if (!protection_ok_) return "protection-restore-failed";
@@ -59,6 +58,7 @@ public:
 
     T original() const { return original_; }
     bool protection_ok() const { return protection_ok_; }
+
 private:
     T *slot_ = nullptr;
     T original_ = nullptr;

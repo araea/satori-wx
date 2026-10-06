@@ -6,7 +6,7 @@
 # device has no cgroup v2 freezer to test against.
 set -u
 export PATH=/system/bin:/system/xbin:${PATH:-}
-HERE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+HERE=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 GUARD=$HERE/../tools/wxguard.sh
 BASE=/sys/fs/cgroup/apps
 [ "$(id -u)" = "0" ] && [ -w "$BASE/cgroup.procs" ] || { echo "wxguard thaw test: SKIP (needs root and cgroup v2)"; exit 0; }

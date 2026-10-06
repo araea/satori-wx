@@ -62,7 +62,8 @@ bool ParseUrl(const char *url, Hook *hook) {
     }
     const char *host = authority, *host_end = authority_end, *port_text = nullptr;
     if (*authority == '[') {
-        const char *close = static_cast<const char *>(memchr(authority, ']', static_cast<size_t>(authority_end - authority)));
+        const char *close =
+            static_cast<const char *>(memchr(authority, ']', static_cast<size_t>(authority_end - authority)));
         if (!close) return false;
         host = authority + 1;
         host_end = close;
@@ -71,8 +72,12 @@ bool ParseUrl(const char *url, Hook *hook) {
             port_text = close + 2;
         }
     } else {
-        const char *colon = static_cast<const char *>(memchr(authority, ':', static_cast<size_t>(authority_end - authority)));
-        if (colon) { host_end = colon; port_text = colon + 1; }
+        const char *colon =
+            static_cast<const char *>(memchr(authority, ':', static_cast<size_t>(authority_end - authority)));
+        if (colon) {
+            host_end = colon;
+            port_text = colon + 1;
+        }
     }
     if (host_end == host || static_cast<size_t>(host_end - host) >= sizeof(hook->host)) return false;
     unsigned port = 80;
@@ -90,8 +95,10 @@ bool ParseUrl(const char *url, Hook *hook) {
         strcpy(hook->path, "/");
     } else if (*authority_end == '/' || *authority_end == '?') {
         if (strlen(authority_end) >= sizeof(hook->path)) return false;
-        if (*authority_end == '?') snprintf(hook->path, sizeof(hook->path), "/%s", authority_end);
-        else strcpy(hook->path, authority_end);
+        if (*authority_end == '?')
+            snprintf(hook->path, sizeof(hook->path), "/%s", authority_end);
+        else
+            strcpy(hook->path, authority_end);
     } else {
         return false; // fragment-only remainder is not a valid request target here
     }
@@ -106,14 +113,24 @@ bool ParseUrl(const char *url, Hook *hook) {
 }
 
 int Connect(const addrinfo *address, int timeout_ms) {
-    const int fd = socket(address->ai_family, address->ai_socktype | SOCK_NONBLOCK | SOCK_CLOEXEC, address->ai_protocol);
+    const int fd =
+        socket(address->ai_family, address->ai_socktype | SOCK_NONBLOCK | SOCK_CLOEXEC, address->ai_protocol);
     if (fd < 0) return -1;
-    if (connect(fd, address->ai_addr, address->ai_addrlen) && errno != EINPROGRESS) { close(fd); return -1; }
+    if (connect(fd, address->ai_addr, address->ai_addrlen) && errno != EINPROGRESS) {
+        close(fd);
+        return -1;
+    }
     pollfd poll_fd{fd, POLLOUT, 0};
-    if (poll(&poll_fd, 1, timeout_ms) <= 0) { close(fd); return -1; }
+    if (poll(&poll_fd, 1, timeout_ms) <= 0) {
+        close(fd);
+        return -1;
+    }
     int error = 0;
     socklen_t size = sizeof(error);
-    if (getsockopt(fd, SOL_SOCKET, SO_ERROR, &error, &size) || error) { close(fd); return -1; }
+    if (getsockopt(fd, SOL_SOCKET, SO_ERROR, &error, &size) || error) {
+        close(fd);
+        return -1;
+    }
     const int flags = fcntl(fd, F_GETFL, 0);
     if (flags >= 0) fcntl(fd, F_SETFL, flags & ~O_NONBLOCK);
     return fd;
@@ -122,7 +139,10 @@ int Connect(const addrinfo *address, int timeout_ms) {
 bool SendAll(int fd, const char *data, size_t size) {
     while (size) {
         const ssize_t n = send(fd, data, size, MSG_NOSIGNAL);
-        if (n < 0) { if (errno == EINTR) continue; return false; }
+        if (n < 0) {
+            if (errno == EINTR) continue;
+            return false;
+        }
         if (!n) return false;
         data += n;
         size -= static_cast<size_t>(n);
@@ -156,15 +176,17 @@ bool Deliver(const Hook &hook, int opcode, const char *body, size_t size) {
     setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
     setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
     char host_header[288];
-    if (hook.port == 80) snprintf(host_header, sizeof(host_header), "%s", hook.host);
-    else snprintf(host_header, sizeof(host_header), "%s:%u", hook.host, static_cast<unsigned>(hook.port));
+    if (hook.port == 80)
+        snprintf(host_header, sizeof(host_header), "%s", hook.host);
+    else
+        snprintf(host_header, sizeof(host_header), "%s:%u", hook.host, static_cast<unsigned>(hook.port));
     char authorization[256] = {};
     if (hook.token[0]) snprintf(authorization, sizeof(authorization), "Authorization: Bearer %s\r\n", hook.token);
     char header[1024];
     const int n = snprintf(header, sizeof(header),
-        "POST %s HTTP/1.1\r\nHost: %s\r\nContent-Type: application/json\r\nContent-Length: %zu\r\n"
-        "Satori-Opcode: %d\r\nConnection: close\r\n%s\r\n",
-        hook.path, host_header, size, opcode, authorization);
+                           "POST %s HTTP/1.1\r\nHost: %s\r\nContent-Type: application/json\r\nContent-Length: %zu\r\n"
+                           "Satori-Opcode: %d\r\nConnection: close\r\n%s\r\n",
+                           hook.path, host_header, size, opcode, authorization);
     bool ok = n > 0 && static_cast<size_t>(n) < sizeof(header) && SendAll(fd, header, static_cast<size_t>(n)) &&
               SendAll(fd, body, size);
     char response[64];
@@ -187,7 +209,10 @@ void *DeliverLoop(void *argument) {
     for (;;) {
         pthread_mutex_lock(&hooks->mutex);
         while (!hooks->stopping && !hooks->used) pthread_cond_wait(&hooks->cond, &hooks->mutex);
-        if (!hooks->used && hooks->stopping) { pthread_mutex_unlock(&hooks->mutex); break; }
+        if (!hooks->used && hooks->stopping) {
+            pthread_mutex_unlock(&hooks->mutex);
+            break;
+        }
         Hook targets[kMaxHooks];
         const size_t count = hooks->count;
         memcpy(targets, hooks->hooks, count * sizeof(Hook));
@@ -305,7 +330,11 @@ void PushWebHook(WebHooks *hooks, int opcode, const char *body) {
         return;
     }
     char *copy = static_cast<char *>(malloc(size + 1));
-    if (!copy) { ++hooks->dropped; pthread_mutex_unlock(&hooks->mutex); return; }
+    if (!copy) {
+        ++hooks->dropped;
+        pthread_mutex_unlock(&hooks->mutex);
+        return;
+    }
     memcpy(copy, body, size + 1);
     Entry &entry = hooks->queue[(hooks->head + hooks->used) % kQueueDepth];
     entry.opcode = opcode;

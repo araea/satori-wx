@@ -15,7 +15,10 @@ namespace {
 int failures = 0;
 
 void Check(bool ok, const char *what) {
-    if (!ok) { fprintf(stderr, "FAIL: %s\n", what); ++failures; }
+    if (!ok) {
+        fprintf(stderr, "FAIL: %s\n", what);
+        ++failures;
+    }
 }
 
 bool WriteFile(const char *path, const char *data) {
@@ -36,11 +39,17 @@ struct Fixture {
         char pattern[512];
         snprintf(pattern, sizeof(pattern), "%s/satori-account-XXXXXX", base);
         const char *made = mkdtemp(pattern);
-        if (!made) { fprintf(stderr, "mkdtemp failed in %s\n", base); exit(2); }
+        if (!made) {
+            fprintf(stderr, "mkdtemp failed in %s\n", base);
+            exit(2);
+        }
         snprintf(dir, sizeof(dir), "%s", made);
         char path[512];
         snprintf(path, sizeof(path), "%s/shared_prefs", dir);
-        if (mkdir(path, 0700)) { fprintf(stderr, "mkdir failed\n"); exit(2); }
+        if (mkdir(path, 0700)) {
+            fprintf(stderr, "mkdir failed\n");
+            exit(2);
+        }
     }
     ~Fixture() {
         char path[512];
@@ -83,18 +92,29 @@ struct Fixture {
 struct Mmkv {
     unsigned char data[4096] = {};
     size_t used = 9; // 4-byte header + 5-byte placeholder varint (0xffffff07-style holder)
-    Mmkv() { data[4] = 0xff; data[5] = 0xff; data[6] = 0xff; data[7] = 0xff; data[8] = 0x07; }
+    Mmkv() {
+        data[4] = 0xff;
+        data[5] = 0xff;
+        data[6] = 0xff;
+        data[7] = 0xff;
+        data[8] = 0x07;
+    }
     void Varint(uint32_t v) {
-        while (v >= 0x80) { data[used++] = static_cast<unsigned char>(v | 0x80); v >>= 7; }
+        while (v >= 0x80) {
+            data[used++] = static_cast<unsigned char>(v | 0x80);
+            v >>= 7;
+        }
         data[used++] = static_cast<unsigned char>(v);
     }
     Mmkv &Put(const char *key, const char *value) {
         const size_t k = strlen(key), v = strlen(value);
         Varint(static_cast<uint32_t>(k));
-        memcpy(data + used, key, k); used += k;
+        memcpy(data + used, key, k);
+        used += k;
         Varint(static_cast<uint32_t>(v + (v < 0x80 ? 1 : 2)));
         Varint(static_cast<uint32_t>(v));
-        memcpy(data + used, value, v); used += v;
+        memcpy(data + used, value, v);
+        used += v;
         return *this;
     }
     bool Write(const Fixture &fixture, bool header_size, size_t valid = 0) const {
@@ -109,7 +129,10 @@ struct Mmkv {
         if (header_size) memcpy(copy, &size, 4);
         snprintf(path, sizeof(path), "%s/files/mmkv/MMKV_Name_LastLoginInfo", fixture.dir);
         int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
-        if (fd < 0 || write(fd, copy, sizeof(copy)) != static_cast<ssize_t>(sizeof(copy))) { if (fd >= 0) close(fd); return false; }
+        if (fd < 0 || write(fd, copy, sizeof(copy)) != static_cast<ssize_t>(sizeof(copy))) {
+            if (fd >= 0) close(fd);
+            return false;
+        }
         close(fd);
         unsigned char meta[4096] = {};
         const uint32_t version = 5;
@@ -117,7 +140,10 @@ struct Mmkv {
         if (!header_size) memcpy(meta + 28, &size, 4);
         snprintf(path, sizeof(path), "%s/files/mmkv/MMKV_Name_LastLoginInfo.crc", fixture.dir);
         fd = open(path, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
-        if (fd < 0 || write(fd, meta, sizeof(meta)) != static_cast<ssize_t>(sizeof(meta))) { if (fd >= 0) close(fd); return false; }
+        if (fd < 0 || write(fd, meta, sizeof(meta)) != static_cast<ssize_t>(sizeof(meta))) {
+            if (fd >= 0) close(fd);
+            return false;
+        }
         close(fd);
         return true;
     }
@@ -173,9 +199,11 @@ void TestOnlineAccount() {
             Check(!strcmp(Nested(login, "user", "nick"), "知言"), "user nick");
             Check(!strcmp(Nested(login, "user", "name"), "nawyjx"), "user name");
             const cJSON *features = cJSON_GetObjectItemCaseSensitive(login, "features");
-            Check(cJSON_IsArray(features) && cJSON_GetArraySize(features) == 22, "features listed (writes are always published)");
+            Check(cJSON_IsArray(features) && cJSON_GetArraySize(features) == 22,
+                  "features listed (writes are always published)");
             Check(cJSON_IsArray(features) && cJSON_GetArrayItem(features, 0) &&
-                  !strcmp(cJSON_GetArrayItem(features, 0)->valuestring, "message.get"), "feature message.get");
+                      !strcmp(cJSON_GetArrayItem(features, 0)->valuestring, "message.get"),
+                  "feature message.get");
             cJSON_Delete(root);
         }
         free(json);
@@ -186,7 +214,8 @@ void TestOfflineAndRemoval() {
     Fixture fixture;
     Check(fixture.Main("<string name=\"login_weixin_username\">wxid_a</string>\n"
                        "<string name=\"last_login_uin\">42</string>\n"
-                       "<boolean name=\"isLogin\" value=\"false\" />\n"), "write offline prefs");
+                       "<boolean name=\"isLogin\" value=\"false\" />\n"),
+          "write offline prefs");
     satori::Account account;
     Check(satori::ReadAccount(fixture.dir, &account), "read offline");
     Check(account.exists && !account.online, "offline login still exists");
@@ -201,7 +230,8 @@ void TestOfflineAndRemoval() {
 void TestAuthFallback() {
     Fixture fixture;
     Check(fixture.Main("<string name=\"login_weixin_username\">wxid_b</string>\n"
-                       "<boolean name=\"isLogin\" value=\"true\" />\n"), "main without uin");
+                       "<boolean name=\"isLogin\" value=\"true\" />\n"),
+          "main without uin");
     Check(fixture.Auth("<int name=\"_auth_uin\" value=\"12345\" />\n"), "auth prefs");
     satori::Account account;
     Check(satori::ReadAccount(fixture.dir, &account), "read with fallback");
@@ -222,7 +252,8 @@ void TestEntitiesAndInvalidUtf8() {
     Check(fixture.Main("<string name=\"login_weixin_username\">wxid_c</string>\n"
                        "<string name=\"last_login_uin\">7</string>\n"
                        "<boolean name=\"isLogin\" value=\"true\" />\n"
-                       "<string name=\"last_login_nick_name\">bad\xff" "byte</string>\n"),
+                       "<string name=\"last_login_nick_name\">bad\xff"
+                       "byte</string>\n"),
           "invalid utf8 prefs");
     Check(satori::ReadAccount(fixture.dir, &account), "read invalid utf8");
     Check(account.nickname[0] == 0, "invalid utf8 field dropped");
@@ -242,7 +273,8 @@ void TestMissingAndMalformed() {
     Check(!account.exists, "truncated has no complete identity");
     Check(fixture.Main("<string name=\"login_weixin_username\">wxid_d</string>\n"
                        "<string name=\"last_login_uin\">8</string>\n"
-                       "<string name=\"long_value\">"), "unterminated string");
+                       "<string name=\"long_value\">"),
+          "unterminated string");
     Check(satori::ReadAccount(fixture.dir, &account), "unterminated readable");
     Check(!account.exists || account.online == false, "no online claim without isLogin");
 }
@@ -277,7 +309,8 @@ void TestAdapterTransitions() {
     Check(fixture.Main("<string name=\"login_weixin_username\">wxid_8zxjsghrk8vz41</string>\n"
                        "<string name=\"last_login_uin\">1114861342</string>\n"
                        "<boolean name=\"isLogin\" value=\"true\" />\n"
-                       "<string name=\"last_login_nick_name\">改名</string>\n"), "rename");
+                       "<string name=\"last_login_nick_name\">改名</string>\n"),
+          "rename");
     Check(satori::AdapterRefresh(adapter), "refresh after rename");
     Check(TakeEvent(bus, event), "update event published");
     root = cJSON_Parse(event);
@@ -286,7 +319,8 @@ void TestAdapterTransitions() {
     // Identity change -> remove then add with a new sn.
     Check(fixture.Main("<string name=\"login_weixin_username\">wxid_other</string>\n"
                        "<string name=\"last_login_uin\">99</string>\n"
-                       "<boolean name=\"isLogin\" value=\"true\" />\n"), "switch account");
+                       "<boolean name=\"isLogin\" value=\"true\" />\n"),
+          "switch account");
     Check(satori::AdapterRefresh(adapter), "refresh after switch");
     Check(TakeEvent(bus, event), "removal published");
     root = cJSON_Parse(event);
@@ -347,12 +381,16 @@ void TestHubIntegration() {
 void TestMmkvIdentity() {
     Fixture fixture;
     Check(fixture.Main("<boolean name=\"Main_need_read_top_margin\" value=\"false\" />\n"
-                       "<int name=\"heavy_user_session_cnt\" value=\"31\" />\n"), "trimmed main prefs");
+                       "<int name=\"heavy_user_session_cnt\" value=\"31\" />\n"),
+          "trimmed main prefs");
     Check(fixture.Auth("<int name=\"_auth_uin\" value=\"1114861342\" />\n"), "auth prefs");
     Mmkv mmkv;
-    mmkv.Put("last_login_use_voice", "58368").Put("last_login_uin", "1114861342")
-        .Put("login_weixin_username", "wxid_8zxjsghrk8vz41").Put("last_login_nick_name", "旧昵称")
-        .Put("last_login_alias", "nawyjx").Put("last_login_bind_mobile", "19558338697")
+    mmkv.Put("last_login_use_voice", "58368")
+        .Put("last_login_uin", "1114861342")
+        .Put("login_weixin_username", "wxid_8zxjsghrk8vz41")
+        .Put("last_login_nick_name", "旧昵称")
+        .Put("last_login_alias", "nawyjx")
+        .Put("last_login_bind_mobile", "19558338697")
         .Put("last_login_nick_name", "知言"); // appended later: the last record wins
     Check(mmkv.Write(fixture, false), "write mmkv (size in .crc)");
     satori::Account account;
@@ -386,7 +424,8 @@ void TestMmkvBounds() {
     Mmkv old;
     old.Put("login_weixin_username", "wxid_header").Put("last_login_uin", "42");
     Check(old.Write(fixture, true), "write old-layout mmkv");
-    Check(satori::ReadAccount(fixture.dir, &account) && !strcmp(account.wxid, "wxid_header"), "size from the 4-byte header");
+    Check(satori::ReadAccount(fixture.dir, &account) && !strcmp(account.wxid, "wxid_header"),
+          "size from the 4-byte header");
 
     Mmkv broken;
     broken.Put("login_weixin_username", "wxid_before_break").Put("last_login_uin", "42");
@@ -397,7 +436,8 @@ void TestMmkvBounds() {
 
     // The legacy XML still wins nothing over MMKV but fills fields MMKV lacks.
     Check(fixture.Main("<string name=\"last_login_nick_name\">来自 XML</string>\n"), "main prefs with nickname only");
-    Check(satori::ReadAccount(fixture.dir, &account) && !strcmp(account.nickname, "来自 XML"), "xml fills missing fields");
+    Check(satori::ReadAccount(fixture.dir, &account) && !strcmp(account.nickname, "来自 XML"),
+          "xml fills missing fields");
 }
 
 int main() {

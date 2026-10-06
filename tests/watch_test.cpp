@@ -15,7 +15,10 @@ int failures = 0;
 char g_dir[512];
 
 void Check(bool ok, const char *what) {
-    if (!ok) { fprintf(stderr, "FAIL: %s\n", what); ++failures; }
+    if (!ok) {
+        fprintf(stderr, "FAIL: %s\n", what);
+        ++failures;
+    }
 }
 
 long long Now() {
@@ -29,11 +32,15 @@ void Touch(const char *name, const char *text) {
     snprintf(path, sizeof(path), "%s/%s", g_dir, name);
     const int fd = open(path, O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, 0600);
     if (fd < 0) return;
-    if (write(fd, text, strlen(text)) < 0) { /* the test then fails on the wake */ }
+    if (write(fd, text, strlen(text)) < 0) { /* the test then fails on the wake */
+    }
     close(fd);
 }
 
-struct Writer { const char *name; int delay_ms; };
+struct Writer {
+    const char *name;
+    int delay_ms;
+};
 void *WriteLater(void *argument) {
     auto *writer = static_cast<Writer *>(argument);
     const timespec delay{0, writer->delay_ms * 1000000L};
@@ -57,7 +64,8 @@ bool WaitFor(int fd, const char *name, int delay_ms, int timeout_ms, long long *
 } // namespace
 
 int main() {
-    snprintf(g_dir, sizeof(g_dir), "%s/satori-wx-watch-%d", getenv("SATORI_WATCH_TMP") ? getenv("SATORI_WATCH_TMP") : "/tmp", static_cast<int>(getpid()));
+    snprintf(g_dir, sizeof(g_dir), "%s/satori-wx-watch-%d",
+             getenv("SATORI_WATCH_TMP") ? getenv("SATORI_WATCH_TMP") : "/tmp", static_cast<int>(getpid()));
     mkdir(g_dir, 0700);
     char database[640];
     snprintf(database, sizeof(database), "%s/EnMicroMsg.db", g_dir);
@@ -90,7 +98,9 @@ int main() {
         Check(!woke, "the -shm file is not a change notice");
 
         // A burst of writes is one wake, and the queue is empty afterwards.
-        Touch("EnMicroMsg.db-wal", "a"); Touch("EnMicroMsg.db-wal", "b"); Touch("EnMicroMsg.db-wal", "c");
+        Touch("EnMicroMsg.db-wal", "a");
+        Touch("EnMicroMsg.db-wal", "b");
+        Touch("EnMicroMsg.db-wal", "c");
         Check(satori::WatchWait(fd, 500), "a burst of writes wakes the wait");
         const long long start = Now();
         Check(!satori::WatchWait(fd, 150), "the burst left nothing queued");
@@ -115,8 +125,12 @@ int main() {
 
     char command[600];
     snprintf(command, sizeof(command), "rm -rf '%s'", g_dir);
-    if (system(command) != 0) { /* leftover temp dir is harmless */ }
-    if (failures) { fprintf(stderr, "%d watch check(s) failed\n", failures); return 1; }
+    if (system(command) != 0) { /* leftover temp dir is harmless */
+    }
+    if (failures) {
+        fprintf(stderr, "%d watch check(s) failed\n", failures);
+        return 1;
+    }
     printf("watch tests: PASS\n");
     return 0;
 }

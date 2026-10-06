@@ -5,9 +5,7 @@
 
 namespace satori {
 namespace {
-bool NameChar(char c) {
-    return !(c == ' ' || c == '\t' || c == '\r' || c == '\n' || c == '/' || c == '>' || c == '=');
-}
+bool NameChar(char c) { return !(c == ' ' || c == '\t' || c == '\r' || c == '\n' || c == '/' || c == '>' || c == '='); }
 bool StartsWith(const char *p, const char *end, const char *literal) {
     const size_t n = strlen(literal);
     return static_cast<size_t>(end - p) >= n && !memcmp(p, literal, n);
@@ -21,8 +19,14 @@ const char *Find(const char *p, const char *end, const char *literal) {
 const char *TagEnd(const char *p, const char *end) {
     char quote = 0;
     for (++p; p < end; ++p) {
-        if (quote) { if (*p == quote) quote = 0; continue; }
-        if (*p == '"' || *p == '\'') { quote = *p; continue; }
+        if (quote) {
+            if (*p == quote) quote = 0;
+            continue;
+        }
+        if (*p == '"' || *p == '\'') {
+            quote = *p;
+            continue;
+        }
         if (*p == '>') return p;
     }
     return nullptr;
@@ -30,15 +34,22 @@ const char *TagEnd(const char *p, const char *end) {
 void AppendUtf8(uint32_t code, char *out, size_t capacity, size_t *used) {
     char bytes[4];
     size_t n = 0;
-    if (code < 0x80) bytes[n++] = static_cast<char>(code);
-    else if (code < 0x800) { bytes[n++] = static_cast<char>(0xC0 | (code >> 6)); bytes[n++] = static_cast<char>(0x80 | (code & 0x3F)); }
-    else if (code < 0x10000) {
-        bytes[n++] = static_cast<char>(0xE0 | (code >> 12)); bytes[n++] = static_cast<char>(0x80 | ((code >> 6) & 0x3F));
+    if (code < 0x80)
+        bytes[n++] = static_cast<char>(code);
+    else if (code < 0x800) {
+        bytes[n++] = static_cast<char>(0xC0 | (code >> 6));
+        bytes[n++] = static_cast<char>(0x80 | (code & 0x3F));
+    } else if (code < 0x10000) {
+        bytes[n++] = static_cast<char>(0xE0 | (code >> 12));
+        bytes[n++] = static_cast<char>(0x80 | ((code >> 6) & 0x3F));
         bytes[n++] = static_cast<char>(0x80 | (code & 0x3F));
     } else if (code <= 0x10FFFF) {
-        bytes[n++] = static_cast<char>(0xF0 | (code >> 18)); bytes[n++] = static_cast<char>(0x80 | ((code >> 12) & 0x3F));
-        bytes[n++] = static_cast<char>(0x80 | ((code >> 6) & 0x3F)); bytes[n++] = static_cast<char>(0x80 | (code & 0x3F));
-    } else return;
+        bytes[n++] = static_cast<char>(0xF0 | (code >> 18));
+        bytes[n++] = static_cast<char>(0x80 | ((code >> 12) & 0x3F));
+        bytes[n++] = static_cast<char>(0x80 | ((code >> 6) & 0x3F));
+        bytes[n++] = static_cast<char>(0x80 | (code & 0x3F));
+    } else
+        return;
     if (*used + n >= capacity) return;
     memcpy(out + *used, bytes, n);
     *used += n;
@@ -52,18 +63,28 @@ void DecodeRun(const char *p, const char *end, char *out, size_t capacity, size_
             continue;
         }
         const char *semi = static_cast<const char *>(memchr(p, ';', static_cast<size_t>(end - p)));
-        if (!semi || semi - p > 10) { if (*used + 1 >= capacity) return; out[(*used)++] = *p++; continue; }
-        const size_t n = static_cast<size_t>(semi - p) - 1;  // characters between '&' and ';'
+        if (!semi || semi - p > 10) {
+            if (*used + 1 >= capacity) return;
+            out[(*used)++] = *p++;
+            continue;
+        }
+        const size_t n = static_cast<size_t>(semi - p) - 1; // characters between '&' and ';'
         const char *name = p + 1;
         char literal = 0;
-        if (n == 3 && !memcmp(name, "amp", 3)) literal = '&';
-        else if (n == 2 && !memcmp(name, "lt", 2)) literal = '<';
-        else if (n == 2 && !memcmp(name, "gt", 2)) literal = '>';
-        else if (n == 4 && !memcmp(name, "quot", 4)) literal = '"';
-        else if (n == 4 && !memcmp(name, "apos", 4)) literal = '\'';
+        if (n == 3 && !memcmp(name, "amp", 3))
+            literal = '&';
+        else if (n == 2 && !memcmp(name, "lt", 2))
+            literal = '<';
+        else if (n == 2 && !memcmp(name, "gt", 2))
+            literal = '>';
+        else if (n == 4 && !memcmp(name, "quot", 4))
+            literal = '"';
+        else if (n == 4 && !memcmp(name, "apos", 4))
+            literal = '\'';
         if (literal) {
             if (*used + 1 >= capacity) return;
-            out[(*used)++] = literal; p = semi + 1;
+            out[(*used)++] = literal;
+            p = semi + 1;
             continue;
         }
         if (n >= 2 && name[0] == '#') {
@@ -73,15 +94,28 @@ void DecodeRun(const char *p, const char *end, char *out, size_t capacity, size_
                 if (n < 3) ok = false;
                 for (size_t i = 2; ok && i < n; ++i) {
                     const char h = name[i];
-                    const int v = h >= '0' && h <= '9' ? h - '0' : h >= 'a' && h <= 'f' ? h - 'a' + 10 : h >= 'A' && h <= 'F' ? h - 'A' + 10 : -1;
-                    if (v < 0) ok = false; else code = code * 16 + static_cast<uint32_t>(v);
+                    const int v = h >= '0' && h <= '9'   ? h - '0'
+                                  : h >= 'a' && h <= 'f' ? h - 'a' + 10
+                                  : h >= 'A' && h <= 'F' ? h - 'A' + 10
+                                                         : -1;
+                    if (v < 0)
+                        ok = false;
+                    else
+                        code = code * 16 + static_cast<uint32_t>(v);
                 }
             } else {
                 for (size_t i = 1; ok && i < n; ++i) {
-                    if (name[i] < '0' || name[i] > '9') ok = false; else code = code * 10 + static_cast<uint32_t>(name[i] - '0');
+                    if (name[i] < '0' || name[i] > '9')
+                        ok = false;
+                    else
+                        code = code * 10 + static_cast<uint32_t>(name[i] - '0');
                 }
             }
-            if (ok && code && (code < 0xD800 || code > 0xDFFF)) { AppendUtf8(code, out, capacity, used); p = semi + 1; continue; }
+            if (ok && code && (code < 0xD800 || code > 0xDFFF)) {
+                AppendUtf8(code, out, capacity, used);
+                p = semi + 1;
+                continue;
+            }
         }
         if (*used + 1 >= capacity) return;
         out[(*used)++] = *p++;
@@ -108,19 +142,47 @@ bool XmlChildAt(XmlSlice scope, const char *name, int index, XmlSlice *inner, Xm
     while (p < end) {
         p = static_cast<const char *>(memchr(p, '<', static_cast<size_t>(end - p)));
         if (!p) return false;
-        if (StartsWith(p, end, "<!--")) { const char *close = Find(p + 4, end, "-->"); if (!close) return false; p = close + 3; continue; }
-        if (StartsWith(p, end, "<![CDATA[")) { const char *close = Find(p + 9, end, "]]>"); if (!close) return false; p = close + 3; continue; }
-        if (StartsWith(p, end, "<?")) { const char *close = Find(p + 2, end, "?>"); if (!close) return false; p = close + 2; continue; }
-        if (StartsWith(p, end, "<!")) { const char *close = TagEnd(p, end); if (!close) return false; p = close + 1; continue; }
+        if (StartsWith(p, end, "<!--")) {
+            const char *close = Find(p + 4, end, "-->");
+            if (!close) return false;
+            p = close + 3;
+            continue;
+        }
+        if (StartsWith(p, end, "<![CDATA[")) {
+            const char *close = Find(p + 9, end, "]]>");
+            if (!close) return false;
+            p = close + 3;
+            continue;
+        }
+        if (StartsWith(p, end, "<?")) {
+            const char *close = Find(p + 2, end, "?>");
+            if (!close) return false;
+            p = close + 2;
+            continue;
+        }
+        if (StartsWith(p, end, "<!")) {
+            const char *close = TagEnd(p, end);
+            if (!close) return false;
+            p = close + 1;
+            continue;
+        }
         if (StartsWith(p, end, "</")) {
-            const char *close = memchr(p, '>', static_cast<size_t>(end - p)) ? static_cast<const char *>(memchr(p, '>', static_cast<size_t>(end - p))) : nullptr;
+            const char *close = memchr(p, '>', static_cast<size_t>(end - p))
+                                    ? static_cast<const char *>(memchr(p, '>', static_cast<size_t>(end - p)))
+                                    : nullptr;
             if (!close) return false;
             if (depth > 0) --depth;
             if (depth == 0 && matching) {
                 matching = false;
                 if (++seen == index) {
-                    if (inner) { inner->begin = inner_begin; inner->end = p; }
-                    if (attrs) { attrs->begin = attrs_begin; attrs->end = attrs_end; }
+                    if (inner) {
+                        inner->begin = inner_begin;
+                        inner->end = p;
+                    }
+                    if (attrs) {
+                        attrs->begin = attrs_begin;
+                        attrs->end = attrs_end;
+                    }
                     return true;
                 }
             }
@@ -136,8 +198,13 @@ bool XmlChildAt(XmlSlice scope, const char *name, int index, XmlSlice *inner, Xm
             const char *a_end = self_closing ? close - 1 : close;
             if (self_closing) {
                 if (++seen == index) {
-                    if (inner) { inner->begin = inner->end = close + 1; }
-                    if (attrs) { attrs->begin = tag_name_end; attrs->end = a_end; }
+                    if (inner) {
+                        inner->begin = inner->end = close + 1;
+                    }
+                    if (attrs) {
+                        attrs->begin = tag_name_end;
+                        attrs->end = a_end;
+                    }
                     return true;
                 }
                 p = close + 1;
@@ -145,7 +212,8 @@ bool XmlChildAt(XmlSlice scope, const char *name, int index, XmlSlice *inner, Xm
             }
             matching = true;
             inner_begin = close + 1;
-            attrs_begin = tag_name_end; attrs_end = a_end;
+            attrs_begin = tag_name_end;
+            attrs_end = a_end;
         }
         if (!self_closing) ++depth;
         p = close + 1;
@@ -166,10 +234,12 @@ bool XmlPath(XmlSlice scope, const char *path, XmlSlice *inner, XmlSlice *attrs)
         const size_t length = slash ? static_cast<size_t>(slash - p) : strlen(p);
         char name[64];
         if (!length || length >= sizeof(name)) return false;
-        memcpy(name, p, length); name[length] = 0;
+        memcpy(name, p, length);
+        name[length] = 0;
         XmlSlice next, next_attrs;
         if (!XmlChild(current, name, &next, &next_attrs)) return false;
-        current = next; last_attrs = next_attrs;
+        current = next;
+        last_attrs = next_attrs;
         p += length + (slash ? 1 : 0);
     }
     if (inner) *inner = current;
@@ -233,7 +303,10 @@ bool XmlAttribute(XmlSlice attrs, const char *name, char *out, size_t capacity) 
         while (p < end && NameChar(*p)) ++p;
         const size_t key_size = static_cast<size_t>(p - key);
         while (p < end && (*p == ' ' || *p == '\t')) ++p;
-        if (p >= end || *p != '=') { if (key_size == 0) ++p; continue; }
+        if (p >= end || *p != '=') {
+            if (key_size == 0) ++p;
+            continue;
+        }
         ++p;
         while (p < end && (*p == ' ' || *p == '\t')) ++p;
         if (p >= end) return false;

@@ -10,15 +10,25 @@
 // plain strings.
 namespace satori {
 enum class MsgKind {
-    Text, Image, Voice, Video, Emoji, Location, Card, Link, File, Quote, Other,  // delivered as messages
-    System,   // "xxx joined the group", pat-pat, red-packet tips...: bookkeeping, not chat
-    Revoke,   // a message that was recalled (WeChat rewrites the original row in place)
-    Ignored,  // call logs, mail pushes and other rows no client can use
+    Text,
+    Image,
+    Voice,
+    Video,
+    Emoji,
+    Location,
+    Card,
+    Link,
+    File,
+    Quote,
+    Other,   // delivered as messages
+    System,  // "xxx joined the group", pat-pat, red-packet tips...: bookkeeping, not chat
+    Revoke,  // a message that was recalled (WeChat rewrites the original row in place)
+    Ignored, // call logs, mail pushes and other rows no client can use
 };
 
 struct MessageRow {
-    long long id = 0;          // msgId (the local id, also the rowid)
-    long long svr_id = 0;      // msgSvrId; 0 when absent
+    long long id = 0;     // msgId (the local id, also the rowid)
+    long long svr_id = 0; // msgSvrId; 0 when absent
     int type = 0;
     int is_send = 0;
     long long create_time = 0; // milliseconds
@@ -31,9 +41,9 @@ struct MessageRow {
 
 struct Decoded {
     MsgKind kind = MsgKind::Ignored;
-    bool deliver = false;       // true for the kinds listed first above
-    char sender[96] = {};       // author wxid when the row says so ("" for a private chat: the talker)
-    char *content = nullptr;    // malloc'd Satori markup; set when `deliver`
+    bool deliver = false;    // true for the kinds listed first above
+    char sender[96] = {};    // author wxid when the row says so ("" for a private chat: the talker)
+    char *content = nullptr; // malloc'd Satori markup; set when `deliver`
     // Replies: the quoted message, as far as the row itself knows it.
     char refer_svr_id[24] = {};
     char refer_user[96] = {};

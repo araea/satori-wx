@@ -5,7 +5,7 @@
 #   tools/dev/dev.sh            build + inject a fresh generation
 #   tools/dev/dev.sh --port     just print the port of the last generation
 set -euo pipefail
-R=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
+R=$(CDPATH='' cd -- "$(dirname -- "$0")/../.." && pwd)
 OUT=$R/build/dev
 mkdir -p "$OUT"
 GEN_FILE=$OUT/gen

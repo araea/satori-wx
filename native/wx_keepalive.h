@@ -34,6 +34,6 @@ void KeepaliveStatus(cJSON *object);
 // collapsed row, `big` is the expanded body (`text` plus the uptime line; never the title again,
 // and nothing about the wake lock or sending). Returns the accent color. `serving_ms` is how long
 // the service has been online and listening (0 when it is not). Exposed for tests.
-int KeepaliveRender(long long serving_ms, char *title, size_t title_size, char *text, size_t text_size,
-                    char *big, size_t big_size);
+int KeepaliveRender(long long serving_ms, char *title, size_t title_size, char *text, size_t text_size, char *big,
+                    size_t big_size);
 } // namespace satori

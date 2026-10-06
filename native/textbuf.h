@@ -19,14 +19,21 @@ struct TextBuf {
 
     bool Reserve(size_t extra) {
         if (failed) return false;
-        if (extra > static_cast<size_t>(-1) - size - 1) { failed = true; return false; }
+        if (extra > static_cast<size_t>(-1) - size - 1) {
+            failed = true;
+            return false;
+        }
         const size_t need = size + extra + 1;
         if (need <= capacity) return true;
         size_t grown = capacity ? capacity : 256;
         while (grown < need) grown *= 2;
         char *bigger = static_cast<char *>(realloc(data, grown));
-        if (!bigger) { failed = true; return false; }
-        data = bigger; capacity = grown;
+        if (!bigger) {
+            failed = true;
+            return false;
+        }
+        data = bigger;
+        capacity = grown;
         return true;
     }
     void Append(const char *text, size_t length) {
@@ -35,7 +42,9 @@ struct TextBuf {
         size += length;
         data[size] = 0;
     }
-    void Append(const char *text) { if (text) Append(text, strlen(text)); }
+    void Append(const char *text) {
+        if (text) Append(text, strlen(text));
+    }
     void Append(char c) { Append(&c, 1); }
     // Text node: the three characters that would otherwise start markup.
     void Text(const char *text, size_t length) {
@@ -48,7 +57,9 @@ struct TextBuf {
             }
         }
     }
-    void Text(const char *text) { if (text) Text(text, strlen(text)); }
+    void Text(const char *text) {
+        if (text) Text(text, strlen(text));
+    }
     // Attribute value inside double quotes: additionally escapes the quote itself.
     void Attr(const char *text, size_t length) {
         for (size_t i = 0; i < length; ++i) {
@@ -61,14 +72,21 @@ struct TextBuf {
             }
         }
     }
-    void Attr(const char *text) { if (text) Attr(text, strlen(text)); }
+    void Attr(const char *text) {
+        if (text) Attr(text, strlen(text));
+    }
     // Hands the buffer to the caller as a NUL-terminated malloc'd string (never null unless an
     // allocation failed) and resets this object.
     char *Take() {
         if (failed) return nullptr;
-        if (!data) { data = static_cast<char *>(malloc(1)); if (!data) return nullptr; data[0] = 0; }
+        if (!data) {
+            data = static_cast<char *>(malloc(1));
+            if (!data) return nullptr;
+            data[0] = 0;
+        }
         char *out = data;
-        data = nullptr; size = capacity = 0;
+        data = nullptr;
+        size = capacity = 0;
         return out;
     }
 };

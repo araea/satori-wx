@@ -1,6 +1,6 @@
 #!/data/data/com.termux/files/usr/bin/bash
 set -euo pipefail
-R=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+R=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 mkdir -p "$R/build/tests"
 clang -std=c11 -O1 -g -DCJSON_NESTING_LIMIT=16 -c "$R/native/vendor/cjson/cJSON.c" -o "$R/build/tests/cjson.o"
 clang++ -std=c++20 -O1 -g -fno-exceptions -fno-rtti -nostdinc++ -nostdlib++ -Wall -Wextra -Werror \

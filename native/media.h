@@ -18,7 +18,7 @@ void HmacSha256(const void *key, size_t key_size, const void *data, size_t size,
 
 // Derives the link-signing key from the configured token. Until it is called no link verifies.
 void MediaSetSecret(const char *token);
-constexpr size_t kMediaSigSize = 17;  // 16 hex digits + NUL
+constexpr size_t kMediaSigSize = 17; // 16 hex digits + NUL
 void MediaSign(const char *user, const char *kind, const char *id, char out[kMediaSigSize]);
 bool MediaVerify(const char *user, const char *kind, const char *id, const char *signature);
 // `internal:wechat/<user>/_msg/<kind>/<id>/<signature>`; false when `capacity` is too small.

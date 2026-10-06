@@ -13,7 +13,10 @@
 namespace {
 int failures = 0;
 void Check(bool ok, const char *what) {
-    if (!ok) { fprintf(stderr, "FAIL: %s\n", what); ++failures; }
+    if (!ok) {
+        fprintf(stderr, "FAIL: %s\n", what);
+        ++failures;
+    }
 }
 struct Rows {
     int count = 0;
@@ -33,7 +36,8 @@ bool Collect(satori::Wcdb *db, void *stmt, void *context) {
     return true;
 }
 bool StopAtFirst(satori::Wcdb *db, void *stmt, void *context) {
-    (void)db; (void)stmt;
+    (void)db;
+    (void)stmt;
     ++*static_cast<int *>(context);
     return false;
 }
@@ -41,13 +45,19 @@ bool StopAtFirst(satori::Wcdb *db, void *stmt, void *context) {
 
 int main() {
     const char *library = getenv("SATORI_WCDB_LIB");
-    if (!library || !*library) { printf("wcdb tests: SKIP (set SATORI_WCDB_LIB)\n"); return 0; }
+    if (!library || !*library) {
+        printf("wcdb tests: SKIP (set SATORI_WCDB_LIB)\n");
+        return 0;
+    }
     const char *base = getenv("SATORI_ACCOUNT_TMP");
     if (!base || !*base) base = getenv("TMPDIR");
     if (!base || !*base) base = ".";
     char directory[512];
     snprintf(directory, sizeof(directory), "%s/satori-wcdb-XXXXXX", base);
-    if (!mkdtemp(directory)) { fprintf(stderr, "mkdtemp failed\n"); return 2; }
+    if (!mkdtemp(directory)) {
+        fprintf(stderr, "mkdtemp failed\n");
+        return 2;
+    }
     char path[640];
     snprintf(path, sizeof(path), "%s/test.db", directory);
     const int created = open(path, O_CREAT | O_WRONLY | O_CLOEXEC, 0600);
@@ -55,7 +65,10 @@ int main() {
 
     satori::Wcdb *db = satori::WcdbOpen(library, path, nullptr, 0, 0);
     Check(db != nullptr, "open plaintext database");
-    if (!db) { fprintf(stderr, "wcdb error: %s\n", satori::WcdbError(nullptr)); return 1; }
+    if (!db) {
+        fprintf(stderr, "wcdb error: %s\n", satori::WcdbError(nullptr));
+        return 1;
+    }
     Check(satori::WcdbExec(db, "CREATE TABLE t(a TEXT, b INTEGER)"), "create table");
     Check(satori::WcdbExec(db, "INSERT INTO t VALUES('hello', 42)"), "insert 1");
     Check(satori::WcdbExec(db, "INSERT INTO t VALUES('世界', 7)"), "insert 2");
@@ -82,7 +95,10 @@ int main() {
     snprintf(cleanup, sizeof(cleanup), "%s", path);
     unlink(cleanup);
     rmdir(directory);
-    if (failures) { fprintf(stderr, "%d wcdb test(s) failed\n", failures); return 1; }
+    if (failures) {
+        fprintf(stderr, "%d wcdb test(s) failed\n", failures);
+        return 1;
+    }
     printf("wcdb tests: PASS\n");
     return 0;
 }
