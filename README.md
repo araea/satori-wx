@@ -90,3 +90,4 @@ HTTP 使用 `Authorization: Bearer <token>`：缺失 token 返回 401，错误 t
 - [事件](docs/wechat-events.md)
 - [常驻通知与保活](docs/keepalive.md)
 - [开发者指引](docs/HANDOFF.md)
+- [代码规范](docs/STYLE.md)

@@ -432,7 +432,7 @@ void DecodeAppMsg(const MessageRow &row, const char *body, const char *self_id, 
     if (subtype == 62) {
         DecodePat(appmsg, self_id, out);
         return;
-    }                                                       // "拍了拍": who patted whom
+    } // "拍了拍": who patted whom
     if (subtype == 19 && DecodeRecord(appmsg, out)) return; // 聊天记录: a merged forward
 
     char title[1024] = {}, description[2048] = {}, url[2048] = {};

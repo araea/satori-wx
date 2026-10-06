@@ -9,6 +9,9 @@ JSON_JAR=$R/libs/json.jar
 OUT=${ZHIYAN_OUT:-$R/build}/tests
 rm -rf "$OUT" && mkdir -p "$OUT/classes"
 
+echo "== 0a. import 规范 =="
+python3 "$R/../tools/java-imports.py" --check $(find "$R/src" "$R/tests" -name '*.java')
+
 echo "== 0. 服务端 ReadConfig（native/server.cpp）=="
 clang -std=c11 -O1 -c "$NATIVE/vendor/cjson/cJSON.c" -o "$OUT/cjson.o"
 clang++ -std=c++20 -O1 -fno-exceptions -fno-rtti -nostdinc++ -nostdlib++ -Wall -Wextra -Werror \

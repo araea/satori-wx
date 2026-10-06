@@ -9,6 +9,12 @@ export SATORI_WCDB_LIB=${SATORI_WCDB_LIB:-/data/data/com.termux/files/usr/lib/li
 export SATORI_ACCOUNT_TMP=$OUT/tmp SATORI_TMPROOT=$OUT/tmp SATORI_WATCH_TMP=$OUT/tmp
 export SATORI_FIXTURES=$R/tests/fixtures
 
+# 版式检查：与 .clang-format 对不上就失败（没装 clang-format 时跳过）。
+if command -v clang-format >/dev/null 2>&1; then
+    (cd "$R" && git ls-files 'native/*.cpp' 'native/*.h' 'tests/*.cpp' 'tools/*.cpp' |
+        grep -v -e vendor -e zygisk.hpp | xargs clang-format --dry-run --Werror)
+fi
+
 FLAGS=(-std=c++20 -O1 -g -fno-exceptions -fno-rtti -fno-threadsafe-statics -nostdinc++ -nostdlib++
        -Wall -Wextra -Werror -I "$R/native")
 clang -std=c11 -O1 -g -DCJSON_NESTING_LIMIT=16 -c "$R/native/vendor/cjson/cJSON.c" -o "$OUT/cjson.o"
