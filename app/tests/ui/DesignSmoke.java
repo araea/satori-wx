@@ -7,7 +7,6 @@ import android.content.res.Configuration;
 import android.graphics.Bitmap;
 import android.graphics.Canvas;
 import android.os.Bundle;
-import android.text.Layout;
 import android.view.ContextThemeWrapper;
 import android.view.Gravity;
 import android.view.View;
@@ -269,7 +268,7 @@ public final class DesignSmoke extends Instrumentation {
         }
         if (view instanceof TextView && view.getImportantForAccessibility() != View.IMPORTANT_FOR_ACCESSIBILITY_NO
                 && !(view instanceof EditText)) {
-            Layout layout = ((TextView) view).getLayout();
+            android.text.Layout layout = ((TextView) view).getLayout();
             for (int i = 0; layout != null && i < layout.getLineCount(); i++) {
                 if (layout.getEllipsisCount(i) > 0) {
                     failures.add(name + ": 文字被截断：" + ((TextView) view).getText());
