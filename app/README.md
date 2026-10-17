@@ -16,7 +16,7 @@
 ```sh
 ./build.sh                 # → build/Zhiyan.apk（先自检令牌与图标生成物是否过期）
 ./test.sh                  # JVM：配置与服务端 ReadConfig 一致性、状态推导、对比度合约；有 su 时加跑 root 脚本
-bash tests/ui/run.sh       # 真机：离屏渲染各状态页面并检查，截图在 build/design-tests/design-review/
+bash tests/ui/run.sh       # 真机：离屏渲染各状态页面并检查，截图在 build/design-tests/design-review/；测试包跑完自动卸载
 
 python3 tools/make-tokens.py   # 改种子色后重新生成 res/values*/tokens.xml
 python3 tools/make-icons.py    # 增删图标后重新生成 res/drawable/ms_*.xml 与启动图标

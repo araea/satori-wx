@@ -24,6 +24,8 @@ echo "== 3. package + sign（与应用同一把密钥）=="
 apksigner sign --ks "$KS" --ks-pass pass:zhiyan-local --key-pass pass:zhiyan-local --out "$OUT/DesignSmoke.apk" "$OUT/aligned.apk"
 
 echo "== 4. 安装并运行 =="
+# 测试包只为这一次运行而装，不管成败都卸掉，免得在手机上留下一个「知言界面测试」。
+trap 'su -c "pm uninstall com.satori.wx.test" >/dev/null 2>&1 || true' EXIT
 su -c "cp '$OUT/DesignSmoke.apk' /data/local/tmp/zhiyan-smoke.apk && pm install -r -d /data/local/tmp/zhiyan-smoke.apk >/dev/null && rm /data/local/tmp/zhiyan-smoke.apk"
 # ColorOS 的 Hans 会冻结在后台停留几秒的应用进程，测试进程也不例外；被冻住时 am instrument 会一直等下去。
 # 给它一个上限，并说清原因，而不是无声挂起。
