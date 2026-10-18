@@ -67,12 +67,15 @@ build audio-test - tests/audio_test.cpp audio_pcm
 build message-test - tests/message_test.cpp wx_message media xml_lite
 "$OUT/message-test"
 
-build capabilities-test -llog tests/capabilities_test.cpp wx_capabilities wx_send server protocol multipart \
+build capabilities-test -llog tests/capabilities_test.cpp wx_capabilities wx_send wx_names server protocol multipart \
     upload_stream tempstore webhook wx_account wx_adapter cjson
 "$OUT/capabilities-test"
 
-build keepalive-test -llog tests/keepalive_test.cpp wx_keepalive wx_send protocol cjson
+build keepalive-test -llog tests/keepalive_test.cpp wx_keepalive wx_send wx_names protocol cjson
 "$OUT/keepalive-test"
+
+build names-test - tests/names_test.cpp wx_names
+"$OUT/names-test"
 
 build content-test - tests/content_test.cpp protocol cjson
 "$OUT/content-test"
@@ -89,7 +92,7 @@ build upload-stream-test - tests/upload_stream_test.cpp upload_stream multipart 
 build forward-test - tests/forward_test.cpp wx_forward protocol media xml_lite cjson
 "$OUT/forward-test"
 
-build backend-test -llog tests/backend_test.cpp wx_backend wx_send mp4_probe wx_capabilities protocol tempstore \
+build backend-test -llog tests/backend_test.cpp wx_backend wx_send wx_names mp4_probe wx_capabilities protocol tempstore \
     media wx_forward cjson
 "$OUT/backend-test"
 

@@ -1,6 +1,7 @@
 // Reflection-only sender: no hooks, no code patches, no dex, no ArtMethod changes.
 //
-// Verified against WeChat 8.0.78 (base.apk, versionCode 671108664):
+// What it calls, in terms of the WeChat 8.0.78 names (every name is in wx_names.h, with the 8.0.79 ones; WeChat
+// renames its classes on each release and wx_discover.cpp finds them for builds nobody has looked at):
 //   com.tencent.mm.network.a3.c()            static -> j1 dispatcher (com.tencent.mm.network.s)
 //   v51.r0.<init>(String,String,int,int,long,String)  -> inserts the message into the app db
 //   v51.r0.f  (long)                         -> local message id returned by that insert
@@ -14,6 +15,7 @@
 //   d1.doScene(dispatcher, com.tencent.mm.network.y2)   -> int netId (>= 0 accepted).
 #include "wx_send.h"
 #include "state_hook.h"
+#include "wx_names.h"
 #include <jni.h>
 #include <pthread.h>
 #include <stdarg.h>
@@ -39,6 +41,7 @@ char g_last_error[160] = {};
 
 // Resolved once on the host class loader and then only read.
 bool g_resolved = false;
+const WxNames *g_names = nullptr; // the set of names the core (text, recall) resolved against
 bool g_dispatcher_ok = false;
 int g_state = kSendUnknown;
 char g_state_detail[160] = {};
@@ -47,7 +50,7 @@ long long g_probe_ms = 0;          // when SendProbe() last did real work (monot
 int g_mismatches = 0;              // consecutive Resolve() failures that look like a WeChat version mismatch
 jobject g_loader = nullptr;        // java.lang.ClassLoader (app)
 jmethodID g_loader_load = nullptr; // ClassLoader.loadClass(String), cached by Resolve
-jclass g_r0 = nullptr;             // v51.r0
+jclass g_r0 = nullptr;             // the text-send scene (NetSceneSendMsg)
 jmethodID g_r0_ctor = nullptr;     // (String,String,int,int,long,String)V
 jmethodID g_r0_ctor_map = nullptr; // (String,String,int,int,Object,String)V: the overload that takes a msgsource map
 jclass g_hashmap = nullptr;        // java.util.HashMap, for that map
@@ -67,9 +70,9 @@ jmethodID g_r1_dispatcher = nullptr; // k()Lcom/tencent/mm/network/s;
 jclass g_d1 = nullptr;             // com.tencent.mm.modelsimple.d1 (NetSceneRevokeMsg)
 jmethodID g_d1_ctor = nullptr;     // (e9,String,String)V
 jmethodID g_d1_do_scene = nullptr; // (com.tencent.mm.network.s, com.tencent.mm.modelbase.u0)I
-jclass g_k0 = nullptr;             // ex0.k0 (message store holder)
-jfieldID g_k0_store = nullptr;     // F0:Lex0/j0;
-jclass g_j0 = nullptr;             // ex0.j0 (per-account message store)
+jclass g_k0 = nullptr;             // the message store holder
+jfieldID g_k0_store = nullptr;     // its static field holding the store
+jclass g_j0 = nullptr;             // the per-account message store
 jmethodID g_j0_get = nullptr;      // k(String,J)Le9;
 jmethodID g_e9_is_send = nullptr;  // z0()I, 1 when the message was sent by this account
 long long g_recalled = 0;
@@ -138,12 +141,22 @@ void PrepareLooper(JNIEnv *env) {
     env->DeleteLocalRef(looper);
 }
 
+// Gives the calling thread a Looper when the WeChat build being driven wants one (wx_names.h ThreadLooper):
+// 8.0.78's send pipeline builds Handlers on this thread and throws without one. 8.0.79's dispatch asks
+// whether the thread has a Looper and, if it does, posts the server's answer to it; ours never runs, so the
+// answer (and with it the row leaving "sending") is lost. Idempotent and cheap.
+void EnsureLooper(JNIEnv *env) {
+    const WxNames *names = g_names;
+    if (names && !strcmp(names->value[kThreadLooper], "prepare")) PrepareLooper(env);
+}
+
 JNIEnv *Env() {
     if (!g_vm) return nullptr;
     JNIEnv *env = nullptr;
-    if (g_vm->GetEnv(reinterpret_cast<void **>(&env), JNI_VERSION_1_6) == JNI_OK) return env;
-    if (g_vm->AttachCurrentThreadAsDaemon(&env, nullptr) != JNI_OK) return nullptr;
-    PrepareLooper(env);
+    if (g_vm->GetEnv(reinterpret_cast<void **>(&env), JNI_VERSION_1_6) != JNI_OK) {
+        if (g_vm->AttachCurrentThreadAsDaemon(&env, nullptr) != JNI_OK) return nullptr;
+    }
+    EnsureLooper(env);
     return env;
 }
 
@@ -159,8 +172,127 @@ jclass LoadClass(JNIEnv *env, jobject loader, jmethodID load, const char *name) 
     return cls;
 }
 
+// Resolves the sender's classes and members for ONE set of names (see wx_names.h). Assumes `loader` and
+// `load` are the app class loader and its loadClass. Nothing is kept unless everything the text sender needs
+// is present; recall is a separate capability, resolved leniently, so a build that lacks it still sends text.
+// A set that does not fit leaves no global reference behind.
+bool ResolveWith(JNIEnv *env, jobject loader, jmethodID load, const WxNames &n, char *detail, size_t size) {
+    auto name = [&n](WxKey key) { return n.value[key]; };
+    char slash[160];
+    jclass r0 = LoadClass(env, loader, load, name(kSendSceneCls));
+    jclass noop = LoadClass(env, loader, load, name(kNoopCallbackCls));
+    jclass core = LoadClass(env, loader, load, name(kPushCoreCls));
+    jclass queue = LoadClass(env, loader, load, name(kNetQueueCls));
+    bool ok = true;
+    if (!r0 || !noop || !core) {
+        ok = false;
+        Detail(detail, size, "send classes not found (version mismatch?)");
+    }
+    jmethodID r0_ctor = nullptr, r0_ctor_map = nullptr, r0_do_scene = nullptr, noop_ctor = nullptr,
+              core_dispatcher = nullptr;
+    jmethodID hashmap_ctor = nullptr, hashmap_put = nullptr;
+    jfieldID r0_local = nullptr;
+    jclass hashmap_global = nullptr;
+    if (ok) {
+        r0_ctor = Method(env, r0, "<init>", "(Ljava/lang/String;Ljava/lang/String;IIJLjava/lang/String;)V");
+        // Optional: the overload the chat UI uses to attach an <atuserlist>; a build without it
+        // still sends text, just without real mentions.
+        r0_ctor_map =
+            Method(env, r0, "<init>", "(Ljava/lang/String;Ljava/lang/String;IILjava/lang/Object;Ljava/lang/String;)V");
+        jclass hashmap = env->FindClass("java/util/HashMap");
+        if (hashmap) {
+            hashmap_ctor = Method(env, hashmap, "<init>", "()V");
+            hashmap_put = Method(env, hashmap, "put", "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;");
+            if (hashmap_ctor && hashmap_put) hashmap_global = static_cast<jclass>(env->NewGlobalRef(hashmap));
+            env->DeleteLocalRef(hashmap);
+        }
+        if (env->ExceptionCheck()) env->ExceptionClear();
+        r0_local = Field(env, r0, name(kSendSceneLocalIdName), "J");
+        r0_do_scene = Method(env, r0, "doScene", name(kDoSceneDesc));
+        noop_ctor = Method(env, noop, "<init>", "()V");
+        core_dispatcher = StaticMethod(env, core, name(kPushCoreDispatcherName), name(kPushCoreDispatcherDesc));
+        if (!r0_ctor || !r0_local || !r0_do_scene || !noop_ctor || !core_dispatcher) {
+            ok = false;
+            Detail(detail, size, "send methods not found (version mismatch?)");
+        }
+    }
+    // The dispatcher in the main process is the remote one held by the MMKernel network
+    // holder; the push core's only exists in :push. Not fatal if absent, so it is resolved leniently.
+    jfieldID queue_singleton = nullptr;
+    jmethodID queue_dispatcher = nullptr;
+    if (ok && queue) {
+        queue_singleton = StaticField(env, queue, name(kNetQueueSingletonName), name(kNetQueueSingletonDesc));
+        queue_dispatcher = Method(env, queue, name(kNetQueueDispatcherName), name(kNetQueueDispatcherDesc));
+    }
+    // Recall is a separate capability: resolve it without failing text sends when a class
+    // or member is missing (another WeChat build, or the scene renamed).
+    jclass d1 = LoadClass(env, loader, load, name(kRevokeCls));
+    jclass k0 = LoadClass(env, loader, load, name(kStoreHolderCls));
+    jclass j0 = LoadClass(env, loader, load, name(kStoreCls));
+    jclass e9 = LoadClass(env, loader, load, name(kMsgInfoCls));
+    jmethodID d1_ctor = nullptr, d1_do_scene = nullptr, j0_get = nullptr, e9_is_send = nullptr;
+    jfieldID k0_store = nullptr;
+    if (ok && d1 && k0 && j0 && e9) {
+        d1_ctor = Method(env, d1, "<init>", name(kRevokeCtorDesc));
+        d1_do_scene = Method(env, d1, "doScene", name(kDoSceneDesc));
+        k0_store = StaticField(env, k0, name(kStoreHolderFieldName), name(kStoreHolderFieldDesc));
+        j0_get = Method(env, j0, name(kStoreGetName), name(kStoreGetDesc));
+        e9_is_send = Method(env, e9, name(kMsgInfoIsSendName), "()I");
+        if (!d1_ctor || !d1_do_scene || !k0_store || !j0_get || !e9_is_send) {
+            d1_ctor = d1_do_scene = j0_get = e9_is_send = nullptr;
+            k0_store = nullptr;
+        }
+    }
+    const bool recall = d1_ctor && d1_do_scene && k0_store && j0_get && e9_is_send;
+    if (ok) {
+        g_loader = env->NewGlobalRef(loader);
+        g_loader_load = load;
+        g_r0 = static_cast<jclass>(env->NewGlobalRef(r0));
+        g_y2 = static_cast<jclass>(env->NewGlobalRef(noop));
+        g_a3 = static_cast<jclass>(env->NewGlobalRef(core));
+        g_r1 = queue && queue_singleton && queue_dispatcher ? static_cast<jclass>(env->NewGlobalRef(queue)) : nullptr;
+        g_d1 = recall ? static_cast<jclass>(env->NewGlobalRef(d1)) : nullptr;
+        g_k0 = recall ? static_cast<jclass>(env->NewGlobalRef(k0)) : nullptr;
+        g_j0 = recall ? static_cast<jclass>(env->NewGlobalRef(j0)) : nullptr;
+        if (!g_loader || !g_r0 || !g_y2 || !g_a3) {
+            ok = false;
+            Detail(detail, size, "global reference allocation failed");
+        } else {
+            g_r0_ctor = r0_ctor;
+            g_r0_ctor_map = r0_ctor_map;
+            g_hashmap = hashmap_global;
+            g_hashmap_ctor = hashmap_ctor;
+            g_hashmap_put = hashmap_put;
+            g_r0_local = r0_local;
+            g_r0_do_scene = r0_do_scene;
+            g_y2_ctor = noop_ctor;
+            g_a3_dispatcher = core_dispatcher;
+            g_r1_singleton = g_r1 ? queue_singleton : nullptr;
+            g_r1_dispatcher = g_r1 ? queue_dispatcher : nullptr;
+            g_d1_ctor = recall ? d1_ctor : nullptr;
+            g_d1_do_scene = recall ? d1_do_scene : nullptr;
+            g_k0_store = recall ? k0_store : nullptr;
+            g_j0_get = recall ? j0_get : nullptr;
+            g_e9_is_send = recall ? e9_is_send : nullptr;
+            g_names = &n;
+        }
+    }
+    (void)slash;
+    if (r0) env->DeleteLocalRef(r0);
+    if (noop) env->DeleteLocalRef(noop);
+    if (core) env->DeleteLocalRef(core);
+    if (queue) env->DeleteLocalRef(queue);
+    if (d1) env->DeleteLocalRef(d1);
+    if (k0) env->DeleteLocalRef(k0);
+    if (j0) env->DeleteLocalRef(j0);
+    if (e9) env->DeleteLocalRef(e9);
+    if (!ok && hashmap_global) env->DeleteGlobalRef(hashmap_global);
+    return ok;
+}
+
 // Builds the cache from the host class loader. The app's classes are invisible to native
-// FindClass, so everything goes through ActivityThread.currentApplication()'s loader.
+// FindClass, so everything goes through ActivityThread.currentApplication()'s loader. Tries each set of
+// names in turn (wx_names.h) and keeps the first that fits; g_names says which.
 bool Resolve(JNIEnv *env, char *detail, size_t size) {
     jclass activity_thread = env->FindClass("android/app/ActivityThread");
     if (!activity_thread) {
@@ -186,118 +318,29 @@ bool Resolve(JNIEnv *env, char *detail, size_t size) {
         env->ExceptionClear();
         loader = nullptr;
     }
+    bool ok = false;
     if (!loader) {
-        env->DeleteLocalRef(application);
-        if (application_class) env->DeleteLocalRef(application_class);
-        env->DeleteLocalRef(activity_thread);
         Detail(detail, size, "application class loader unavailable");
-        return false;
-    }
-    jclass loader_class = env->FindClass("java/lang/ClassLoader");
-    jmethodID load = Method(env, loader_class, "loadClass", "(Ljava/lang/String;)Ljava/lang/Class;");
-    if (!load) {
-        env->ExceptionClear();
-        env->DeleteLocalRef(loader);
-        if (loader_class) env->DeleteLocalRef(loader_class);
-        env->DeleteLocalRef(application);
-        if (application_class) env->DeleteLocalRef(application_class);
-        env->DeleteLocalRef(activity_thread);
-        Detail(detail, size, "ClassLoader.loadClass unavailable");
-        return false;
-    }
-
-    bool ok = true;
-    jclass r0 = LoadClass(env, loader, load, "v51.r0");
-    jclass y2 = LoadClass(env, loader, load, "com.tencent.mm.network.y2");
-    jclass a3 = LoadClass(env, loader, load, "com.tencent.mm.network.a3");
-    jclass r1 = LoadClass(env, loader, load, "com.tencent.mm.modelbase.r1");
-    if (!r0 || !y2 || !a3) {
-        ok = false;
-        Detail(detail, size, "send classes not found (version mismatch?)");
-    }
-    if (ok) {
-        g_r0_ctor = Method(env, r0, "<init>", "(Ljava/lang/String;Ljava/lang/String;IIJLjava/lang/String;)V");
-        // Optional: the overload the chat UI uses to attach an <atuserlist>; a build without it
-        // still sends text, just without real mentions.
-        g_r0_ctor_map =
-            Method(env, r0, "<init>", "(Ljava/lang/String;Ljava/lang/String;IILjava/lang/Object;Ljava/lang/String;)V");
-        if (!g_r0_ctor_map) env->ExceptionClear();
-        jclass hashmap = env->FindClass("java/util/HashMap");
-        if (hashmap) {
-            g_hashmap_ctor = Method(env, hashmap, "<init>", "()V");
-            g_hashmap_put = Method(env, hashmap, "put", "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;");
-            if (g_hashmap_ctor && g_hashmap_put) g_hashmap = static_cast<jclass>(env->NewGlobalRef(hashmap));
-            env->DeleteLocalRef(hashmap);
-        }
-        if (env->ExceptionCheck()) env->ExceptionClear();
-        g_r0_local = Field(env, r0, "f", "J");
-        g_r0_do_scene = Method(env, r0, "doScene", "(Lcom/tencent/mm/network/s;Lcom/tencent/mm/modelbase/u0;)I");
-        g_y2_ctor = Method(env, y2, "<init>", "()V");
-        g_a3_dispatcher = StaticMethod(env, a3, "c", "()Lcom/tencent/mm/network/j1;");
-        if (!g_r0_ctor || !g_r0_local || !g_r0_do_scene || !g_y2_ctor || !g_a3_dispatcher) {
+    } else {
+        jclass loader_class = env->FindClass("java/lang/ClassLoader");
+        jmethodID load = Method(env, loader_class, "loadClass", "(Ljava/lang/String;)Ljava/lang/Class;");
+        if (!load) {
             env->ExceptionClear();
-            ok = false;
-            Detail(detail, size, "send methods not found (version mismatch?)");
-        }
-    }
-    // The dispatcher in the main process is the remote one held by the MMKernel network
-    // holder; a3's j1 only exists in :push. Not fatal if absent, so it is resolved leniently.
-    if (ok && r1) {
-        g_r1_singleton = StaticField(env, r1, "y", "Lcom/tencent/mm/modelbase/r1;");
-        g_r1_dispatcher = Method(env, r1, "k", "()Lcom/tencent/mm/network/s;");
-        if (!g_r1_singleton || !g_r1_dispatcher) env->ExceptionClear();
-    }
-    // Recall is a separate capability: resolve it without failing text sends when a class
-    // or member is missing (another WeChat build, or the scene renamed).
-    jclass d1 = LoadClass(env, loader, load, "com.tencent.mm.modelsimple.d1");
-    jclass k0 = LoadClass(env, loader, load, "ex0.k0");
-    jclass j0 = LoadClass(env, loader, load, "ex0.j0");
-    jclass e9 = LoadClass(env, loader, load, "com.tencent.mm.storage.e9");
-    if (ok && d1 && k0 && j0 && e9) {
-        g_d1_ctor = Method(env, d1, "<init>", "(Lcom/tencent/mm/storage/e9;Ljava/lang/String;Ljava/lang/String;)V");
-        g_d1_do_scene = Method(env, d1, "doScene", "(Lcom/tencent/mm/network/s;Lcom/tencent/mm/modelbase/u0;)I");
-        g_k0_store = StaticField(env, k0, "F0", "Lex0/j0;");
-        g_j0_get = Method(env, j0, "k", "(Ljava/lang/String;J)Lcom/tencent/mm/storage/e9;");
-        g_e9_is_send = Method(env, e9, "z0", "()I");
-        if (!g_d1_ctor || !g_d1_do_scene || !g_k0_store || !g_j0_get || !g_e9_is_send) {
-            env->ExceptionClear();
-            g_d1_ctor = nullptr;
-            g_d1_do_scene = nullptr;
-            g_k0_store = nullptr;
-            g_j0_get = nullptr;
-            g_e9_is_send = nullptr;
-        }
-    }
-    if (ok) {
-        g_loader = env->NewGlobalRef(loader);
-        g_loader_load = load;
-        g_r0 = static_cast<jclass>(env->NewGlobalRef(r0));
-        g_y2 = static_cast<jclass>(env->NewGlobalRef(y2));
-        g_a3 = static_cast<jclass>(env->NewGlobalRef(a3));
-        g_r1 = r1 ? static_cast<jclass>(env->NewGlobalRef(r1)) : nullptr;
-        g_d1 = d1 ? static_cast<jclass>(env->NewGlobalRef(d1)) : nullptr;
-        g_k0 = k0 ? static_cast<jclass>(env->NewGlobalRef(k0)) : nullptr;
-        g_j0 = j0 ? static_cast<jclass>(env->NewGlobalRef(j0)) : nullptr;
-        if (!g_loader || !g_r0 || !g_y2 || !g_a3) {
-            ok = false;
-            Detail(detail, size, "global reference allocation failed");
+            Detail(detail, size, "ClassLoader.loadClass unavailable");
         } else {
-            g_resolved = true;
+            for (int i = 0; i < WxNamesCount() && !ok; ++i)
+                ok = ResolveWith(env, loader, load, WxNamesAt(i), detail, size);
         }
+        if (loader_class) env->DeleteLocalRef(loader_class);
+        env->DeleteLocalRef(loader);
     }
-    if (r0) env->DeleteLocalRef(r0);
-    if (y2) env->DeleteLocalRef(y2);
-    if (a3) env->DeleteLocalRef(a3);
-    if (r1) env->DeleteLocalRef(r1);
-    if (d1) env->DeleteLocalRef(d1);
-    if (k0) env->DeleteLocalRef(k0);
-    if (j0) env->DeleteLocalRef(j0);
-    if (e9) env->DeleteLocalRef(e9);
-    env->DeleteLocalRef(loader);
-    env->DeleteLocalRef(loader_class);
     env->DeleteLocalRef(application);
-    env->DeleteLocalRef(application_class);
+    if (application_class) env->DeleteLocalRef(application_class);
     env->DeleteLocalRef(activity_thread);
+    if (ok) {
+        g_resolved = true;
+        EnsureLooper(env);
+    }
     return ok;
 }
 
@@ -417,6 +460,7 @@ void SendStatusGet(SendStatus *status) {
     status->rejected = g_rejected;
     status->recalled = g_recalled;
     status->media = g_media;
+    snprintf(status->names, sizeof(status->names), "%s", g_names ? g_names->label : "");
     status->state = g_state;
     snprintf(status->state_detail, sizeof(status->state_detail), "%s", g_state_detail);
     status->last_age_ms = g_attempt_ms ? NowMs() - g_attempt_ms : -1;
@@ -674,26 +718,43 @@ SendResult SendImage(const char *talker, const char *self_id, const char *path) 
     if (!resolved) return result;
 
     // Everything below is looked up per call (a picture is rare enough) so a build without the
-    // image classes degrades to one failed request, not a broken sender.
-    jclass n0 = LoadClass(env, g_loader, g_loader_load, "ph5.n0");
-    jclass service_interface = LoadClass(env, g_loader, g_loader_load, "kt.d1");
-    jclass params_class = LoadClass(env, g_loader, g_loader_load, "da0.g");
-    jclass context_class = LoadClass(env, g_loader, g_loader_load, "w90.i0");
-    jclass callback_class = LoadClass(env, g_loader, g_loader_load, "b41.k7");
-    jclass prepare_class = LoadClass(env, g_loader, g_loader_load, "com.tencent.mm.pluginsdk.ui.tools.p0");
+    // image classes degrades to one failed request, not a broken sender. Each set of names is tried in
+    // turn (wx_names.h); the first whose classes and members all exist is the one used.
+    jclass n0 = nullptr, service_interface = nullptr, params_class = nullptr, context_class = nullptr,
+           callback_class = nullptr, prepare_class = nullptr;
     jobject service = nullptr, callback = nullptr, context = nullptr, params = nullptr, flow = nullptr;
     jstring jpath = nullptr, jself = nullptr, jtalker = nullptr, jsource = nullptr;
-    jmethodID lookup = StaticMethod(env, n0, "c", "(Ljava/lang/Class;)Lph5/m;");
-    jmethodID params_ctor =
-        Method(env, params_class, "<init>", "(Ljava/lang/String;ILjava/lang/String;Ljava/lang/String;Lw90/i0;)V");
-    jfieldID params_source = Field(env, params_class, "j", "Ljava/lang/String;");
-    jmethodID context_ctor = Method(env, context_class, "<init>", "()V");
-    jfieldID context_kind = Field(env, context_class, "a", "I");
-    jfieldID context_callback = Field(env, context_class, "o", "Lb41/k7;");
-    jmethodID callback_ctor = Method(env, callback_class, "<init>", "()V");
-    jmethodID prepare = StaticMethod(env, prepare_class, "a", "()V");
-    if (!n0 || !service_interface || !params_class || !context_class || !callback_class || !lookup || !params_ctor ||
-        !params_source || !context_ctor || !context_kind || !context_callback || !callback_ctor) {
+    jmethodID lookup = nullptr, params_ctor = nullptr, context_ctor = nullptr, callback_ctor = nullptr,
+              prepare = nullptr;
+    jfieldID params_source = nullptr, context_kind = nullptr, context_callback = nullptr;
+    const WxNames *names = nullptr;
+    for (int i = 0; i < WxNamesCount() && !names; ++i) {
+        const WxNames &n = WxNamesAt(i);
+        jclass *held[] = {&n0, &service_interface, &params_class, &context_class, &callback_class, &prepare_class};
+        for (jclass *slot : held) {
+            if (*slot) env->DeleteLocalRef(*slot);
+            *slot = nullptr;
+        }
+        n0 = LoadClass(env, g_loader, g_loader_load, n.value[kLocatorCls]);
+        service_interface = LoadClass(env, g_loader, g_loader_load, n.value[kImageServiceCls]);
+        params_class = LoadClass(env, g_loader, g_loader_load, n.value[kImageParamsCls]);
+        context_class = LoadClass(env, g_loader, g_loader_load, n.value[kImageContextCls]);
+        callback_class = LoadClass(env, g_loader, g_loader_load, n.value[kImageCallbackCls]);
+        prepare_class = LoadClass(env, g_loader, g_loader_load, n.value[kPrepareCls]);
+        lookup = StaticMethod(env, n0, n.value[kLocatorGetName], n.value[kLocatorGetDesc]);
+        params_ctor = Method(env, params_class, "<init>", n.value[kImageParamsCtorDesc]);
+        params_source = Field(env, params_class, n.value[kImageParamsSourceName], "Ljava/lang/String;");
+        context_ctor = Method(env, context_class, "<init>", "()V");
+        context_kind = Field(env, context_class, n.value[kImageContextKindName], "I");
+        context_callback =
+            Field(env, context_class, n.value[kImageContextCallbackName], n.value[kImageContextCallbackDesc]);
+        callback_ctor = Method(env, callback_class, "<init>", "()V");
+        prepare = StaticMethod(env, prepare_class, n.value[kPrepareName], "()V");
+        if (n0 && service_interface && params_class && context_class && callback_class && lookup && params_ctor &&
+            params_source && context_ctor && context_kind && context_callback && callback_ctor)
+            names = &n;
+    }
+    if (!names) {
         Detail(result.detail, sizeof(result.detail), "image classes not found (version mismatch?)");
     } else {
         service = env->CallStaticObjectMethod(n0, lookup, service_interface);
@@ -702,8 +763,9 @@ SendResult SendImage(const char *talker, const char *self_id, const char *path) 
             service = nullptr;
         }
         jclass service_class = service ? env->GetObjectClass(service) : nullptr;
-        jmethodID send =
-            service_class ? Method(env, service_class, "rj", "(Lda0/g;)Lkotlinx/coroutines/flow/j;") : nullptr;
+        jmethodID send = service_class
+                             ? Method(env, service_class, names->value[kImageSendName], names->value[kImageSendDesc])
+                             : nullptr;
         if (service_class) env->DeleteLocalRef(service_class);
         if (!service || !send) {
             Detail(result.detail, sizeof(result.detail),

@@ -53,6 +53,7 @@ void Status(cJSON *object, bool) {
                                 : status.state == satori::kSendIncompatible ? "incompatible"
                                                                             : "unknown");
         if (status.state_detail[0]) cJSON_AddStringToObject(send, "detail", status.state_detail);
+        if (status.names[0]) cJSON_AddStringToObject(send, "names", status.names);
         cJSON_AddNumberToObject(send, "sent", static_cast<double>(status.sent));
         cJSON_AddNumberToObject(send, "failed", static_cast<double>(status.failed));
         cJSON_AddNumberToObject(send, "media", static_cast<double>(status.media));

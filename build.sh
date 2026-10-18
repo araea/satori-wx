@@ -22,7 +22,7 @@ FLAGS=(-std=c++20 -O2 -fPIC -fvisibility=hidden -fno-exceptions -fno-rtti
 SERVER_CORE=(server protocol multipart upload_stream tempstore webhook)
 MODULE_ONLY=(
     module wx_account wx_adapter wx_live wx_watch wx_store wx_backend wx_capabilities
-    wx_send wx_send_media mp4_probe wx_voice audio_pcm wx_forward wx_room wx_pat
+    wx_send wx_send_media wx_names mp4_probe wx_voice audio_pcm wx_forward wx_room wx_pat
     wx_message wx_events wx_media media xml_lite wx_keepalive wx_key wcdb
 )
 sources() {

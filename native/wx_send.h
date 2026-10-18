@@ -107,6 +107,7 @@ struct SendStatus {
     long long last_local_id;
     char last_target[96];
     char last_error[160];
+    char names[24];         // the WeChat names the sender resolved against (wx_names.h label), empty before it did
     int state;              // SendState as of the last SendProbe() / send attempt
     char state_detail[160]; // why, when state is not kSendReady
 };

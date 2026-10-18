@@ -15,6 +15,7 @@
 #include "wx_pat.h"
 #include "wx_live.h"
 #include "wx_send.h"
+#include "wx_names.h"
 #include "wx_store.h"
 #include <android/log.h>
 #include <jni.h>
@@ -31,6 +32,7 @@ bool g_ready = false;
 jclass g_mgr = nullptr, g_scene = nullptr, g_pair = nullptr;
 jmethodID g_nj = nullptr, g_scene_ctor = nullptr, g_scene_do = nullptr, g_long_value = nullptr;
 jfieldID g_pair_first = nullptr;
+const WxNames *g_names = nullptr; // the set of WeChat names this resolved against
 
 void Detail(char *out, size_t size, const char *format, ...) {
     if (!out || !size) return;
@@ -55,6 +57,49 @@ jfieldID Field(JNIEnv *env, jclass cls, const char *name, const char *signature)
 
 // Resolves the pat classes once; every reference is promoted to a global. A failure clears the
 // half-built cache so a later call can retry from scratch.
+bool ResolveWith(JNIEnv *env, const WxNames &n) {
+    auto load = [](const char *name) { return static_cast<jclass>(ReflectLoad(name)); };
+    jclass mgr = load(n.value[kPatManagerCls]);
+    jclass scene = load(n.value[kPatSceneCls]);
+    jclass pair = load("android.util.Pair");
+    jclass boxed = load("java.lang.Long");
+    bool ok = mgr && scene && pair && boxed;
+    if (ok) {
+        // (talker, fromUser, pattedUser, template, createTimeSec, svrId) -> Pair(msgId, createTime)
+        g_nj =
+            Method(env, mgr, n.value[kPatInsertName],
+                   "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;IJ)Landroid/util/Pair;");
+        g_scene_ctor = Method(env, scene, "<init>", "(Landroid/util/Pair;Ljava/lang/String;Ljava/lang/String;I)V");
+        g_scene_do = Method(env, scene, "doScene", n.value[kDoSceneDesc]);
+        g_long_value = Method(env, boxed, "longValue", "()J");
+        g_pair_first = Field(env, pair, "first", "Ljava/lang/Object;");
+        ok = g_nj && g_scene_ctor && g_scene_do && g_long_value && g_pair_first;
+    }
+    if (ok) {
+        g_mgr = static_cast<jclass>(env->NewGlobalRef(mgr));
+        g_scene = static_cast<jclass>(env->NewGlobalRef(scene));
+        g_pair = static_cast<jclass>(env->NewGlobalRef(pair));
+        ok = g_mgr && g_scene && g_pair;
+    }
+    if (mgr) env->DeleteLocalRef(mgr);
+    if (scene) env->DeleteLocalRef(scene);
+    if (pair) env->DeleteLocalRef(pair);
+    if (boxed) env->DeleteLocalRef(boxed);
+    if (ok) {
+        g_names = &n;
+        return true;
+    }
+    jclass *held[] = {&g_mgr, &g_scene, &g_pair};
+    for (jclass *slot : held) {
+        if (*slot) env->DeleteGlobalRef(*slot);
+        *slot = nullptr;
+    }
+    return false;
+}
+
+// Resolves the pat classes once, against the first set of WeChat names (wx_names.h) under which they all
+// exist; every reference is promoted to a global. A failure clears the half-built cache so a later call can
+// retry from scratch.
 bool Resolve(JNIEnv *env, char *detail, size_t size) {
     if (g_ready) return true;
     char reason[160] = {};
@@ -62,56 +107,27 @@ bool Resolve(JNIEnv *env, char *detail, size_t size) {
         Detail(detail, size, "%s", reason);
         return false;
     }
-    auto load = [](const char *name) { return static_cast<jclass>(ReflectLoad(name)); };
-    jclass mgr = load("nv3.l");
-    jclass scene = load("qv3.b");
-    jclass pair = load("android.util.Pair");
-    jclass boxed = load("java.lang.Long");
-    bool ok = mgr && scene && pair && boxed;
-    if (ok) {
-        // (talker, fromUser, pattedUser, template, createTimeSec, svrId) -> Pair(msgId, createTime)
-        g_nj =
-            Method(env, mgr, "nj",
-                   "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;IJ)Landroid/util/Pair;");
-        g_scene_ctor = Method(env, scene, "<init>", "(Landroid/util/Pair;Ljava/lang/String;Ljava/lang/String;I)V");
-        g_scene_do = Method(env, scene, "doScene", "(Lcom/tencent/mm/network/s;Lcom/tencent/mm/modelbase/u0;)I");
-        g_long_value = Method(env, boxed, "longValue", "()J");
-        g_pair_first = Field(env, pair, "first", "Ljava/lang/Object;");
-        ok = g_nj && g_scene_ctor && g_scene_do && g_long_value && g_pair_first;
+    for (int i = 0; i < WxNamesCount(); ++i) {
+        if (ResolveWith(env, WxNamesAt(i))) {
+            g_ready = true;
+            return true;
+        }
     }
-    if (!ok) {
-        Detail(detail, size, "pat classes not found (version mismatch?)");
-        if (mgr) env->DeleteLocalRef(mgr);
-        if (scene) env->DeleteLocalRef(scene);
-        if (pair) env->DeleteLocalRef(pair);
-        if (boxed) env->DeleteLocalRef(boxed);
-        return false;
-    }
-    g_mgr = static_cast<jclass>(env->NewGlobalRef(mgr));
-    g_scene = static_cast<jclass>(env->NewGlobalRef(scene));
-    g_pair = static_cast<jclass>(env->NewGlobalRef(pair));
-    env->DeleteLocalRef(mgr);
-    env->DeleteLocalRef(scene);
-    env->DeleteLocalRef(pair);
-    env->DeleteLocalRef(boxed);
-    if (!g_mgr || !g_scene || !g_pair) {
-        Detail(detail, size, "global reference allocation failed");
-        return false;
-    }
-    g_ready = true;
-    return true;
+    Detail(detail, size, "pat classes not found (version mismatch?)");
+    return false;
 }
 
-// The pat manager instance: the app's service locator keyed by the marker interface ov3.j.
+// The pat manager instance: the app's service locator keyed by the pat service interface.
 jobject Manager(JNIEnv *env) {
-    jclass marker = static_cast<jclass>(ReflectLoad("ov3.j"));
+    if (!g_names) return nullptr;
+    jclass marker = static_cast<jclass>(ReflectLoad(g_names->value[kPatServiceCls]));
     if (!marker) return nullptr;
-    jclass locator = static_cast<jclass>(ReflectLoad("ph5.n0"));
+    jclass locator = static_cast<jclass>(ReflectLoad(g_names->value[kLocatorCls]));
     if (!locator) {
         env->DeleteLocalRef(marker);
         return nullptr;
     }
-    jmethodID get = env->GetStaticMethodID(locator, "c", "(Ljava/lang/Class;)Lph5/m;");
+    jmethodID get = env->GetStaticMethodID(locator, g_names->value[kLocatorGetName], g_names->value[kLocatorGetDesc]);
     if (env->ExceptionCheck()) {
         env->ExceptionClear();
         get = nullptr;

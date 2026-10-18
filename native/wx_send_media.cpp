@@ -5,7 +5,9 @@
 // is rare next to text), so a WeChat build that renamed one of them costs that one request and
 // never the whole sender.
 //
-// Verified against WeChat 8.0.78 (versionCode 671108664):
+// The WeChat names involved are in wx_names.h (verified for 8.0.78 and 8.0.79; wx_discover.cpp finds them
+// for other builds). Every sender tries the sets of names in turn and uses the first whose classes and
+// members all exist. In terms of the 8.0.78 names:
 //   File   pluginsdk.model.app.k0.k()                       -> attachment directory (with '/')
 //          pluginsdk.model.app.k0.f(dir, title, ext)        -> free destination path in it
 //          dx0.r.v(xml)                                     -> parsed <appmsg> content (type 6)
@@ -14,6 +16,7 @@
 //             upload; the same call the app's own qs5.v5.dj() ends in)
 #include "wx_send.h"
 #include "textbuf.h"
+#include "wx_names.h"
 #include <errno.h>
 #include <fcntl.h>
 #include <jni.h>
@@ -60,7 +63,7 @@ jfieldID Field(JNIEnv *env, jclass cls, const char *name, const char *signature)
 // Owns local references so every early return releases them.
 struct Locals {
     JNIEnv *env;
-    jobject items[24];
+    jobject items[64];
     int count = 0;
     explicit Locals(JNIEnv *e) : env(e) {}
     ~Locals() {
@@ -68,10 +71,45 @@ struct Locals {
             if (items[i]) env->DeleteLocalRef(items[i]);
     }
     template <typename T> T keep(T ref) {
-        if (ref && count < 24) items[count++] = ref;
+        if (ref && count < 64) items[count++] = ref;
         return ref;
     }
 };
+
+jclass LoadClass(const char *name) { return static_cast<jclass>(ReflectLoad(name)); }
+
+// AppMsgLogic: the call that carries files, quote replies and merged forwards. Loaded for one set of names;
+// `ok` says that set fits. The attachment-directory helpers only matter to files, so they are not part of it.
+struct AppMsgRefs {
+    const WxNames *names = nullptr;
+    jclass logic = nullptr, content = nullptr, prepare_class = nullptr;
+    jmethodID attach_dir = nullptr, free_path = nullptr, send_app = nullptr, parse = nullptr, prepare = nullptr;
+    bool ok = false;
+};
+
+void LoadAppMsg(JNIEnv *env, const WxNames &n, Locals &locals, AppMsgRefs *r) {
+    *r = AppMsgRefs{};
+    r->logic = locals.keep(LoadClass(n.value[kAppMsgCls]));
+    r->content = locals.keep(LoadClass(n.value[kContentCls]));
+    r->prepare_class = locals.keep(LoadClass(n.value[kPrepareCls]));
+    if (env->ExceptionCheck()) env->ExceptionClear();
+    r->attach_dir = StaticMethod(env, r->logic, n.value[kAppMsgAttachDirName], "()Ljava/lang/String;");
+    r->free_path = StaticMethod(env, r->logic, n.value[kAppMsgFreePathName],
+                                "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;");
+    r->send_app = StaticMethod(env, r->logic, n.value[kAppMsgSendName], n.value[kAppMsgSendDesc]);
+    r->parse = StaticMethod(env, r->content, n.value[kContentParseName], n.value[kContentParseDesc]);
+    r->prepare = StaticMethod(env, r->prepare_class, n.value[kPrepareName], "()V");
+    r->names = &n;
+    r->ok = r->logic && r->content && r->send_app && r->parse;
+}
+
+// The first set of names under which AppMsgLogic is all there; `r->ok` is false when none is.
+void FindAppMsg(JNIEnv *env, Locals &locals, AppMsgRefs *r) {
+    for (int i = 0; i < WxNamesCount(); ++i) {
+        LoadAppMsg(env, WxNamesAt(i), locals, r);
+        if (r->ok) return;
+    }
+}
 
 // XML text/attribute escaping for the appmsg content.
 void AppendEscaped(char *out, size_t capacity, size_t *used, const char *text) {
@@ -191,6 +229,21 @@ bool Stage(const char *path, char *out, size_t capacity, char *detail, size_t si
     }
     return LinkOrCopy(path, out, detail, size);
 }
+
+// A name for a new video file, the way WeChat makes one (c3.a in 8.0.79): yyMMddHHmmss, the last three digits
+// of the millisecond clock, a counter, and whatever follows the last '@' of the conversation name.
+void NewVideoName(const char *talker, char *out, size_t size) {
+    static unsigned long long counter = 1;
+    timespec now{};
+    clock_gettime(CLOCK_REALTIME, &now);
+    const time_t seconds = now.tv_sec;
+    tm local{};
+    localtime_r(&seconds, &local);
+    const long long millis = static_cast<long long>(now.tv_sec) * 1000 + now.tv_nsec / 1000000;
+    const char *at = talker ? strrchr(talker, '@') : nullptr;
+    snprintf(out, size, "%02d%02d%02d%02d%02d%02d%03d%llu%s", local.tm_year % 100, local.tm_mon + 1, local.tm_mday,
+             local.tm_hour, local.tm_min, local.tm_sec, static_cast<int>(millis % 1000), counter++, at ? at + 1 : "");
+}
 } // namespace
 
 SendResult SendFile(const char *talker, const char *path, const char *title) {
@@ -214,27 +267,20 @@ SendResult SendFile(const char *talker, const char *path, const char *title) {
     }
     if (!ReflectResolve(result.detail, sizeof(result.detail))) return result;
     Locals locals(env);
-    jclass k0 = locals.keep(static_cast<jclass>(ReflectLoad("com.tencent.mm.pluginsdk.model.app.k0")));
-    jclass content_class = locals.keep(static_cast<jclass>(ReflectLoad("dx0.r")));
+    AppMsgRefs app;
+    FindAppMsg(env, locals, &app);
     jclass pair_class = locals.keep(env->FindClass("android/util/Pair"));
     jclass integer_class = locals.keep(env->FindClass("java/lang/Integer"));
     jclass long_class = locals.keep(env->FindClass("java/lang/Long"));
-    jclass prepare_class = locals.keep(static_cast<jclass>(ReflectLoad("com.tencent.mm.pluginsdk.ui.tools.p0")));
-    if (env->ExceptionCheck()) env->ExceptionClear();
-    jmethodID attach_dir = StaticMethod(env, k0, "k", "()Ljava/lang/String;");
-    jmethodID free_path =
-        StaticMethod(env, k0, "f", "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;");
-    jmethodID send_app = StaticMethod(
-        env, k0, "I",
-        "(Ldx0/r;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;[B)Landroid/util/Pair;");
-    jmethodID parse = StaticMethod(env, content_class, "v", "(Ljava/lang/String;)Ldx0/r;");
+    jclass k0 = app.logic, content_class = app.content, prepare_class = app.prepare_class;
+    jmethodID attach_dir = app.attach_dir, free_path = app.free_path, send_app = app.send_app, parse = app.parse,
+              prepare = app.prepare;
     jfieldID pair_first = Field(env, pair_class, "first", "Ljava/lang/Object;");
     jfieldID pair_second = Field(env, pair_class, "second", "Ljava/lang/Object;");
     jmethodID int_value = Method(env, integer_class, "intValue", "()I");
     jmethodID long_value = Method(env, long_class, "longValue", "()J");
-    jmethodID prepare = StaticMethod(env, prepare_class, "a", "()V");
-    if (!k0 || !content_class || !pair_class || !attach_dir || !free_path || !send_app || !parse || !pair_first ||
-        !pair_second || !int_value || !long_value) {
+    if (!app.ok || !attach_dir || !free_path || !pair_class || !pair_first || !pair_second || !int_value ||
+        !long_value) {
         Detail(result.detail, sizeof(result.detail), "file classes not found (version mismatch?)");
         return result;
     }
@@ -377,23 +423,25 @@ SendResult SendVideo(const char *talker, const char *path, const char *thumb_pat
     }
     if (!ReflectResolve(result.detail, sizeof(result.detail))) return result;
     Locals locals(env);
-    jclass n0 = locals.keep(static_cast<jclass>(ReflectLoad("ph5.n0")));
-    jclass service_interface = locals.keep(static_cast<jclass>(ReflectLoad("ab5.s")));
-    jclass element_class = locals.keep(static_cast<jclass>(ReflectLoad("qi0.w2")));
-    jclass cross_class = locals.keep(static_cast<jclass>(ReflectLoad("qi0.t2")));
-    jclass names_class = locals.keep(static_cast<jclass>(ReflectLoad("s61.c3")));
-    jclass prepare_class = locals.keep(static_cast<jclass>(ReflectLoad("com.tencent.mm.pluginsdk.ui.tools.p0")));
-    if (env->ExceptionCheck()) env->ExceptionClear();
-    jmethodID lookup = StaticMethod(env, n0, "c", "(Ljava/lang/Class;)Lph5/m;");
-    jmethodID element_ctor = Method(env, element_class, "<init>",
-                                    "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;ZILqi0/t2;Lb41/k7;)V");
-    jmethodID cross_ctor = Method(
-        env, cross_class, "<init>",
-        "(Lb41/i7;Lpc5/qn6;Ljava/lang/String;Lpc5/p87;Ljava/lang/String;Lpc5/qn4;ZLqi0/r2;Ljava/lang/String;Lp95/f;ZZZ)V");
-    jmethodID unique_name = StaticMethod(env, names_class, "a", "(Ljava/lang/String;)Ljava/lang/String;");
-    jmethodID prepare = StaticMethod(env, prepare_class, "a", "()V");
-    if (!n0 || !service_interface || !element_class || !cross_class || !lookup || !element_ctor || !cross_ctor ||
-        !unique_name) {
+    const WxNames *names = nullptr;
+    jclass n0 = nullptr, service_interface = nullptr, element_class = nullptr, cross_class = nullptr,
+           prepare_class = nullptr;
+    jmethodID lookup = nullptr, element_ctor = nullptr, cross_ctor = nullptr, prepare = nullptr;
+    for (int i = 0; i < WxNamesCount() && !names; ++i) {
+        const WxNames &n = WxNamesAt(i);
+        n0 = locals.keep(LoadClass(n.value[kLocatorCls]));
+        service_interface = locals.keep(LoadClass(n.value[kVideoServiceCls]));
+        element_class = locals.keep(LoadClass(n.value[kVideoElementCls]));
+        cross_class = locals.keep(LoadClass(n.value[kVideoCrossCls]));
+        prepare_class = locals.keep(LoadClass(n.value[kPrepareCls]));
+        if (env->ExceptionCheck()) env->ExceptionClear();
+        lookup = StaticMethod(env, n0, n.value[kLocatorGetName], n.value[kLocatorGetDesc]);
+        element_ctor = Method(env, element_class, "<init>", n.value[kVideoElementCtorDesc]);
+        cross_ctor = Method(env, cross_class, "<init>", n.value[kVideoCrossCtorDesc]);
+        prepare = StaticMethod(env, prepare_class, n.value[kPrepareName], "()V");
+        if (n0 && service_interface && element_class && cross_class && lookup && element_ctor && cross_ctor) names = &n;
+    }
+    if (!names) {
         Detail(result.detail, sizeof(result.detail), "video classes not found (version mismatch?)");
         return result;
     }
@@ -403,10 +451,12 @@ SendResult SendVideo(const char *talker, const char *path, const char *thumb_pat
         service = nullptr;
     }
     jclass service_class = service ? locals.keep(env->GetObjectClass(service)) : nullptr;
-    jmethodID send = service_class ? Method(env, service_class, "cj", "(Lqi0/w2;Ljava/lang/String;)Z") : nullptr;
+    jmethodID send = service_class
+                         ? Method(env, service_class, names->value[kVideoSendName], names->value[kVideoSendDesc])
+                         : nullptr;
     if (!service || !send) {
         Detail(result.detail, sizeof(result.detail),
-               service ? "video service has no cj() (version mismatch?)" : "video service unavailable");
+               service ? "video service has no send method (version mismatch?)" : "video service unavailable");
         return result;
     }
     if (prepare) {
@@ -418,9 +468,9 @@ SendResult SendVideo(const char *talker, const char *path, const char *thumb_pat
     jstring jtalker = locals.keep(env->NewStringUTF(talker));
     jstring jpath = locals.keep(env->NewStringUTF(staged));
     jstring jthumb = locals.keep(env->NewStringUTF(thumb_path ? thumb_path : ""));
-    jstring jname =
-        jtalker ? locals.keep(static_cast<jstring>(env->CallStaticObjectMethod(names_class, unique_name, jtalker)))
-                : nullptr;
+    char unique[120];
+    NewVideoName(talker, unique, sizeof(unique));
+    jstring jname = locals.keep(env->NewStringUTF(unique));
     if (env->ExceptionCheck()) {
         env->ExceptionClear();
         jname = nullptr;
@@ -479,62 +529,63 @@ SendResult SendQuote(const char *talker, const char *text, const QuoteRef &quote
     }
     if (!ReflectResolve(result.detail, sizeof(result.detail))) return result;
     Locals locals(env);
-    jclass k0 = locals.keep(static_cast<jclass>(ReflectLoad("com.tencent.mm.pluginsdk.model.app.k0")));
-    jclass content_class = locals.keep(static_cast<jclass>(ReflectLoad("dx0.r")));
-    jclass item_class =
-        locals.keep(static_cast<jclass>(ReflectLoad("com.tencent.mm.plugin.msgquote.model.MsgQuoteItem")));
+    AppMsgRefs app;
+    FindAppMsg(env, locals, &app);
+    const WxNames &n = *(app.names ? app.names : &WxNamesAt(0));
+    jclass item_class = locals.keep(LoadClass(n.value[kQuoteItemCls]));
     jclass pair_class = locals.keep(env->FindClass("android/util/Pair"));
     jclass integer_class = locals.keep(env->FindClass("java/lang/Integer"));
     jclass long_class = locals.keep(env->FindClass("java/lang/Long"));
-    jclass prepare_class = locals.keep(static_cast<jclass>(ReflectLoad("com.tencent.mm.pluginsdk.ui.tools.p0")));
     if (env->ExceptionCheck()) env->ExceptionClear();
-    jmethodID send_app = StaticMethod(
-        env, k0, "I",
-        "(Ldx0/r;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;[B)Landroid/util/Pair;");
+    jclass k0 = app.logic, content_class = app.content, prepare_class = app.prepare_class;
+    jmethodID send_app = app.send_app, prepare = app.prepare;
+    const char *quote_desc = "Lcom/tencent/mm/plugin/msgquote/model/MsgQuoteItem;";
+    char quote_desc_buf[200];
+    WxClassDesc(n.value[kQuoteItemCls], quote_desc_buf, sizeof(quote_desc_buf));
+    quote_desc = quote_desc_buf;
     jmethodID content_ctor = Method(env, content_class, "<init>", "()V");
     jmethodID item_ctor = Method(env, item_class, "<init>", "()V");
-    jfieldID title = Field(env, content_class, "f", "Ljava/lang/String;");
-    jfieldID kind = Field(env, content_class, "i", "I");
-    jfieldID quote_field = Field(env, content_class, "x2", "Lcom/tencent/mm/plugin/msgquote/model/MsgQuoteItem;");
-    jfieldID item_type = Field(env, item_class, "d", "I");
-    jfieldID item_svr = Field(env, item_class, "e", "J");
-    jfieldID item_from = Field(env, item_class, "f", "Ljava/lang/String;");
-    jfieldID item_chat = Field(env, item_class, "g", "Ljava/lang/String;");
-    jfieldID item_name = Field(env, item_class, "h", "Ljava/lang/String;");
-    jfieldID item_source = Field(env, item_class, "i", "Ljava/lang/String;");
-    jfieldID item_content = Field(env, item_class, "m", "Ljava/lang/String;");
-    jfieldID item_merged = Field(env, item_class, "n", "Ljava/lang/String;");
-    jfieldID item_strid = Field(env, item_class, "p", "Ljava/lang/String;");
-    jfieldID item_created = Field(env, item_class, "q", "J");
+    jfieldID title = Field(env, content_class, n.value[kContentTitleName], "Ljava/lang/String;");
+    jfieldID kind = Field(env, content_class, n.value[kContentKindName], "I");
+    jfieldID quote_field = Field(env, content_class, n.value[kContentQuoteName], quote_desc);
+    jfieldID item_type = Field(env, item_class, n.value[kQuoteItemTypeName], "I");
+    jfieldID item_svr = Field(env, item_class, n.value[kQuoteItemSvrName], "J");
+    jfieldID item_from = Field(env, item_class, n.value[kQuoteItemFromName], "Ljava/lang/String;");
+    jfieldID item_chat = Field(env, item_class, n.value[kQuoteItemChatName], "Ljava/lang/String;");
+    jfieldID item_name = Field(env, item_class, n.value[kQuoteItemDisplayName], "Ljava/lang/String;");
+    jfieldID item_source = Field(env, item_class, n.value[kQuoteItemSourceName], "Ljava/lang/String;");
+    jfieldID item_content = Field(env, item_class, n.value[kQuoteItemContentName], "Ljava/lang/String;");
+    jfieldID item_merged = Field(env, item_class, n.value[kQuoteItemMergedName], "Ljava/lang/String;");
+    jfieldID item_strid = Field(env, item_class, n.value[kQuoteItemStridName], "Ljava/lang/String;");
+    jfieldID item_created = Field(env, item_class, n.value[kQuoteItemCreatedName], "J");
     jfieldID pair_first = Field(env, pair_class, "first", "Ljava/lang/Object;");
     jfieldID pair_second = Field(env, pair_class, "second", "Ljava/lang/Object;");
     jmethodID int_value = Method(env, integer_class, "intValue", "()I");
     jmethodID long_value = Method(env, long_class, "longValue", "()J");
-    jmethodID prepare = StaticMethod(env, prepare_class, "a", "()V");
     const struct {
         const char *name;
         const void *found;
     } needed[] = {
-        {"k0", k0},
-        {"dx0.r", content_class},
+        {"AppMsgLogic", app.ok ? k0 : nullptr},
+        {"AppMsgContent", content_class},
         {"MsgQuoteItem", item_class},
         {"Pair", pair_class},
-        {"k0.I", send_app},
-        {"dx0.r.<init>", content_ctor},
+        {"AppMsgLogic.send", send_app},
+        {"AppMsgContent.<init>", content_ctor},
         {"MsgQuoteItem.<init>", item_ctor},
-        {"dx0.r.f", title},
-        {"dx0.r.i", kind},
-        {"dx0.r.x2", quote_field},
-        {"item.d", item_type},
-        {"item.e", item_svr},
-        {"item.f", item_from},
-        {"item.g", item_chat},
-        {"item.h", item_name},
-        {"item.i", item_source},
-        {"item.m", item_content},
-        {"item.n", item_merged},
-        {"item.p", item_strid},
-        {"item.q", item_created},
+        {"AppMsgContent.title", title},
+        {"AppMsgContent.kind", kind},
+        {"AppMsgContent.quote", quote_field},
+        {"item.type", item_type},
+        {"item.svrid", item_svr},
+        {"item.fromusr", item_from},
+        {"item.chatusr", item_chat},
+        {"item.displayname", item_name},
+        {"item.msgsource", item_source},
+        {"item.content", item_content},
+        {"item.merged", item_merged},
+        {"item.strid", item_strid},
+        {"item.createtime", item_created},
         {"Pair.first", pair_first},
         {"Pair.second", pair_second},
         {"Integer.intValue", int_value},
@@ -640,24 +691,18 @@ SendResult SendForward(const char *talker, const char *title, const char *desc, 
     }
     if (!ReflectResolve(result.detail, sizeof(result.detail))) return result;
     Locals locals(env);
-    jclass k0 = locals.keep(static_cast<jclass>(ReflectLoad("com.tencent.mm.pluginsdk.model.app.k0")));
-    jclass content_class = locals.keep(static_cast<jclass>(ReflectLoad("dx0.r")));
+    AppMsgRefs app;
+    FindAppMsg(env, locals, &app);
     jclass pair_class = locals.keep(env->FindClass("android/util/Pair"));
     jclass integer_class = locals.keep(env->FindClass("java/lang/Integer"));
     jclass long_class = locals.keep(env->FindClass("java/lang/Long"));
-    jclass prepare_class = locals.keep(static_cast<jclass>(ReflectLoad("com.tencent.mm.pluginsdk.ui.tools.p0")));
-    if (env->ExceptionCheck()) env->ExceptionClear();
-    jmethodID send_app = StaticMethod(
-        env, k0, "I",
-        "(Ldx0/r;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;[B)Landroid/util/Pair;");
-    jmethodID parse = StaticMethod(env, content_class, "v", "(Ljava/lang/String;)Ldx0/r;");
+    jclass k0 = app.logic, content_class = app.content, prepare_class = app.prepare_class;
+    jmethodID send_app = app.send_app, parse = app.parse, prepare = app.prepare;
     jfieldID pair_first = Field(env, pair_class, "first", "Ljava/lang/Object;");
     jfieldID pair_second = Field(env, pair_class, "second", "Ljava/lang/Object;");
     jmethodID int_value = Method(env, integer_class, "intValue", "()I");
     jmethodID long_value = Method(env, long_class, "longValue", "()J");
-    jmethodID prepare = StaticMethod(env, prepare_class, "a", "()V");
-    if (!k0 || !content_class || !pair_class || !send_app || !parse || !pair_first || !pair_second || !int_value ||
-        !long_value) {
+    if (!app.ok || !pair_class || !pair_first || !pair_second || !int_value || !long_value) {
         Detail(result.detail, sizeof(result.detail), "forward classes not found (version mismatch?)");
         return result;
     }
@@ -768,37 +813,56 @@ SendResult SendVoice(const char *talker, const char *silk_path, int duration_ms)
     }
     if (!ReflectResolve(result.detail, sizeof(result.detail))) return result;
     Locals locals(env);
-    jclass logic = locals.keep(static_cast<jclass>(ReflectLoad("v61.d1")));
-    jclass n0 = locals.keep(static_cast<jclass>(ReflectLoad("ph5.n0")));
-    jclass paths_interface = locals.keep(static_cast<jclass>(ReflectLoad("rn3.u0")));
-    jclass kind_class = locals.keep(static_cast<jclass>(ReflectLoad("ou5.x")));
-    jclass message_class = locals.keep(static_cast<jclass>(ReflectLoad("com.tencent.mm.storage.e9")));
-    if (env->ExceptionCheck()) env->ExceptionClear();
-    jmethodID start = StaticMethod(env, logic, "h", "(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;");
-    jmethodID finish =
-        StaticMethod(env, logic, "u", "(Ljava/lang/String;IILcom/tencent/mm/storage/e9;Ljava/lang/String;)Z");
-    jmethodID lookup = StaticMethod(env, n0, "c", "(Ljava/lang/Class;)Lph5/m;");
-    jclass subcore = locals.keep(static_cast<jclass>(ReflectLoad("v61.v0")));
-    jclass uploader_class = locals.keep(static_cast<jclass>(ReflectLoad("yl.y0")));
-    if (env->ExceptionCheck()) env->ExceptionClear();
-    jmethodID uploader_of = StaticMethod(env, subcore, "dj", "()Lyl/y0;");
-    jmethodID uploader_run = Method(env, uploader_class, "e", "()V");
-    jfieldID legacy = kind_class ? env->GetStaticFieldID(kind_class, "j", "Lou5/x;") : nullptr;
-    if (env->ExceptionCheck()) env->ExceptionClear();
-    const struct {
-        const char *name;
-        const void *found;
-    } needed[] = {
-        {"v61.d1", logic},      {"ph5.n0", n0},         {"rn3.u0", paths_interface},
-        {"ou5.x", kind_class},  {"e9", message_class},  {"d1.h", start},
-        {"d1.u", finish},       {"n0.c", lookup},       {"ou5.x.j", legacy},
-        {"v0.dj", uploader_of}, {"y0.e", uploader_run},
-    };
-    for (const auto &entry : needed) {
-        if (!entry.found) {
-            Detail(result.detail, sizeof(result.detail), "voice classes not found (version mismatch?): %s", entry.name);
-            return result;
+    const WxNames *names = nullptr;
+    jclass logic = nullptr, n0 = nullptr, paths_interface = nullptr, kind_class = nullptr, message_class = nullptr,
+           subcore = nullptr, uploader_class = nullptr;
+    jmethodID start = nullptr, finish = nullptr, lookup = nullptr, uploader_of = nullptr, uploader_run = nullptr;
+    jfieldID legacy = nullptr;
+    // Which of the sets fits is decided by all of it being there; the last one tried is reported when none does.
+    const char *missing = "";
+    for (int i = 0; i < WxNamesCount() && !names; ++i) {
+        const WxNames &n = WxNamesAt(i);
+        logic = locals.keep(LoadClass(n.value[kVoiceLogicCls]));
+        n0 = locals.keep(LoadClass(n.value[kLocatorCls]));
+        paths_interface = locals.keep(LoadClass(n.value[kVoicePathsCls]));
+        kind_class = locals.keep(LoadClass(n.value[kVoiceKindCls]));
+        message_class = locals.keep(LoadClass(n.value[kMsgInfoCls]));
+        subcore = locals.keep(LoadClass(n.value[kVoiceSubCoreCls]));
+        uploader_class = locals.keep(LoadClass(n.value[kVoiceUploaderCls]));
+        if (env->ExceptionCheck()) env->ExceptionClear();
+        start = StaticMethod(env, logic, n.value[kVoiceStartName],
+                             "(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;");
+        finish = StaticMethod(env, logic, n.value[kVoiceFinishName], n.value[kVoiceFinishDesc]);
+        lookup = StaticMethod(env, n0, n.value[kLocatorGetName], n.value[kLocatorGetDesc]);
+        uploader_of = StaticMethod(env, subcore, n.value[kVoiceUploaderOfName], n.value[kVoiceUploaderOfDesc]);
+        uploader_run = Method(env, uploader_class, n.value[kVoiceUploaderRunName], "()V");
+        legacy = kind_class
+                     ? env->GetStaticFieldID(kind_class, n.value[kVoiceKindFieldName], n.value[kVoiceKindFieldDesc])
+                     : nullptr;
+        if (env->ExceptionCheck()) env->ExceptionClear();
+        const struct {
+            const char *name;
+            const void *found;
+        } needed[] = {
+            {"VoiceLogic", logic},           {"ServiceLocator", n0},
+            {"VoicePaths", paths_interface}, {"VoiceKind", kind_class},
+            {"MsgInfo", message_class},      {"VoiceLogic.start", start},
+            {"VoiceLogic.finish", finish},   {"Locator.get", lookup},
+            {"VoiceKind.field", legacy},     {"SubCore.uploader", uploader_of},
+            {"Uploader.run", uploader_run},
+        };
+        missing = "";
+        for (const auto &entry : needed) {
+            if (!entry.found) {
+                missing = entry.name;
+                break;
+            }
         }
+        if (!*missing) names = &n;
+    }
+    if (!names) {
+        Detail(result.detail, sizeof(result.detail), "voice classes not found (version mismatch?): %s", missing);
+        return result;
     }
     jobject paths = locals.keep(env->CallStaticObjectMethod(n0, lookup, paths_interface));
     if (env->ExceptionCheck()) {
@@ -807,7 +871,7 @@ SendResult SendVoice(const char *talker, const char *silk_path, int duration_ms)
     }
     jclass paths_class = paths ? locals.keep(env->GetObjectClass(paths)) : nullptr;
     jmethodID voice_path =
-        paths_class ? Method(env, paths_class, "Fj", "(Lou5/x;Ljava/lang/String;ZZ)Ljava/lang/String;") : nullptr;
+        paths_class ? Method(env, paths_class, names->value[kVoicePathName], names->value[kVoicePathDesc]) : nullptr;
     if (!voice_path) {
         Detail(result.detail, sizeof(result.detail), "voice path service unavailable");
         return result;
