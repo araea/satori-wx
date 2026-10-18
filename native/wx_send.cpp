@@ -13,6 +13,7 @@
 //   com.tencent.mm.modelsimple.d1.<init>(e9, hint, "") -> cgi /cgi-bin/micromsg-bin/revokemsg
 //   d1.doScene(dispatcher, com.tencent.mm.network.y2)   -> int netId (>= 0 accepted).
 #include "wx_send.h"
+#include "state_hook.h"
 #include <jni.h>
 #include <pthread.h>
 #include <stdarg.h>
@@ -39,6 +40,11 @@ char g_last_error[160] = {};
 // Resolved once on the host class loader and then only read.
 bool g_resolved = false;
 bool g_dispatcher_ok = false;
+int g_state = kSendUnknown;
+char g_state_detail[160] = {};
+long long g_state_probe_ms = 0;    // when an incompatible verdict was reached (monotonic)
+long long g_probe_ms = 0;          // when SendProbe() last did real work (monotonic)
+int g_mismatches = 0;              // consecutive Resolve() failures that look like a WeChat version mismatch
 jobject g_loader = nullptr;        // java.lang.ClassLoader (app)
 jmethodID g_loader_load = nullptr; // ClassLoader.loadClass(String), cached by Resolve
 jclass g_r0 = nullptr;             // v51.r0
@@ -400,13 +406,6 @@ int ReflectDispatchScene(void *scene, void *do_scene, char *detail, size_t size)
     return net;
 }
 
-bool SendDispatcherReady() {
-    pthread_mutex_lock(&g_mu);
-    const bool ready = g_dispatcher_ok;
-    pthread_mutex_unlock(&g_mu);
-    return ready;
-}
-
 void SendStatusGet(SendStatus *status) {
     if (!status) return;
     pthread_mutex_lock(&g_mu);
@@ -418,6 +417,8 @@ void SendStatusGet(SendStatus *status) {
     status->rejected = g_rejected;
     status->recalled = g_recalled;
     status->media = g_media;
+    status->state = g_state;
+    snprintf(status->state_detail, sizeof(status->state_detail), "%s", g_state_detail);
     status->last_age_ms = g_attempt_ms ? NowMs() - g_attempt_ms : -1;
     status->last_ok = g_last_ok;
     status->last_net_id = g_last_net;
@@ -427,25 +428,68 @@ void SendStatusGet(SendStatus *status) {
     pthread_mutex_unlock(&g_mu);
 }
 
-// Resolves the send classes and probes the dispatcher without sending anything. Called from
-// the module's warm-up thread after login so the status block reports real capability.
-bool SendWarmUp() {
+// True for the Resolve() failures that mean "this WeChat build does not have what the sender
+// reflects on", as opposed to "the app is not up yet".
+static bool VersionMismatch(const char *detail) { return strstr(detail, "version mismatch") != nullptr; }
+
+// What a failed Resolve() means for the state (g_mu held). One failed lookup may be the app not being
+// fully up; the same mismatch twice running is the WeChat build. A success resets the count.
+static int FailedState(const char *detail) {
+    if (!VersionMismatch(detail)) return kSendUnknown;
+    return ++g_mismatches >= 2 ? kSendIncompatible : kSendUnknown;
+}
+
+// Records the sender's state (g_mu held). True when it changed, so the caller can tell the keeper
+// once the lock is released: the notification and the published state file both show it.
+static bool SetState(int state, const char *detail) {
+    const bool changed = state != g_state || strcmp(detail, g_state_detail) != 0;
+    g_state = state;
+    snprintf(g_state_detail, sizeof(g_state_detail), "%s", detail);
+    if (state == kSendIncompatible) g_state_probe_ms = NowMs();
+    return changed;
+}
+
+int SendProbe() {
     JNIEnv *env = Env();
-    if (!env) return false;
-    char detail[160] = {};
+    if (!env) return kSendUnknown;
     pthread_mutex_lock(&g_mu);
+    const long long now = NowMs();
+    if (g_probe_ms && now - g_probe_ms < 2000) {
+        // A status poll and the keeper's own retries can land together: one probe serves both.
+        const int cached = g_state;
+        pthread_mutex_unlock(&g_mu);
+        return cached;
+    }
+    if (g_state == kSendIncompatible && now - g_state_probe_ms < 60 * 1000) {
+        pthread_mutex_unlock(&g_mu);
+        return kSendIncompatible;
+    }
+    g_probe_ms = now;
+    char detail[160] = {};
     const bool resolved = g_resolved || Resolve(env, detail, sizeof(detail));
+    if (!resolved) {
+        const int state = FailedState(detail);
+        const bool changed = SetState(state, detail);
+        pthread_mutex_unlock(&g_mu);
+        if (changed) NotifyStateChanged();
+        return state;
+    }
+    g_mismatches = 0;
     pthread_mutex_unlock(&g_mu);
-    if (!resolved) return false;
     int probe = 0;
     jobject dispatcher = Dispatcher(env, &probe);
     pthread_mutex_lock(&g_mu);
     g_dispatcher_ok = dispatcher != nullptr;
+    const int state = dispatcher ? kSendReady : kSendWaiting;
+    const bool changed = SetState(state, dispatcher ? "" : "network dispatcher not reachable yet");
     pthread_mutex_unlock(&g_mu);
-    __android_log_print(ANDROID_LOG_INFO, "SatoriWx", "send warm-up: resolved=%d dispatcher=%d probe=0x%x",
-                        resolved ? 1 : 0, dispatcher ? 1 : 0, probe);
+    if (changed) {
+        __android_log_print(ANDROID_LOG_INFO, "SatoriWx", "send probe: state=%d dispatcher=%d probe=0x%x", state,
+                            dispatcher ? 1 : 0, probe);
+        NotifyStateChanged();
+    }
     if (dispatcher) env->DeleteLocalRef(dispatcher);
-    return true;
+    return state;
 }
 
 // Resolves the send classes and obtains the process dispatcher. Assumes the caller already
@@ -454,13 +498,22 @@ bool SendWarmUp() {
 static jobject AcquireDispatcher(JNIEnv *env, SendResult &result) {
     pthread_mutex_lock(&g_mu);
     const bool resolved = g_resolved || Resolve(env, result.detail, sizeof(result.detail));
+    if (!resolved) {
+        const bool changed = SetState(FailedState(result.detail), result.detail);
+        pthread_mutex_unlock(&g_mu);
+        if (changed) NotifyStateChanged();
+        return nullptr;
+    }
+    g_mismatches = 0;
     pthread_mutex_unlock(&g_mu);
-    if (!resolved) return nullptr;
     int probe = 0;
     jobject dispatcher = Dispatcher(env, &probe);
     pthread_mutex_lock(&g_mu);
     g_dispatcher_ok = dispatcher != nullptr;
+    const bool changed =
+        SetState(dispatcher ? kSendReady : kSendWaiting, dispatcher ? "" : "network dispatcher not reachable yet");
     pthread_mutex_unlock(&g_mu);
+    if (changed) NotifyStateChanged();
     if (!dispatcher) {
         Detail(result.detail, sizeof(result.detail), "network dispatcher unavailable (probe=0x%x)", probe);
     }

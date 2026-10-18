@@ -6,8 +6,9 @@
 // listens on its own loopback port (dev.conf next to the library) with the production token, so
 // the exact same HTTP calls exercise the new code without restarting anything.
 //
-// Not started here: keepalive (the pinned module owns the notification and wake lock) and key
-// capture (the pinned module already wrote key.log, which the live store reads).
+// Started here, as a separate instance: the keeper (notification, wake lock, state file) with its
+// own ids so it never fights the pinned module's. Not started: key capture (the pinned module
+// already wrote key.log, which the live store reads).
 #include "protocol.h"
 #include "server.h"
 #include "media.h"
@@ -15,6 +16,7 @@
 #include "wx_backend.h"
 #include "wx_live.h"
 #include "wx_media.h"
+#include "wx_keepalive.h"
 #include "wx_pat.h"
 #include "wx_send.h"
 #include <android/log.h>
@@ -45,6 +47,12 @@ void Status(cJSON *object, bool) {
         cJSON_AddBoolToObject(send, "ready", status.ready);
         cJSON_AddBoolToObject(send, "resolved", status.resolved);
         cJSON_AddBoolToObject(send, "dispatcher", status.dispatcher);
+        cJSON_AddStringToObject(send, "state",
+                                status.state == satori::kSendReady          ? "ready"
+                                : status.state == satori::kSendWaiting      ? "waiting"
+                                : status.state == satori::kSendIncompatible ? "incompatible"
+                                                                            : "unknown");
+        if (status.state_detail[0]) cJSON_AddStringToObject(send, "detail", status.state_detail);
         cJSON_AddNumberToObject(send, "sent", static_cast<double>(status.sent));
         cJSON_AddNumberToObject(send, "failed", static_cast<double>(status.failed));
         cJSON_AddNumberToObject(send, "media", static_cast<double>(status.media));
@@ -58,6 +66,7 @@ void Status(cJSON *object, bool) {
         cJSON_AddBoolToObject(events, "open", live.open);
         cJSON_AddBoolToObject(events, "watching", live.watching);
     }
+    satori::KeepaliveStatus(object);
     cJSON_AddStringToObject(object, "dev", "hot-loaded build");
 }
 
@@ -68,6 +77,8 @@ void *Serve(void *) {
         __android_log_print(ANDROID_LOG_ERROR, "SatoriDev", "listen failed");
         return nullptr;
     }
+    satori::g_server_ready = true;
+    satori::NotifyStateChanged();
     __android_log_print(ANDROID_LOG_INFO, "SatoriDev", "dev Satori listening at 127.0.0.1:%u", g_config.port);
     satori::Run(listener, g_config, g_bus, satori::WeChatBackend());
     return nullptr;
@@ -84,8 +95,33 @@ void *WatchAccount(void *) {
     }
 }
 
+// Cancels one of this process' notifications by id, the way WeChat's own cancel(id) would, so the
+// keeper's "is it still posted" check can be exercised. Development only.
+bool CancelNotification(int id) {
+    JNIEnv *env = static_cast<JNIEnv *>(satori::ReflectEnv());
+    if (!env) return false;
+    bool ok = false;
+    jclass thread = env->FindClass("android/app/ActivityThread");
+    jmethodID current =
+        thread ? env->GetStaticMethodID(thread, "currentApplication", "()Landroid/app/Application;") : nullptr;
+    jobject app = current ? env->CallStaticObjectMethod(thread, current) : nullptr;
+    jclass context = env->FindClass("android/content/Context");
+    jmethodID get =
+        context ? env->GetMethodID(context, "getSystemService", "(Ljava/lang/String;)Ljava/lang/Object;") : nullptr;
+    jobject manager = app && get ? env->CallObjectMethod(app, get, env->NewStringUTF("notification")) : nullptr;
+    jclass manager_class = env->FindClass("android/app/NotificationManager");
+    jmethodID cancel = manager_class ? env->GetMethodID(manager_class, "cancel", "(I)V") : nullptr;
+    if (manager && cancel) {
+        env->CallVoidMethod(manager, cancel, id);
+        ok = !env->ExceptionCheck();
+    }
+    if (env->ExceptionCheck()) env->ExceptionClear();
+    return ok;
+}
+
 // One-line control channel on port+100 for poking the sender without going through HTTP:
 //   file <talker> <path> <title...>
+//   cancel <notification id>
 // Replies with one JSON-ish line. Development only.
 void *Control(void *) {
     pthread_setname_np(pthread_self(), "satori-dev-ctl");
@@ -142,6 +178,10 @@ void *Control(void *) {
                     snprintf(reply, sizeof(reply), "{\"ok\":%d,\"id\":%lld,\"net\":%d,\"detail\":\"%s\"}\n",
                              r.ok ? 1 : 0, r.local_id, r.net_id, r.detail);
                 }
+            } else if (verb && !strcmp(verb, "cancel")) {
+                // cancel <notification id>
+                const bool done = cursor && CancelNotification(atoi(cursor));
+                snprintf(reply, sizeof(reply), "{\"ok\":%d}\n", done ? 1 : 0);
             } else if (verb && !strcmp(verb, "file")) {
                 const char *talker = strsep(&cursor, " ");
                 const char *path = strsep(&cursor, " ");
@@ -184,6 +224,10 @@ void *Boot(void *) {
     satori::SetStatusProvider(Status);
     satori::SetPatProvider(satori::PatDispatch);
     satori::SendInit(vm);
+    // The keeper under test, kept apart from the pinned module's (own notification id, channel,
+    // wake-lock tag and state file): the instance number is the dev generation's port offset.
+    satori::SetWakelockProvider(satori::KeepaliveWakelock);
+    satori::KeepaliveStart(vm, g_config, kDataDir, g_config.port - 5600);
     g_bus = satori::CreateBus();
     if (!g_bus) return nullptr;
     pthread_t thread;
@@ -191,11 +235,6 @@ void *Boot(void *) {
     if (pthread_create(&thread, nullptr, WatchAccount, nullptr) == 0) pthread_detach(thread);
     satori::StartLiveStore(kDataDir, g_bus, 1);
     if (pthread_create(&thread, nullptr, Control, nullptr) == 0) pthread_detach(thread);
-    for (int i = 0; i < 90; ++i) {
-        if (satori::SendWarmUp() && satori::SendDispatcherReady()) break;
-        const timespec delay{2, 0};
-        nanosleep(&delay, nullptr);
-    }
     return nullptr;
 }
 } // namespace

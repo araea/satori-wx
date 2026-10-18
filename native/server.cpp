@@ -101,7 +101,10 @@ void Drop(Client &c) {
         close(c.fd);
         // Only WebSocket clients count: transient HTTP requests would make the keeper toggle
         // the Wi-Fi lock on every status poll. c.ws stays set, so this cannot double-count.
-        if (c.ws && g_client_count > 0) g_client_count = g_client_count - 1;
+        if (c.ws && g_client_count > 0) {
+            g_client_count = g_client_count - 1;
+            NotifyStateChanged();
+        }
     }
     if (c.file_fd >= 0) close(c.file_fd);
     UploadFree(c.upload);
@@ -897,6 +900,7 @@ void Events(Client &c, const Head &head, size_t body_size) {
     if (!Queue(c, response, n)) return;
     c.ws = true;
     g_client_count = g_client_count + 1;
+    NotifyStateChanged();
     c.deadline = Now() + kRequestMs;
     memmove(c.input, c.input + head.length, c.used - head.length);
     c.used -= head.length;

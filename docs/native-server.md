@@ -17,6 +17,7 @@ ZygiskNext 的 `zygisk_next_api.h` 是另一套公开接口，有自己的 `zn_m
 | `native/vendor/cjson/` | cJSON 1.7.19，固定版本源码及 MIT 许可，最大 JSON 深度 16 |
 | `native/wx_account.{h,cpp}` | 只读解析微信偏好，生成 Satori 登录事件 |
 | `native/wx_adapter.{h,cpp}` | 每 3 秒扫描一次并做身份状态机（added / updated / removed） |
+| `native/wx_keepalive.{h,cpp}` | 事件驱动的 keeper：常驻通知、唤醒锁、心跳、发布的状态文件，见[常驻通知与保活](keepalive.md) |
 | `native/webhook.{h,cpp}` | 可选 WebHook 推送，独立线程 + 有界队列，仅 http |
 | `native/wx_key.cpp`、`native/data_slot.h` | 密钥捕获：RegisterNatives 指针替换 |
 | `native/wx_live.cpp`、`native/wx_store.cpp`、`native/wx_message.cpp`、`native/wx_events.cpp` | 只读库 → 消息 / 事件，见[消息内容](wechat-content.md)、[事件](wechat-events.md) |

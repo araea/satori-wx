@@ -74,12 +74,21 @@ SendResult SendVoice(const char *talker, const char *silk_path, int duration_ms)
 // string). Uses WeChat's own NetSceneRevokeMsg scene. Refused for
 // messages the account did not send.
 SendResult SendRecall(const char *talker, const char *message_id);
-// Resolves the WeChat send classes and probes the dispatcher ahead of the first send so the
-// status block reports real capability instead of "not tried yet". Safe to call repeatedly;
-// does nothing until the JavaVM is available. Returns true once the classes are resolved
-// (the dispatcher may still be down right after login, hence SendDispatcherReady()).
-bool SendWarmUp();
-bool SendDispatcherReady();
+// What the sender can do right now, for status and the notification. Incompatible means WeChat
+// updated and the classes the sender reflects on were renamed (WeChat is obfuscated; the names are
+// verified against one build, see the top of wx_send.cpp). It takes two failed lookups in a row to
+// say so, and a later successful probe clears it.
+enum SendState {
+    kSendUnknown = 0,      // not probed yet, the app is not ready, or a mismatch is not confirmed yet
+    kSendReady = 1,        // classes resolved and the network dispatcher reachable
+    kSendWaiting = 2,      // classes resolved, dispatcher not reachable (right after start)
+    kSendIncompatible = 3, // the send classes or members are not in this WeChat build (seen twice)
+};
+// Probes the sender without sending anything: resolves the classes if they are not, looks the
+// dispatcher up, and records the outcome for SendStatus::state. Cheap once resolved; an
+// incompatible result is cached for a minute so a status poll does not re-run a failing
+// class lookup. Returns the state. Safe on any thread; kSendUnknown until SendInit().
+int SendProbe();
 
 // Snapshot for /v1/internal/status and /v1/internal/capabilities. Counters are per process
 // and reset on restart.
@@ -98,6 +107,8 @@ struct SendStatus {
     long long last_local_id;
     char last_target[96];
     char last_error[160];
+    int state;              // SendState as of the last SendProbe() / send attempt
+    char state_detail[160]; // why, when state is not kSendReady
 };
 void SendStatusGet(SendStatus *status);
 

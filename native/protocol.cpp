@@ -13,6 +13,25 @@ namespace satori {
 volatile int g_login_count = 0;
 volatile bool g_server_ready = false;
 volatile int g_client_count = 0;
+namespace {
+StateListener g_state_listener = nullptr;
+pthread_mutex_t g_login_mu = PTHREAD_MUTEX_INITIALIZER;
+char g_primary_id[128] = {};
+char g_primary_name[128] = {};
+} // namespace
+void SetStateListener(StateListener listener) { g_state_listener = listener; }
+void NotifyStateChanged() {
+    const StateListener listener = g_state_listener;
+    if (listener) listener();
+}
+bool PrimaryLogin(char *id, size_t id_size, char *name, size_t name_size) {
+    pthread_mutex_lock(&g_login_mu);
+    const bool online = g_primary_id[0] != 0;
+    if (id && id_size) snprintf(id, id_size, "%s", g_primary_id);
+    if (name && name_size) snprintf(name, name_size, "%s", g_primary_name);
+    pthread_mutex_unlock(&g_login_mu);
+    return online;
+}
 bool Utf8(const char *data, size_t size) {
     for (size_t i = 0; i < size;) {
         uint32_t c = static_cast<unsigned char>(data[i++]);
@@ -1106,10 +1125,23 @@ char *Apply(Hub *hub, const char *json, bool meta) {
         cJSON_Delete(hub->meta);
         hub->meta = next_meta;
         int online = 0;
+        const cJSON *first = nullptr;
         const cJSON *logins_now = Item(next_meta, "logins");
         for (const cJSON *p = logins_now ? logins_now->child : nullptr; p; p = p->next)
-            if (Item(p, "status") && Item(p, "status")->valuedouble == 1) ++online;
+            if (Item(p, "status") && Item(p, "status")->valuedouble == 1 && !online++) first = p;
+        const cJSON *who = first ? Item(first, "user") : nullptr;
+        const cJSON *who_id = who ? Item(who, "id") : nullptr;
+        const cJSON *who_nick = who ? Item(who, "nick") : nullptr;
+        const cJSON *who_name = who ? Item(who, "name") : nullptr;
+        pthread_mutex_lock(&g_login_mu);
+        snprintf(g_primary_id, sizeof(g_primary_id), "%s", cJSON_IsString(who_id) ? who_id->valuestring : "");
+        snprintf(g_primary_name, sizeof(g_primary_name), "%s",
+                 cJSON_IsString(who_nick) && *who_nick->valuestring ? who_nick->valuestring
+                 : cJSON_IsString(who_name)                         ? who_name->valuestring
+                                                                    : "");
+        pthread_mutex_unlock(&g_login_mu);
         g_login_count = online;
+        NotifyStateChanged();
     }
     ++hub->latest;
     if (hub->count == kHistory) {

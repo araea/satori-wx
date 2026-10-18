@@ -71,7 +71,7 @@ build capabilities-test -llog tests/capabilities_test.cpp wx_capabilities wx_sen
     upload_stream tempstore webhook wx_account wx_adapter cjson
 "$OUT/capabilities-test"
 
-build keepalive-test -llog tests/keepalive_test.cpp wx_keepalive protocol cjson
+build keepalive-test -llog tests/keepalive_test.cpp wx_keepalive wx_send protocol cjson
 "$OUT/keepalive-test"
 
 build content-test - tests/content_test.cpp protocol cjson

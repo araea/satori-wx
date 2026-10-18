@@ -30,6 +30,8 @@ constexpr unsigned kAccountIntervalMs = 3000;
 // Adds backend-specific fields to /v1/internal/status and /v1/internal/capabilities: the
 // sender's state and counters, plus (for capabilities) the methods WeChat cannot express.
 void AddBackendStatus(cJSON *object, bool capabilities) {
+    // The cached state only: the keeper probes on its own thread (after a login, on a retry schedule,
+    // on the heartbeat, and when KeepaliveStatus below asks it to), never on this one.
     satori::SendStatus status{};
     satori::SendStatusGet(&status);
     cJSON *send = cJSON_CreateObject();
@@ -38,6 +40,14 @@ void AddBackendStatus(cJSON *object, bool capabilities) {
         cJSON_AddBoolToObject(send, "ready", status.ready);
         cJSON_AddBoolToObject(send, "resolved", status.resolved);
         cJSON_AddBoolToObject(send, "dispatcher", status.dispatcher);
+        // ready: it can send. waiting: classes found, network not up yet. incompatible: this WeChat build
+        // lacks what the sender reflects on (WeChat is obfuscated and renames them between releases).
+        cJSON_AddStringToObject(send, "state",
+                                status.state == satori::kSendReady          ? "ready"
+                                : status.state == satori::kSendWaiting      ? "waiting"
+                                : status.state == satori::kSendIncompatible ? "incompatible"
+                                                                            : "unknown");
+        if (status.state_detail[0]) cJSON_AddStringToObject(send, "detail", status.state_detail);
         cJSON_AddNumberToObject(send, "sent", static_cast<double>(status.sent));
         cJSON_AddNumberToObject(send, "failed", static_cast<double>(status.failed));
         cJSON_AddNumberToObject(send, "rejected", static_cast<double>(status.rejected));
@@ -124,28 +134,9 @@ void *Serve(void *) {
         return nullptr;
     }
     satori::g_server_ready = true;
+    satori::NotifyStateChanged();
     __android_log_print(ANDROID_LOG_INFO, "SatoriWx", "native Satori listening at 127.0.0.1:%u", g_config.port);
     satori::Run(listener, g_config, g_bus, satori::WeChatBackend());
-    return nullptr;
-}
-
-// Resolves the sender once the account is online so /v1/internal/status reports real
-// capability without waiting for the first message.create. Runs on its own thread, well
-// after the app has finished starting, and only ever reads.
-void *WarmSend(void *) {
-    pthread_setname_np(pthread_self(), "satori-wx-sendwarm");
-    for (int i = 0; i < 300 && satori::g_login_count <= 0; ++i) {
-        const timespec second{1, 0};
-        nanosleep(&second, nullptr);
-    }
-    if (satori::g_login_count <= 0) return nullptr;
-    // Classes resolve as soon as the app class loader is usable, but the network dispatcher
-    // only appears once the connection is up: keep probing until both are true.
-    for (int i = 0; i < 90; ++i) {
-        if (satori::SendWarmUp() && satori::SendDispatcherReady()) break;
-        const timespec delay{10, 0};
-        nanosleep(&delay, nullptr);
-    }
     return nullptr;
 }
 
@@ -220,9 +211,10 @@ public:
             satori::SendInit(vm);
         else
             __android_log_print(ANDROID_LOG_ERROR, "SatoriWx", "GetJavaVM failed; message sender disabled");
-        // Resident notification + wake lock + in-process core-service keepalive. Needs the VM
-        // and the parsed config; no-ops when the context never appears.
-        if (vm) satori::KeepaliveStart(vm, g_config);
+        // Resident notification + wake lock + in-process core-service keepalive + the published
+        // state file. Event-driven: it is told about changes (login, listener, clients, sender)
+        // and polls nothing. Without a VM it still publishes the state file.
+        satori::KeepaliveStart(vm, g_config, g_data_dir);
         g_bus = satori::CreateBus();
         if (!g_bus) {
             __android_log_print(ANDROID_LOG_ERROR, "SatoriWx", "event bus allocation failed; server disabled");
@@ -248,14 +240,6 @@ public:
         if (g_data_dir[0]) satori::KeyCaptureStart(vm, g_data_dir);
         if (g_data_dir[0] && !satori::StartLiveStore(g_data_dir, g_bus, 1))
             __android_log_print(ANDROID_LOG_WARN, "SatoriWx", "live message store not started");
-        // Resolve the sender once the account is online so status reflects real capability.
-        pthread_t warm;
-        if (pthread_create(&warm, nullptr, WarmSend, nullptr)) {
-            __android_log_print(ANDROID_LOG_WARN, "SatoriWx", "send warm-up thread creation failed: %s",
-                                strerror(errno));
-        } else {
-            pthread_detach(warm);
-        }
     }
     void preServerSpecialize(zygisk::ServerSpecializeArgs *) override {
         api_->setOption(zygisk::DLCLOSE_MODULE_LIBRARY);
