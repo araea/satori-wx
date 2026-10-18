@@ -310,7 +310,8 @@ final class HomePage {
 
         boolean root = s.device != null && s.device.granted;
         boolean on = s.device == null || s.device.enabled;
-        moduleSwitch.setChecked(on, false);
+        // 切换过程中不要用旧快照把用户刚拨过去的开关拨回来。
+        if (!m.enabledBusy) moduleSwitch.setChecked(on, false);
         moduleSwitch.setSupporting(m.enabledBusy ? "正在切换…"
                 : on ? "开启：服务、通知与保活都在运行" : "已关闭：端口、通知与保活都已停下");
         moduleSwitch.setEnabled(root && !m.enabledBusy && !s.restarting);
