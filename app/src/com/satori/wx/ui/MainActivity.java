@@ -698,6 +698,7 @@ public final class MainActivity extends Activity
             case Status.ACTION_FIX_CONFIG: openSettings(); break;
             case Status.ACTION_WECHAT_SETTINGS: openWeChatSettings(); break;
             case Status.ACTION_GUARD_ON: setGuard(true); break;
+            case Status.ACTION_MODULE_ON: setEnabled(true); break;
             default: break;
         }
     }
@@ -776,6 +777,46 @@ public final class MainActivity extends Activity
                         : result.granted ? "没能切换保活看守" : "没有 Root 授权", null, null);
                 forceRoot = true;
                 refresh();
+            });
+        });
+    }
+
+    /**
+     * 模块主开关：写微信数据目录里的 enabled 文件，模块里的 gate 线程一秒内读到并停/起服务。
+     * 关闭时顺手把 root 看守暂停（否则它还在保活），重新开启时恢复原来的意图。
+     */
+    @Override public void setEnabled(boolean on) {
+        if (model.enabledBusy) return;
+        model.enabledBusy = true;
+        home.render(model);
+        rootWorker.execute(() -> {
+            Root.Device before = Root.probe();
+            boolean wasArmed = before.granted && before.guardKnown() && !before.guardPaused();
+            Root.Result result = Root.setEnabled(on);
+            String guardWarning = null;
+            if (result.ok()) {
+                if (!on) {
+                    prefs.edit().putBoolean("guard_resume", wasArmed).apply();
+                    if (wasArmed) {
+                        Root.Result g = Root.setGuard(false);
+                        if (!g.ok()) guardWarning = "保活看守没有暂停";
+                    }
+                } else if (prefs.getBoolean("guard_resume", false)) {
+                    Root.Result g = Root.setGuard(true);
+                    if (!g.ok()) guardWarning = "保活看守没有恢复";
+                    else prefs.edit().putBoolean("guard_resume", false).apply();
+                }
+            }
+            final boolean ok = result.ok();
+            final String warning = guardWarning;
+            main.post(() -> {
+                if (isDestroyed()) return;
+                model.enabledBusy = false;
+                if (!ok) snackbar.show(result.granted ? "没能写入模块开关" : "没有 Root 授权", null, null);
+                else if (warning != null) snackbar.show((on ? "模块已开启" : "模块已关闭") + "；" + warning, null, null);
+                else snackbar.show(on ? "模块已开启" : "模块已关闭", null, null);
+                forceRoot = true;
+                main.postDelayed(this::refresh, 1500);
             });
         });
     }

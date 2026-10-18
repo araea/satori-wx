@@ -12,6 +12,7 @@
 #include <fcntl.h>
 #include <math.h>
 #include <poll.h>
+#include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -27,6 +28,11 @@
 
 namespace satori {
 namespace {
+// A stop pipe lets the module close the listener from another thread when the master switch is
+// turned off: poll() wakes on it, the loop drops every client and closes the port.
+int g_stop_read = -1, g_stop_write = -1;
+volatile bool g_stop_requested = false;
+pthread_mutex_t g_stop_mu = PTHREAD_MUTEX_INITIALIZER;
 constexpr size_t kHeader = 8192, kMessage = 16384, kInput = kHeader + kMessage;
 // Only `upload.create` may carry a larger body, and only from an authenticated caller: the
 // token is checked from the headers alone, before a single body byte is buffered.
@@ -1241,6 +1247,24 @@ bool ReadConfig(int fd, Config *config) {
     *config = parsed;
     return true;
 }
+// Clears a stop left over from a previous run, before the new server thread is created.
+void Begin() {
+    pthread_mutex_lock(&g_stop_mu);
+    g_stop_requested = false;
+    pthread_mutex_unlock(&g_stop_mu);
+}
+
+void Stop() {
+    pthread_mutex_lock(&g_stop_mu);
+    g_stop_requested = true;
+    if (g_stop_write >= 0) {
+        const char byte = 1;
+        const ssize_t ignored = write(g_stop_write, &byte, 1);
+        (void)ignored;
+    }
+    pthread_mutex_unlock(&g_stop_mu);
+}
+
 int Listen(const Config &config) {
     if (!TokenValid(config.token)) {
         errno = EINVAL;
@@ -1263,6 +1287,19 @@ int Listen(const Config &config) {
     return fd;
 }
 void Run(int listener, const Config &config, EventBus *bus, const Backend *backend) {
+    int stop_pipe[2] = {-1, -1};
+    pthread_mutex_lock(&g_stop_mu);
+    const bool stopped_before_start = g_stop_requested;
+    if (!stopped_before_start && pipe2(stop_pipe, O_CLOEXEC | O_NONBLOCK) == 0) {
+        g_stop_read = stop_pipe[0];
+        g_stop_write = stop_pipe[1];
+    }
+    pthread_mutex_unlock(&g_stop_mu);
+    if (stopped_before_start) {
+        close(listener);
+        g_server_ready = false;
+        return;
+    }
     Hub *hub = CreateHub();
     if (!hub) {
         close(listener);
@@ -1312,8 +1349,9 @@ void Run(int listener, const Config &config, EventBus *bus, const Backend *backe
             }
             free(signal);
         }
-        pollfd fds[kClients + 2]{};
+        pollfd fds[kClients + 3]{};
         fds[kClients + 1] = {BusFd(bus), POLLIN, 0};
+        fds[kClients + 2] = {g_stop_read, POLLIN, 0};
         fds[0] = {listener, POLLIN, 0};
         int timeout = -1;
         for (int i = 0; i < kClients; ++i) {
@@ -1355,11 +1393,12 @@ void Run(int listener, const Config &config, EventBus *bus, const Backend *backe
                 c.fd, static_cast<short>((c.closing ? 0 : POLLIN) | (c.pending > c.sent || c.file_left ? POLLOUT : 0)),
                 0};
         }
-        const int ready = poll(fds, kClients + 2, timeout);
+        const int ready = poll(fds, kClients + 3, timeout);
         if (ready < 0) {
             if (errno == EINTR) continue;
             break;
         }
+        if (fds[kClients + 2].revents & POLLIN) break;
         if (fds[0].revents & (POLLERR | POLLHUP | POLLNVAL)) break;
         if (fds[0].revents & POLLIN) {
             // Accept a bounded number so a connection flood cannot starve existing clients.
@@ -1444,5 +1483,12 @@ void Run(int listener, const Config &config, EventBus *bus, const Backend *backe
     DestroyHub(hub);
     DestroyWebHooks(hooks);
     close(listener);
+    pthread_mutex_lock(&g_stop_mu);
+    if (g_stop_read >= 0) close(g_stop_read);
+    if (g_stop_write >= 0) close(g_stop_write);
+    g_stop_read = g_stop_write = -1;
+    pthread_mutex_unlock(&g_stop_mu);
+    g_server_ready = false;
+    NotifyStateChanged();
 }
 } // namespace satori

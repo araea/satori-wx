@@ -45,6 +45,10 @@ void SetMediaResolver(MediaResolver resolver);
 // fd is borrowed. Invalid/missing token prevents startup. No anonymous mode.
 bool ReadConfig(int fd, Config *config);
 int Listen(const Config &config); // Returns owned nonblocking loopback listener, or -1.
+// Clears a stop requested before the server thread existed (call before spawning it).
+void Begin();
+// Wakes a running Run() and makes it close the listener and every client, then return.
+void Stop();
 void Run(int listener, const Config &config, EventBus *bus = nullptr,
          const Backend *backend = nullptr); // Owns listener; blocking event loop.
 } // namespace satori

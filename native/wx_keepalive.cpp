@@ -69,6 +69,8 @@ constexpr const char *kTogglerReceiver = "com.satori.wx.keepalive.WakeToggleRece
 JavaVM *g_vm = nullptr;
 pthread_mutex_t g_mu = PTHREAD_MUTEX_INITIALIZER; // the Java side and the lock/notification state
 bool g_started = false;
+// The master switch, mirrored here so the keeper can cancel/repaint without asking the module.
+volatile bool g_enabled = true;
 char g_token[129] = {};
 unsigned g_port = 5601;
 int g_instance = 0;
@@ -236,7 +238,8 @@ struct Java {
               get_package_manager = nullptr, start_service = nullptr;
     jfieldID app_icon = nullptr;
     jmethodID launch_intent = nullptr;
-    jmethodID nm_create = nullptr, nm_notify = nullptr, nm_enabled = nullptr, nm_active = nullptr, nm_get = nullptr;
+    jmethodID nm_create = nullptr, nm_notify = nullptr, nm_cancel = nullptr, nm_enabled = nullptr, nm_active = nullptr,
+              nm_get = nullptr;
     jmethodID builder_ctor = nullptr, b_icon = nullptr, b_title = nullptr, b_text = nullptr, b_style = nullptr,
               b_ongoing = nullptr, b_alert = nullptr, b_when = nullptr, b_category = nullptr,
               b_content_intent = nullptr, b_action = nullptr, b_build = nullptr, b_color = nullptr,
@@ -388,6 +391,7 @@ bool ResolveJava(JNIEnv *env) {
     g_j.nm_get =
         Method(env, g_j.cls_nm, "getNotificationChannel", "(Ljava/lang/String;)Landroid/app/NotificationChannel;");
     g_j.nm_notify = Method(env, g_j.cls_nm, "notify", "(ILandroid/app/Notification;)V");
+    g_j.nm_cancel = Method(env, g_j.cls_nm, "cancel", "(I)V");
     g_j.nm_enabled = Method(env, g_j.cls_nm, "areNotificationsEnabled", "()Z");
     g_j.nm_active =
         Method(env, g_j.cls_nm, "getActiveNotifications", "()[Landroid/service/notification/StatusBarNotification;");
@@ -544,7 +548,7 @@ bool ResolveJava(JNIEnv *env) {
     // method ID would be a hard crash, not a Java exception. The chronometer pair is optional.
     const bool complete = g_j.lock && g_j.wifi_lock && g_j.builder_ctor && g_j.b_icon && g_j.b_title && g_j.b_text &&
                           g_j.b_style && g_j.b_ongoing && g_j.b_alert && g_j.b_when && g_j.b_category && g_j.b_build &&
-                          g_j.big_ctor && g_j.big_set && g_j.nm_notify;
+                          g_j.big_ctor && g_j.big_set && g_j.nm_notify && g_j.nm_cancel;
     g_j.ok = complete;
     return complete;
 }
@@ -607,6 +611,10 @@ void ApplyLock(JNIEnv *env, bool rearm) {
 // Periodic restart of WeChat's own core service: a started service in the main process keeps
 // it at SERVICE_ADJ, above the freezer cutoff, without any hook.
 void Kick(JNIEnv *env) {
+    if (!g_enabled) {
+        snprintf(g_service_detail, sizeof(g_service_detail), "disabled");
+        return;
+    }
     if (!g_j.start_service || !g_j.context || !g_j.cls_intent || !g_j.intent_ctor || !g_j.cls_component ||
         !g_j.component_ctor || !g_j.intent_component) {
         snprintf(g_service_detail, sizeof(g_service_detail), "unavailable");
@@ -679,9 +687,25 @@ bool StillPosted(JNIEnv *env) {
     return found;
 }
 
+// Removes the resident entry and forgets the cached key, so re-enabling posts a fresh one.
+// Caller holds g_mu and g_j.ok.
+void CancelNotify(JNIEnv *env) {
+    if (g_j.nm && g_j.nm_cancel) {
+        env->CallVoidMethod(g_j.nm, g_j.nm_cancel, g_notify_id);
+        Clear(env);
+    }
+    g_last_key[0] = 0;
+    g_notify_ok = false;
+    snprintf(g_notify_detail, sizeof(g_notify_detail), "disabled");
+}
+
 // Posts the entry when what it shows changed, or, when `verify` is set (the heartbeat, a status
 // request), when the system no longer has it. Caller holds g_mu and g_j.ok.
 void Notify(JNIEnv *env, bool verify) {
+    if (!g_enabled) {
+        CancelNotify(env);
+        return;
+    }
     if (!g_j.builder_ctor) return;
     bool enabled = true;
     if (g_j.nm_enabled) {
@@ -841,6 +865,7 @@ cJSON *BuildState(long long changed_at_ms) {
     cJSON_AddNumberToObject(root, "pid", static_cast<double>(getpid()));
     cJSON_AddNumberToObject(root, "port", g_port);
     cJSON_AddBoolToObject(root, "listening", g_server_ready);
+    cJSON_AddBoolToObject(root, "enabled", g_enabled);
     char id[128], name[128];
     const bool online = PrimaryLogin(id, sizeof(id), name, sizeof(name));
     cJSON *login = cJSON_AddObjectToObject(root, "login");
@@ -916,6 +941,7 @@ JNIEnv *Env() { return g_vm ? static_cast<JNIEnv *>(ReflectEnv()) : nullptr; }
 // The next moment the keeper has to wake on its own, or -1 when only an event can wake it.
 // Keeper thread only; reads the auto-hold bookkeeping under g_mu.
 long long NextDeadline() {
+    if (!g_enabled) return -1;
     long long next = -1;
     auto consider = [&next](long long at) {
         if (at > 0 && (next < 0 || at < next)) next = at;
@@ -932,6 +958,30 @@ long long NextDeadline() {
 // One pass: bring everything in line with the current state. Idempotent.
 void Pass() {
     const long long now = NowMs();
+    if (!g_enabled) {
+        // One idempotent shutdown pass: no locks, no notification, no core-service restart, no
+        // send probe. The state file still carries "enabled":false for the companion app.
+        pthread_mutex_lock(&g_mu);
+        g_want_lock = false;
+        g_auto_depth = 0;
+        g_sustain_wifi = false;
+        g_serving_since_ms = 0;
+        g_serving_wall_ms = 0;
+        g_was_serving = false;
+        g_was_online = false;
+        g_probe_next_ms = 0;
+        g_next_beat_ms = 0;
+        g_send_state = kSendUnknown;
+        pthread_mutex_unlock(&g_mu);
+        JNIEnv *env = g_vm ? Env() : nullptr;
+        if (env && g_j.ok && env->PushLocalFrame(32) == 0) {
+            ApplyLock(env, false);
+            CancelNotify(env);
+            env->PopLocalFrame(nullptr);
+        }
+        PublishState();
+        return;
+    }
     const bool online = g_login_count > 0;
     const bool serving = online && g_server_ready;
     pthread_mutex_lock(&g_mu);
@@ -1093,9 +1143,10 @@ char *KeepaliveStateJson(long long changed_at_ms) {
     return text;
 }
 
-void KeepaliveStart(void *vm, const Config &config, const char *data_dir, int instance) {
+void KeepaliveStart(void *vm, const Config &config, const char *data_dir, int instance, bool enabled) {
     if (g_started) return;
     g_started = true;
+    g_enabled = enabled;
     g_vm = static_cast<JavaVM *>(vm);
     g_port = config.port;
     g_instance = instance < 0 ? 0 : instance;
@@ -1130,7 +1181,26 @@ void KeepaliveStart(void *vm, const Config &config, const char *data_dir, int in
     Poke(); // the first pass: publish the state as it is now, and bring the Java side up
 }
 
+void KeepaliveSetEnabled(bool enabled) {
+    if (g_enabled == enabled) return;
+    g_enabled = enabled;
+    if (enabled) {
+        pthread_mutex_lock(&g_mu);
+        g_want_lock = true;
+        g_next_beat_ms = 0;
+        g_beat_ms = 0;
+        pthread_mutex_unlock(&g_mu);
+    }
+    Poke();
+}
+
+bool KeepaliveEnabled() { return g_enabled; }
+
 void KeepaliveWakelock(int action, bool *held) {
+    if (!g_enabled) {
+        if (held) *held = false;
+        return;
+    }
     if (held) *held = g_want_lock;
     JNIEnv *env = g_vm ? Env() : nullptr;
     pthread_mutex_lock(&g_mu);
@@ -1154,6 +1224,7 @@ void KeepaliveWakelock(int action, bool *held) {
 // past kAutoTimeoutMs; nested calls share the one underlying lock. No notification redraw:
 // the user intent did not change, only the transient CPU/Wi-Fi state.
 void KeepaliveWakelockBegin() {
+    if (!g_enabled) return;
     JNIEnv *env = g_vm ? Env() : nullptr;
     pthread_mutex_lock(&g_mu);
     const bool first = g_auto_depth == 0;
@@ -1168,6 +1239,7 @@ void KeepaliveWakelockBegin() {
 }
 
 void KeepaliveWakelockEnd() {
+    if (!g_enabled) return;
     JNIEnv *env = g_vm ? Env() : nullptr;
     pthread_mutex_lock(&g_mu);
     if (g_auto_depth > 0) g_auto_depth = g_auto_depth - 1;
@@ -1192,6 +1264,7 @@ void KeepaliveStatus(cJSON *object) {
     }
     cJSON *keep = cJSON_AddObjectToObject(object, "keepalive");
     if (!keep) return;
+    cJSON_AddBoolToObject(keep, "enabled", g_enabled);
     cJSON_AddBoolToObject(keep, "notification", g_notify_ok);
     cJSON_AddBoolToObject(keep, "notifications_enabled", g_notify_enabled);
     cJSON_AddBoolToObject(keep, "channel", g_channel_ok);

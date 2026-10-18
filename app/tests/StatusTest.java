@@ -186,7 +186,7 @@ public final class StatusTest {
         check(Status.hero(s).detail.contains("冻结前已登录「小明」"), "发布的状态里有账号：" + Status.hero(s).detail);
         check(Status.stepValues(s)[2].contains("小明"), "账号一环用发布的状态");
         check(Status.sendState(s).equals("incompatible") && Status.steps(s)[3] == Status.STEP_FAIL, "发送能力也来自发布的状态");
-        check(Status.diagnostics(s, "1")[10][1].startsWith("已发布 · 刚刚变化") || Status.diagnostics(s, "1")[10][1].startsWith("已发布"), "状态发布一行");
+        check(Status.diagnostics(s, "1")[11][1].startsWith("已发布 · 刚刚变化") || Status.diagnostics(s, "1")[11][1].startsWith("已发布"), "状态发布一行");
         // 上一个微信进程留下的文件不算数。
         s.published.put("pid", 70);
         check(Status.published(s) == null && Status.login(s) == null, "pid 对不上的发布状态是遗物");
@@ -214,7 +214,7 @@ public final class StatusTest {
         check(Status.hero(s).detail.contains("8.0.79") && Status.hero(s).detail.contains("接收消息不受影响"), "说清是哪个微信版本、收不受影响：" + Status.hero(s).detail);
         check(Status.hero(s).detail.contains("（v0.16.0）"), "说的是正在运行的服务的版本，不是磁盘上待重启的：" + Status.hero(s).detail);
         check(Status.steps(s)[3] == Status.STEP_FAIL && Status.stepValues(s)[3].contains("8.0.79"), "发送一环是失败并带版本：" + Status.stepValues(s)[3]);
-        check(Status.diagnostics(s, "1")[5][1].contains("version mismatch"), "诊断里有服务端给的原因");
+        check(Status.diagnostics(s, "1")[6][1].contains("version mismatch"), "诊断里有服务端给的原因");
         s.status.getJSONObject("send").put("state", "waiting");
         check(Status.state(s) == Status.READY && Status.steps(s)[3] == Status.STEP_WAIT && Status.stepValues(s)[3].contains("网络层"), "等待网络层不是告警");
         // 老模块：没有 state，只有 resolved / dispatcher。解析不到类，就别说「等待网络层」。
@@ -254,7 +254,7 @@ public final class StatusTest {
         check(Status.guardText(Root.parse("module=1\n")).equals("—"), "没有记录就不说");
         check(Status.guardText(Root.parse("guard=ARMED\nguard_watch=1\n")).contains("立即解冻"), "开着的看守");
         check(Status.guardHint(s.device).contains("已暂停") && !Status.guardHint(Root.parse("guard=ARMED\n")).contains("已暂停"), "开关下的说明");
-        check(Status.diagnostics(s, "1")[9][0].equals("保活看守"), "诊断里有保活看守");
+        check(Status.diagnostics(s, "1")[10][0].equals("保活看守"), "诊断里有保活看守");
         // 报告仍然不含账号信息，即使这些信息现在也是沿用来的。
         String report = Status.report(s, "1.0.0", 0);
         check(!report.contains(TOKEN) && !report.contains("wxid_secret") && !report.contains("小明"), "报告泄露了账号信息：\n" + report);

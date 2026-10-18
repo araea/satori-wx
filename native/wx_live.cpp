@@ -52,6 +52,9 @@ constexpr int kTailMs[] = {30, 150};
 constexpr int kTails = sizeof(kTailMs) / sizeof(kTailMs[0]);
 
 bool Emit(void *context, const char *event) {
+    // Disabled: consume the row (the poller advances its watermark) but publish nothing, so a long
+    // gap does not replay as a burst when the switch comes back on.
+    if (!g_module_enabled) return true;
     auto *live = static_cast<Live *>(context);
     const bool published = Publish(live->bus, event);
     if (published) {

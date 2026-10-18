@@ -26,7 +26,29 @@ namespace {
 satori::Config g_config;
 satori::EventBus *g_bus = nullptr;
 char g_data_dir[256] = {};
+void *g_vm = nullptr;
 constexpr unsigned kAccountIntervalMs = 3000;
+
+// Master switch. The companion app writes <WeChat data>/files/satori-wx/enabled; a 1-second
+// gate thread mirrors it here, so toggling never needs a WeChat restart.
+volatile bool g_enabled_flag = true;
+// Serialises start/stop against the gate thread. The server itself is stopped through its pipe.
+pthread_mutex_t g_gate_mu = PTHREAD_MUTEX_INITIALIZER;
+bool g_aux_started = false;
+volatile bool g_serving = false;
+
+bool ReadEnabled(const char *dir) {
+    if (!dir || !*dir) return true;
+    char path[320];
+    snprintf(path, sizeof(path), "%s/files/satori-wx/enabled", dir);
+    const int fd = open(path, O_RDONLY | O_CLOEXEC);
+    if (fd < 0) return true; // fresh installs have no flag: enabled
+    char byte = 0;
+    const ssize_t n = read(fd, &byte, 1);
+    close(fd);
+    if (n <= 0) return true;
+    return byte != '0';
+}
 
 // Adds backend-specific fields to /v1/internal/status and /v1/internal/capabilities: the
 // sender's state and counters, plus (for capabilities) the methods WeChat cannot express.
@@ -130,15 +152,21 @@ void AddBackendStatus(cJSON *object, bool capabilities) {
 
 void *Serve(void *) {
     pthread_setname_np(pthread_self(), "satori-wx");
+    if (!g_bus) {
+        g_serving = false;
+        return nullptr;
+    }
     const int listener = satori::Listen(g_config);
     if (listener < 0) {
         __android_log_print(ANDROID_LOG_ERROR, "SatoriWx", "listen failed: %s", strerror(errno));
+        g_serving = false;
         return nullptr;
     }
     satori::g_server_ready = true;
     satori::NotifyStateChanged();
     __android_log_print(ANDROID_LOG_INFO, "SatoriWx", "native Satori listening at 127.0.0.1:%u", g_config.port);
     satori::Run(listener, g_config, g_bus, satori::WeChatBackend());
+    g_serving = false;
     return nullptr;
 }
 
@@ -150,11 +178,90 @@ void *WatchAccount(void *) {
         return nullptr;
     }
     for (;;) {
-        if (!satori::AdapterRefresh(adapter))
+        // While switched off the identity is not refreshed and no login event is published; the
+        // first pass after enabling reads the current account and announces it.
+        if (g_enabled_flag && !satori::AdapterRefresh(adapter))
             __android_log_print(ANDROID_LOG_WARN, "SatoriWx", "account prefs unavailable; keeping last snapshot");
         const timespec delay{kAccountIntervalMs / 1000, static_cast<long>(kAccountIntervalMs % 1000) * 1000000};
         nanosleep(&delay, nullptr);
     }
+}
+
+// Creates the parts the server needs (event bus, account watcher, live message store) once.
+bool StartAux() {
+    if (g_aux_started) return g_bus != nullptr;
+    g_bus = satori::CreateBus();
+    if (!g_bus) {
+        __android_log_print(ANDROID_LOG_ERROR, "SatoriWx", "event bus allocation failed");
+        return false;
+    }
+    g_aux_started = true;
+    if (!g_data_dir[0]) {
+        __android_log_print(ANDROID_LOG_WARN, "SatoriWx", "app data directory unknown; account identity unavailable");
+        return true;
+    }
+    pthread_t account;
+    if (pthread_create(&account, nullptr, WatchAccount, nullptr))
+        __android_log_print(ANDROID_LOG_ERROR, "SatoriWx", "account thread creation failed: %s", strerror(errno));
+    else
+        pthread_detach(account);
+    if (!satori::StartLiveStore(g_data_dir, g_bus, 1))
+        __android_log_print(ANDROID_LOG_WARN, "SatoriWx", "live message store not started");
+    return true;
+}
+
+void StartServing() {
+    pthread_mutex_lock(&g_gate_mu);
+    if (g_serving) {
+        pthread_mutex_unlock(&g_gate_mu);
+        return;
+    }
+    if (!StartAux()) {
+        pthread_mutex_unlock(&g_gate_mu);
+        return;
+    }
+    g_enabled_flag = true;
+    satori::g_module_enabled = true;
+    satori::KeepaliveSetEnabled(true);
+    satori::Begin();
+    g_serving = true;
+    pthread_t server;
+    if (pthread_create(&server, nullptr, Serve, nullptr)) {
+        g_serving = false;
+        __android_log_print(ANDROID_LOG_ERROR, "SatoriWx", "server thread creation failed: %s", strerror(errno));
+    } else {
+        pthread_detach(server);
+    }
+    pthread_mutex_unlock(&g_gate_mu);
+}
+
+void StopServing() {
+    pthread_mutex_lock(&g_gate_mu);
+    g_enabled_flag = false;
+    satori::g_module_enabled = false;
+    g_serving = false;
+    pthread_mutex_unlock(&g_gate_mu);
+    satori::Stop(); // wakes a running Run(): closes the port and every client
+    satori::KeepaliveSetEnabled(false);
+}
+
+// One wake per second while watching; this is the only thread left when the switch is off.
+void *Gate(void *) {
+    pthread_setname_np(pthread_self(), "satori-wx-gate");
+    bool last = g_enabled_flag;
+    for (;;) {
+        const timespec delay{1, 0};
+        nanosleep(&delay, nullptr);
+        const bool now = ReadEnabled(g_data_dir);
+        if (now == last) continue;
+        last = now;
+        __android_log_print(ANDROID_LOG_INFO, "SatoriWx", "master switch -> %s", now ? "on" : "off");
+        if (now)
+            StartServing();
+        else
+            StopServing();
+    }
+    return nullptr;
 }
 
 class WxServerModule : public zygisk::ModuleBase {
@@ -210,39 +317,25 @@ public:
         // The sender needs the process JavaVM; classes are resolved lazily on first use.
         JavaVM *vm = nullptr;
         if (env_->GetJavaVM(&vm) == JNI_OK) {
+            g_vm = vm;
             satori::SendInit(vm);
             satori::DiscoverInit(vm, g_data_dir);
         } else
             __android_log_print(ANDROID_LOG_ERROR, "SatoriWx", "GetJavaVM failed; message sender disabled");
-        // Resident notification + wake lock + in-process core-service keepalive + the published
-        // state file. Event-driven: it is told about changes (login, listener, clients, sender)
-        // and polls nothing. Without a VM it still publishes the state file.
-        satori::KeepaliveStart(vm, g_config, g_data_dir);
-        g_bus = satori::CreateBus();
-        if (!g_bus) {
-            __android_log_print(ANDROID_LOG_ERROR, "SatoriWx", "event bus allocation failed; server disabled");
-            return;
-        }
-        pthread_t server, account;
-        if (pthread_create(&server, nullptr, Serve, nullptr)) {
-            __android_log_print(ANDROID_LOG_ERROR, "SatoriWx", "server thread creation failed: %s", strerror(errno));
-            return;
-        }
-        pthread_detach(server);
-        if (!g_data_dir[0]) {
-            __android_log_print(ANDROID_LOG_WARN, "SatoriWx",
-                                "app data directory unknown; account identity unavailable");
-        } else if (pthread_create(&account, nullptr, WatchAccount, nullptr)) {
-            __android_log_print(ANDROID_LOG_ERROR, "SatoriWx", "account thread creation failed: %s", strerror(errno));
-        } else {
-            pthread_detach(account);
-        }
-        // Capture the SQLCipher key ourselves (no separate probe module) and read the
-        // database read-only to publish message-created events. Disabled if the key never
-        // appears.
+        // Key capture is installed even while switched off: WeChat registers its SQLCipher key
+        // during startup, and enabling later must not wait for the next process restart.
         if (g_data_dir[0]) satori::KeyCaptureStart(vm, g_data_dir);
-        if (g_data_dir[0] && !satori::StartLiveStore(g_data_dir, g_bus, 1))
-            __android_log_print(ANDROID_LOG_WARN, "SatoriWx", "live message store not started");
+        g_enabled_flag = ReadEnabled(g_data_dir);
+        satori::g_module_enabled = g_enabled_flag;
+        // The keeper always starts: when disabled it runs one shutdown pass, cancels any leftover
+        // entry, releases the locks and publishes {"enabled":false} in the state file.
+        satori::KeepaliveStart(vm, g_config, g_data_dir, 0, g_enabled_flag);
+        if (g_enabled_flag) StartServing();
+        pthread_t gate;
+        if (pthread_create(&gate, nullptr, Gate, nullptr))
+            __android_log_print(ANDROID_LOG_ERROR, "SatoriWx", "gate thread creation failed: %s", strerror(errno));
+        else
+            pthread_detach(gate);
     }
     void preServerSpecialize(zygisk::ServerSpecializeArgs *) override {
         api_->setOption(zygisk::DLCLOSE_MODULE_LIBRARY);

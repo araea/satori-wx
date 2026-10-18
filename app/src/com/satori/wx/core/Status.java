@@ -44,6 +44,8 @@ public final class Status {
     public static final int READY = 14;
     /** 服务就绪、账号在线，但发送路径与当前微信版本对不上：只能收，不能发。 */
     public static final int READY_NO_SEND = 15;
+    /** 模块主开关关闭：端口、通知与保活全部停下。 */
+    public static final int SWITCHED_OFF = 16;
 
     // ---- 状态卡片上的下一步 ----
     public static final int ACTION_NONE = 0;
@@ -53,6 +55,7 @@ public final class Status {
     public static final int ACTION_FIX_CONFIG = 4;
     public static final int ACTION_WECHAT_SETTINGS = 5;
     public static final int ACTION_GUARD_ON = 6;
+    public static final int ACTION_MODULE_ON = 7;
 
     // ---- 链路每一环 ----
     public static final int STEP_OK = 0;
@@ -229,6 +232,7 @@ public final class Status {
         if (d == null || !d.granted) return NO_ROOT;
         if (!d.module) return d.updatePending ? MODULE_PENDING : NO_MODULE;
         if (d.disabled || d.removing) return MODULE_OFF;
+        if (!d.enabled) return SWITCHED_OFF;
         if (s.conf == null) return CONFIG_BAD;
         if (s.http == 200 && s.status != null) {
             if (login(s) != null) return sendBroken(s) ? READY_NO_SEND : READY;
@@ -262,6 +266,9 @@ public final class Status {
                 return d.removing
                         ? new Line(WARNING, "模块将被卸载", "知言模块已标记为卸载，重启手机后移除。要保留它，在模块管理器里撤销卸载。")
                         : new Line(WARNING, "模块已停用", "在 KernelSU 或 Magisk 里重新启用知言模块，然后重启手机。");
+            case SWITCHED_OFF:
+                return new Line(NEUTRAL, "已关闭", "模块开关已关闭：不监听端口、不显示通知、不保活。关闭微信不会受影响。",
+                        ACTION_MODULE_ON, "开启模块");
             case CONFIG_BAD:
                 return new Line(ERROR, "配置文件无效",
                         (s.confError == null ? "配置无法读取" : s.confError) + "。服务端不会启动；在设置里重新保存一次即可修复。",
@@ -374,6 +381,9 @@ public final class Status {
     /** 连接链路：微信 → 知言服务 → 微信账号 → 消息发送。 */
     public static int[] steps(Snapshot s) {
         int state = state(s);
+        if (state == SWITCHED_OFF) {
+            return new int[]{STEP_UNKNOWN, STEP_UNKNOWN, STEP_UNKNOWN, STEP_UNKNOWN};
+        }
         if (state == CHECKING || state == RESTARTING || state == NO_ROOT) {
             return new int[]{STEP_UNKNOWN, STEP_UNKNOWN, STEP_UNKNOWN, STEP_UNKNOWN};
         }
@@ -405,6 +415,12 @@ public final class Status {
 
     public static String[] stepValues(Snapshot s) {
         int state = state(s);
+        if (state == SWITCHED_OFF) {
+            Root.Device d = s.device;
+            String wechat = !s.wechatInstalled ? "未安装" : d != null && d.wechatPid > 0
+                    ? "运行中" : "没有在运行";
+            return new String[]{wechat, "模块已关闭", "—", "—"};
+        }
         if (state == CHECKING || state == RESTARTING) return new String[]{"检查中", "检查中", "检查中", "检查中"};
         if (state == NO_ROOT) return new String[]{"未知", "未知", "未知", "未知"};
         Root.Device d = s.device;
@@ -549,8 +565,10 @@ public final class Status {
                         + " · 唤醒锁" + (keep.optBoolean("wakelock") ? "开启" : "关闭")
                         + (keep.has("cpu_held") ? "（CPU " + (keep.optBoolean("cpu_held") ? "持有" : "释放")
                                 + " · Wi-Fi " + (keep.optBoolean("wifi_held") ? "持有" : "释放") + "）" : "");
+        String toggle = d == null || !d.granted ? "未知" : d.enabled ? "开启" : "已关闭";
         return new String[][]{
                 {"知言应用", appVersion == null || appVersion.isEmpty() ? "未知" : appVersion},
+                {"模块开关", toggle},
                 {"已安装的模块", module},
                 {"运行中的服务", running},
                 {"微信", !s.wechatInstalled ? "未安装" : (s.wechatVersion.isEmpty() ? "已安装" : s.wechatVersion)},

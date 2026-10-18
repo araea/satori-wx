@@ -2,6 +2,12 @@
 
 微信被系统冻结或回收时，微信里的知言服务就停了。三层保活：进程内的常驻通知与唤醒锁、进程内重启微信自己的核心服务、root 侧看守 `wxguard`。前两层在微信进程里，第三层在系统里。
 
+## 模块开关
+
+总开关在知言应用首页。关闭时 gate 线程（`module.cpp`，每秒读一次）调用 `Stop()` 关掉回环监听，`KeepaliveSetEnabled(false)` 取消通知、释放 CPU / Wi-Fi 锁、停止核心服务重启，并把 `enabled:false` 写进 `state.json`；`wx_live` 仍然推进水位但不发布事件，重新开启时不会补放关闭期间的消息。root 看守由应用侧 `wxguard.sh stop` 暂停，重新开启时按关闭前的意图恢复。开关值文件是微信数据目录里的 `files/satori-wx/enabled`，缺省为开启。
+
+模块仍被注入微信进程（这是 Zygisk 的工作方式），但关闭后除 gate 的一次/秒检查外不监听、不通知、不保活。
+
 ## 进程内（`native/wx_keepalive.cpp`）
 
 模块在 `postAppSpecialize` 里起一个守护线程，等 `android.app.ActivityThread.currentApplication()` 返回后，用宿主（微信）上下文做四件事。全部是公开 Android 框架 API 的 JNI 调用：不加载 dex、不定义类、不改 ArtMethod。这也是按钮不能直接在进程内注册接收器的原因。
@@ -28,7 +34,7 @@
 模块把自己的状态写在微信数据目录里：`files/satori-wx/state.json`（0600，临时文件加改名，原子；内容没变不重写）。只有变得慢的事实，不含逐条消息变化的计数器：
 
 ```json
-{"schema":1,"version":"0.16.0","pid":11598,"port":5601,"listening":true,
+{"schema":1,"version":"0.18.0","pid":11598,"port":5601,"listening":true,"enabled":true,
  "login":{"online":1,"id":"wxid_…","name":"昵称"},"clients":1,"serving_since":1792246000000,
  "send":{"state":"incompatible","detail":"send methods not found (version mismatch?)"},
  "keepalive":{"notify":"posted","wakelock":true},"changed_at":1792297261248}
@@ -58,6 +64,7 @@
 
 ```json
 "keepalive": {
+  "enabled": true,
   "notification": true,          // 最近一次发布成功
   "notifications_enabled": true, // 系统里微信的通知权限是否打开
   "channel": true,               // 通知渠道（satori-wx-status）是否可用

@@ -12,6 +12,7 @@
 namespace satori {
 volatile int g_login_count = 0;
 volatile bool g_server_ready = false;
+volatile bool g_module_enabled = true;
 volatile int g_client_count = 0;
 namespace {
 StateListener g_state_listener = nullptr;

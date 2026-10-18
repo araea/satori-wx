@@ -37,7 +37,11 @@ struct Config;
 // disables the state file. `instance` is 0 for the module; the hot-load development entry passes
 // its generation (> 0) so its notification, channel, wake locks and state file never collide with
 // the pinned module's, and it does not restart WeChat's core service.
-void KeepaliveStart(void *vm, const Config &config, const char *data_dir, int instance = 0);
+void KeepaliveStart(void *vm, const Config &config, const char *data_dir, int instance = 0, bool enabled = true);
+// Master switch: false cancels the notification, releases both locks, stops the core-service
+// restart and publishes an "enabled":false state file. true resumes all of it on a later pass.
+void KeepaliveSetEnabled(bool enabled);
+bool KeepaliveEnabled();
 void KeepaliveWakelock(int action, bool *held); // action: 0=off, 1=on, 2=toggle
 // Ref-counted automatic hold for the duration of one outbound mutation. A wedged send cannot
 // keep the CPU awake longer than the safety timeout; nested calls share one underlying lock.

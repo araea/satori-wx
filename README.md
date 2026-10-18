@@ -8,7 +8,7 @@
 
 ## 安装
 
-通过 Magisk / KernelSU 管理器安装服务端 ZIP，重启设备让模块生效。要求已有可用的 Zygisk 实现（Zygisk Next 按其官方要求配置）。
+通过 Magisk / KernelSU 管理器安装服务端 ZIP，重启设备让模块生效。要求已有可用的 Zygisk 实现（Zygisk Next 按其官方要求配置）。管理界面用 Release 里的 `Zhiyan.apk`（需要 Root 授权）。
 
 安装器首次生成 256 位随机 token，升级保留现有配置。配置文件在 `/data/adb/modules/satori_wx/satori-wx.conf`：
 
@@ -24,6 +24,12 @@ token=<安装器生成的令牌>
 - 服务端只监听 `127.0.0.1`，随微信主进程结束退出。配置更改在下一次进程启动生效。
 
 知言应用（`app/`）管理端口与令牌、查看连接链路与发送能力、开关保活看守、重新启动微信。需要 Root 授权。状态是订阅来的（inotify 盯微信的 cgroup、模块发布的状态文件与看守），不是定时去问。
+
+## 模块开关
+
+首页的「模块开关」是总开关。关闭后不监听端口、不显示常驻通知、不持唤醒锁、不重启微信的核心服务，也不保活；微信本身照常运行，客户端连不上。开关写在微信数据目录的 `files/satori-wx/enabled`（`1` / `0`），模块里的 gate 线程每秒读一次，拨动后一两秒内生效，不用重启微信。关闭时知言应用会把 root 看守 `wxguard` 一并暂停；重新开启时恢复原来的保活意图。
+
+关闭状态发布在 `state.json` 的 `enabled` 字段里；`internal/status` 的 `keepalive.enabled` 也是同一个值。
 
 ## 快速使用
 

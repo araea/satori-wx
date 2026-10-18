@@ -29,6 +29,7 @@ final class HomePage {
         void openWeChatSettings();
         void restartWeChat();
         void setGuard(boolean on);
+        void setEnabled(boolean on);
         void copyEndpoint();
         void copyToken();
         void copyReport();
@@ -41,6 +42,7 @@ final class HomePage {
         boolean probing;
         /** 保活看守正在切换：这期间开关停在用户拨到的位置，不被途中的一次刷新拨回去。 */
         boolean guardBusy;
+        boolean enabledBusy;
         String appVersion = "";
     }
 
@@ -58,7 +60,7 @@ final class HomePage {
     private final LinearLayout heroActions;
     private final TextView sent, failed;
     private final Item[] chain = new Item[4];
-    private final Item endpoint, token, openWeChat, restartWeChat, guard;
+    private final Item endpoint, token, openWeChat, restartWeChat, guard, moduleSwitch;
     private final Item[] data;
     private final ImageButton refresh;
     private int heroTone = -1;
@@ -170,6 +172,16 @@ final class HomePage {
         sent = values[0];
         failed = values[1];
         content.addView(metrics, Ui.stack(t.spaceMd));
+
+        // ---- 模块开关 ----
+        content.addView(ui.sectionTitle("模块"), Ui.stack(t.space2xl));
+        Ui.Group moduleGroup = ui.group();
+        moduleSwitch = moduleGroup.add(new Item(t, Item.SWITCH, "模块开关",
+                "关闭后不监听端口、不显示通知、不保活，和没有安装时一样；随时可以再打开。")
+                .leading(Icon.SHIELD, t.onSurfaceVariant));
+        moduleSwitch.setId(R.id.module_switch);
+        moduleSwitch.setOnToggle((item, on) -> actions.setEnabled(on));
+        content.addView(moduleGroup, Ui.stack(0));
 
         // ---- 连接链路 ----
         content.addView(ui.sectionTitle("连接链路"), Ui.stack(t.space2xl));
@@ -297,10 +309,15 @@ final class HomePage {
         token.setSupporting(s.conf == null ? (s.device == null ? "读取中" : "不可用") : "已设置 · " + s.conf.token.length() + " 位");
 
         boolean root = s.device != null && s.device.granted;
+        boolean on = s.device == null || s.device.enabled;
+        moduleSwitch.setChecked(on, false);
+        moduleSwitch.setSupporting(m.enabledBusy ? "正在切换…"
+                : on ? "开启：服务、通知与保活都在运行" : "已关闭：端口、通知与保活都已停下");
+        moduleSwitch.setEnabled(root && !m.enabledBusy && !s.restarting);
         restartWeChat.setEnabled(root && s.wechatInstalled && !s.restarting);
         openWeChat.setEnabled(s.wechatInstalled);
         // 保活看守只在模块带了它、并留下过模式记录时出现；开关就是它的真实模式，不是点过的结果。
-        boolean hasGuard = root && s.device.guardKnown();
+        boolean hasGuard = root && s.device.guardKnown() && on;
         guard.setVisibility(hasGuard ? View.VISIBLE : View.GONE);
         if (hasGuard) {
             if (!m.guardBusy) guard.setChecked(!s.device.guardPaused(), false);

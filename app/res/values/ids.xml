@@ -37,4 +37,5 @@
     <item type="id" name="hero_secondary" />
     <item type="id" name="wechat_settings" />
     <item type="id" name="guard" />
+    <item type="id" name="module_switch" />
 </resources>

@@ -104,6 +104,8 @@ public final class Root {
         public final String updateVersion;
         /** 配置文件原文；文件不存在时为 null。 */
         public final String confText;
+        /** 模块主开关（files/satori-wx/enabled）。文件不存在时按开启处理。 */
+        public final boolean enabled;
         /** 微信主进程 pid；0 = 没在运行。 */
         public final int wechatPid;
         /** 微信主进程被系统冻结（cgroup freezer）：进程在，但服务线程不会应答。 */
@@ -123,8 +125,9 @@ public final class Root {
         public final boolean guardWatching;
 
         Device(boolean granted, boolean module, boolean disabled, boolean removing, boolean updatePending,
-               String version, String updateVersion, String confText, int wechatPid, boolean wechatFrozen,
-               boolean wechatAuthed, String publishedText, String guardMode, String guardReason, boolean guardWatching) {
+               String version, String updateVersion, String confText, boolean enabled, int wechatPid,
+               boolean wechatFrozen, boolean wechatAuthed, String publishedText, String guardMode,
+               String guardReason, boolean guardWatching) {
             this.granted = granted;
             this.module = module;
             this.disabled = disabled;
@@ -133,6 +136,7 @@ public final class Root {
             this.version = version;
             this.updateVersion = updateVersion;
             this.confText = confText;
+            this.enabled = enabled;
             this.wechatPid = wechatPid;
             this.wechatFrozen = wechatFrozen;
             this.wechatAuthed = wechatAuthed;
@@ -143,7 +147,7 @@ public final class Root {
         }
 
         public static final Device DENIED =
-                new Device(false, false, false, false, false, "", "", null, 0, false, false, null, "", "", false);
+                new Device(false, false, false, false, false, "", "", null, true, 0, false, false, null, "", "", false);
 
         /** 看守处于暂停：微信被冻结后不会有人立刻解冻。 */
         public boolean guardPaused() {
@@ -178,6 +182,9 @@ public final class Root {
                 "[ -f \"$M/module.prop\" ] && sed -n 's/^version=/version=/p' \"$M/module.prop\" | head -n 1",
                 "[ -f \"$U/module.prop\" ] && sed -n 's/^version=/update_version=/p' \"$U/module.prop\" | head -n 1",
                 "[ -f \"$M/satori-wx.conf\" ] && echo \"conf=$(base64 -w 0 < \"$M/satori-wx.conf\")\"",
+                // 模块主开关：文件在微信数据目录里，缺失表示默认开启。
+                "F=/data/user/0/" + WECHAT + "/files/satori-wx/enabled",
+                "[ -f \"$F\" ] && echo \"enabled=$(cat \"$F\")\"",
                 "pid=$(pidof " + WECHAT + " | cut -d ' ' -f 1)",
                 "echo \"pid=$pid\"",
                 // ColorOS 的 Hans 等机制会用 cgroup freezer 冻住后台微信：进程还在，服务线程却停着。
@@ -208,7 +215,7 @@ public final class Root {
     /** 解析探测脚本的输出；公开只为在 JVM 上测（tests/StatusTest）。 */
     public static Device parse(String out) {
         boolean module = false, disabled = false, removing = false, update = false, frozen = false, authed = false;
-        boolean watching = false;
+        boolean watching = false, enabled = true;
         String version = "", updateVersion = "", conf = null, published = null, guard = "", guardReason = "";
         int pid = 0;
         for (String line : out.split("\n")) {
@@ -222,6 +229,7 @@ public final class Root {
                 case "removing": removing = true; break;
                 case "update": update = true; break;
                 case "frozen": frozen = true; break;
+                case "enabled": enabled = !value.equals("0"); break;
                 case "auth": authed = !value.isEmpty() && !value.equals("0"); break;
                 case "guard": guard = value; break;
                 case "guard_reason": guardReason = value; break;
@@ -252,8 +260,8 @@ public final class Root {
                 default: break;
             }
         }
-        return new Device(true, module, disabled, removing, update, version, updateVersion, conf, pid, frozen && pid > 0,
-                authed, published, guard, guardReason, watching);
+        return new Device(true, module, disabled, removing, update, version, updateVersion, conf, enabled, pid,
+                frozen && pid > 0, authed, published, guard, guardReason, watching);
     }
 
     // ------------------------------------------------------------------ 写
@@ -294,6 +302,30 @@ public final class Root {
      * 开关保活看守：开启时它会在微信被冻结后立刻解冻（并在微信死掉时拉起），暂停时什么也不做。
      * 脚本是模块开机时放进 /data/adb/satori-wx 的 wxguard.sh，模块的「操作」按钮用的是同一个。
      */
+    /**
+     * 写模块主开关。文件在微信的数据目录里，必须归微信 uid 所有并带上同一 SELinux 上下文，
+     * 否则模块进程读不到。先写临时文件再改名，任何时刻都不会留下半个值。
+     */
+    public static Result setEnabled(boolean on) {
+        String base = "/data/user/0/" + WECHAT;
+        String dir = base + "/files/satori-wx";
+        String file = dir + "/enabled";
+        return run(String.join("\n",
+                "set -e",
+                "umask 077",
+                "mkdir -p \"" + dir + "\"",
+                "owner=$(stat -c %u:%g \"" + base + "\")",
+                "chown $owner \"" + dir + "\" 2>/dev/null || true",
+                "chmod 0700 \"" + dir + "\"",
+                "printf '%s' '" + (on ? "1" : "0") + "' > \"" + file + ".tmp\"",
+                "chown $owner \"" + file + ".tmp\"",
+                "chmod 0600 \"" + file + ".tmp\"",
+                "ctx=$(stat -c %C \"" + dir + "\" 2>/dev/null || true)",
+                "[ -n \"$ctx\" ] && chcon \"$ctx\" \"" + file + ".tmp\" 2>/dev/null || true",
+                "mv -f \"" + file + ".tmp\" \"" + file + "\"",
+                "[ \"$(cat \"" + file + "\")\" = '" + (on ? "1" : "0") + "' ]"));
+    }
+
     public static Result setGuard(boolean on) {
         return run("sh " + GUARD_DIR + "/wxguard.sh " + (on ? "start" : "stop") + " >/dev/null 2>&1");
     }
