@@ -74,7 +74,7 @@ jclass g_k0 = nullptr;             // the message store holder
 jfieldID g_k0_store = nullptr;     // its static field holding the store
 jclass g_j0 = nullptr;             // the per-account message store
 jmethodID g_j0_get = nullptr;      // k(String,J)Le9;
-jmethodID g_e9_is_send = nullptr;  // z0()I, 1 when the message was sent by this account
+jfieldID g_e9_is_send = nullptr;   // field_isSend:I, 1 when the message was sent by this account
 long long g_recalled = 0;
 long long g_media = 0;
 
@@ -230,17 +230,17 @@ bool ResolveWith(JNIEnv *env, jobject loader, jmethodID load, const WxNames &n, 
     jclass k0 = LoadClass(env, loader, load, name(kStoreHolderCls));
     jclass j0 = LoadClass(env, loader, load, name(kStoreCls));
     jclass e9 = LoadClass(env, loader, load, name(kMsgInfoCls));
-    jmethodID d1_ctor = nullptr, d1_do_scene = nullptr, j0_get = nullptr, e9_is_send = nullptr;
-    jfieldID k0_store = nullptr;
+    jmethodID d1_ctor = nullptr, d1_do_scene = nullptr, j0_get = nullptr;
+    jfieldID k0_store = nullptr, e9_is_send = nullptr;
     if (ok && d1 && k0 && j0 && e9) {
         d1_ctor = Method(env, d1, "<init>", name(kRevokeCtorDesc));
         d1_do_scene = Method(env, d1, "doScene", name(kDoSceneDesc));
         k0_store = StaticField(env, k0, name(kStoreHolderFieldName), name(kStoreHolderFieldDesc));
         j0_get = Method(env, j0, name(kStoreGetName), name(kStoreGetDesc));
-        e9_is_send = Method(env, e9, name(kMsgInfoIsSendName), "()I");
+        e9_is_send = Field(env, e9, name(kMsgInfoIsSendField), "I");
         if (!d1_ctor || !d1_do_scene || !k0_store || !j0_get || !e9_is_send) {
-            d1_ctor = d1_do_scene = j0_get = e9_is_send = nullptr;
-            k0_store = nullptr;
+            d1_ctor = d1_do_scene = j0_get = nullptr;
+            k0_store = e9_is_send = nullptr;
         }
     }
     const bool recall = d1_ctor && d1_do_scene && k0_store && j0_get && e9_is_send;
@@ -897,7 +897,7 @@ SendResult SendRecall(const char *talker, const char *message_id) {
         Detail(result.detail, sizeof(result.detail), "message %lld not found in %s", local_id, talker);
         return result;
     }
-    const jint is_send = env->CallIntMethod(info, g_e9_is_send);
+    const jint is_send = env->GetIntField(info, g_e9_is_send);
     if (env->ExceptionCheck() || is_send != 1) {
         env->ExceptionClear();
         env->DeleteLocalRef(info);

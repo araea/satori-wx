@@ -42,7 +42,8 @@ namespace satori {
     X(RevokeCtorDesc, "(Lcom/tencent/mm/storage/e9;Ljava/lang/String;Ljava/lang/String;)V",                              \
       "(Lcom/tencent/mm/storage/e9;Ljava/lang/String;Ljava/lang/String;)V")                                              \
     X(MsgInfoCls, "com.tencent.mm.storage.e9", "com.tencent.mm.storage.e9")                                              \
-    X(MsgInfoIsSendName, "z0", "z0")                                                                                     \
+    /* Not obfuscated: a field of the message base class (im.c8), read rather than called. */                            \
+    X(MsgInfoIsSendField, "field_isSend", "field_isSend")                                                                \
     X(StoreHolderCls, "ex0.k0", "ox0.k0")                                                                                \
     X(StoreHolderFieldName, "F0", "d1")                                                                                  \
     X(StoreHolderFieldDesc, "Lex0/j0;", "Lox0/j0;")                                                                      \
