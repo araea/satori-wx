@@ -3,7 +3,9 @@ package com.satori.wx.core;
 import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.net.ConnectException;
 import java.net.HttpURLConnection;
+import java.net.SocketTimeoutException;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
@@ -21,6 +23,11 @@ import org.json.JSONObject;
  */
 public final class Api {
     public static final int UNREACHABLE = 0;
+    /** 连不上时的原因（{@link Reply#failure}）：没有失败 / 端口拒绝连接 / 连上了却没人应答（进程被冻结或卡住）/ 其他。 */
+    public static final int FAIL_NONE = 0;
+    public static final int FAIL_REFUSED = 1;
+    public static final int FAIL_TIMEOUT = 2;
+    public static final int FAIL_OTHER = 3;
     private static final int MAX_BODY = 1 << 20;
     private static final int MAX_CONTACTS = 5000;
 
@@ -36,10 +43,17 @@ public final class Api {
     public static final class Reply {
         public final int code;
         public final JSONObject body;
+        /** 连不上时的原因；有应答（不论状态码）时为 {@link #FAIL_NONE}。 */
+        public final int failure;
 
         Reply(int code, JSONObject body) {
+            this(code, body, FAIL_NONE);
+        }
+
+        Reply(int code, JSONObject body, int failure) {
             this.code = code;
             this.body = body;
+            this.failure = failure;
         }
 
         public boolean ok() {
@@ -137,7 +151,7 @@ public final class Api {
         try {
             connection = (HttpURLConnection) new URL("http://127.0.0.1:" + port + "/v1/" + path).openConnection();
             connection.setConnectTimeout(1500);
-            connection.setReadTimeout(4000);
+            connection.setReadTimeout(3000);
             connection.setInstanceFollowRedirects(false);
             connection.setUseCaches(false);
             connection.setRequestMethod("POST");
@@ -169,9 +183,15 @@ public final class Api {
                 }
             }
             return new Reply(code, json);
+        } catch (SocketTimeoutException timeout) {
+            // 连得上、没人应答：微信进程被冻结或卡住时是这样（内核替它接了连接）。
+            return new Reply(UNREACHABLE, null, FAIL_TIMEOUT);
+        } catch (ConnectException refused) {
+            // 端口没人监听：服务没起来，或微信没在运行。
+            return new Reply(UNREACHABLE, null, FAIL_REFUSED);
         } catch (Exception error) {
-            // 拒绝连接、超时、半截响应一律算「连不上」：界面绝不沿用上一次的在线结论。
-            return new Reply(UNREACHABLE, null);
+            // 半截响应、被重置等一律算「连不上」，这一次的结论里不会出现在线。
+            return new Reply(UNREACHABLE, null, FAIL_OTHER);
         } finally {
             if (connection != null) connection.disconnect();
         }

@@ -28,6 +28,7 @@ final class HomePage {
         void openWeChat();
         void openWeChatSettings();
         void restartWeChat();
+        void setGuard(boolean on);
         void copyEndpoint();
         void copyToken();
         void copyReport();
@@ -38,6 +39,8 @@ final class HomePage {
     static final class Model {
         final Status.Snapshot snapshot = new Status.Snapshot();
         boolean probing;
+        /** 保活看守正在切换：这期间开关停在用户拨到的位置，不被途中的一次刷新拨回去。 */
+        boolean guardBusy;
         String appVersion = "";
     }
 
@@ -55,7 +58,7 @@ final class HomePage {
     private final LinearLayout heroActions;
     private final TextView sent, failed;
     private final Item[] chain = new Item[4];
-    private final Item endpoint, token, openWeChat, restartWeChat;
+    private final Item endpoint, token, openWeChat, restartWeChat, guard;
     private final Item[] data;
     private final ImageButton refresh;
     private int heroTone = -1;
@@ -203,6 +206,10 @@ final class HomePage {
                 .leading(Icon.RESTART, t.onSurfaceVariant));
         restartWeChat.setId(R.id.restart_wechat);
         restartWeChat.setOnClickListener(v -> actions.restartWeChat());
+        guard = wechat.add(new Item(t, Item.SWITCH, "保活看守", Status.guardHint(null)).leading(Icon.SHIELD, t.onSurfaceVariant));
+        guard.setId(R.id.guard);
+        guard.setOnToggle((item, on) -> actions.setGuard(on));
+        guard.setVisibility(View.GONE);
         Item background = wechat.add(new Item(t, Item.ACTION, "后台运行设置", "打开微信的应用详情，允许它后台运行，减少被系统冻结")
                 .leading(Icon.SETTINGS, t.onSurfaceVariant).chevron());
         background.setId(R.id.wechat_settings);
@@ -261,7 +268,8 @@ final class HomePage {
         heroSecondary.setTextColor(line.tone == Status.NEUTRAL ? t.primary : t.toneOnContainer(line.tone));
 
         // ---- 指标 ----
-        JSONObject send = s.http == 200 && s.status != null ? s.status.optJSONObject("send") : null;
+        JSONObject view = Status.statusView(s);
+        JSONObject send = view == null ? null : view.optJSONObject("send");
         Ui.set(sent, send == null ? "—" : String.valueOf(send.optLong("sent")));
         Ui.set(failed, send == null ? "—" : String.valueOf(send.optLong("failed")));
 
@@ -291,6 +299,13 @@ final class HomePage {
         boolean root = s.device != null && s.device.granted;
         restartWeChat.setEnabled(root && s.wechatInstalled && !s.restarting);
         openWeChat.setEnabled(s.wechatInstalled);
+        // 保活看守只在模块带了它、并留下过模式记录时出现；开关就是它的真实模式，不是点过的结果。
+        boolean hasGuard = root && s.device.guardKnown();
+        guard.setVisibility(hasGuard ? View.VISIBLE : View.GONE);
+        if (hasGuard) {
+            if (!m.guardBusy) guard.setChecked(!s.device.guardPaused(), false);
+            guard.setSupporting(Status.guardHint(s.device));
+        }
 
         String[][] rows = Status.diagnostics(s, m.appVersion);
         for (int i = 0; i < rows.length; i++) data[i].setSupporting(rows[i][1]);

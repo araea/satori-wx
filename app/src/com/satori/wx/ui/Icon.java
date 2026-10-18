@@ -34,6 +34,7 @@ final class Icon {
     static final int NEXT = R.drawable.ms_chevron_right;
     static final int OPEN = R.drawable.ms_open_in_new;
     static final int RESTART = R.drawable.ms_restart_alt;
+    static final int SHIELD = R.drawable.ms_shield;
     static final int ADD = R.drawable.ms_add;
     static final int SEARCH = R.drawable.ms_search;
     static final int PERSON = R.drawable.ms_person;

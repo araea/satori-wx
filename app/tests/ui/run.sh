@@ -29,16 +29,19 @@ echo "== 4. 安装并运行 =="
 trap 'su -c "pm uninstall com.satori.wx.test; rm -rf /data/data/com.satori.wx/files/design-review" >/dev/null 2>&1 || true' EXIT
 su -c "cp '$OUT/DesignSmoke.apk' /data/local/tmp/zhiyan-smoke.apk && pm install -r -d /data/local/tmp/zhiyan-smoke.apk >/dev/null && rm /data/local/tmp/zhiyan-smoke.apk"
 # ColorOS 的 Hans 会冻结在后台停留几秒的应用进程，测试进程也不例外；被冻住时 am instrument 会一直等下去。
-# 给它一个上限，并说清原因，而不是无声挂起。
-if ! su -c "timeout 150 am instrument -w -r com.satori.wx.test/com.satori.wx.ui.DesignSmoke" > "$OUT/instrument.log"; then
-  pid=$(su -c "pidof com.satori.wx" || true)
-  if [ -n "$pid" ] && su -c "grep -q freezer /proc/$pid/wchan"; then
-    echo "测试进程被系统冻结（ColorOS Hans），测试没能跑完。息屏后重跑，或在系统设置里允许「知言」后台运行。" >&2
+# 给它一个上限，并说清原因，而不是无声挂起。页面分两批跑：息屏时 ColorOS 还会把跑了近一分钟的后台进程
+# 清掉（logcat 里是 OsenseKillAction … nirvana），一批跑不完。
+for set in a b; do
+  if ! su -c "timeout 150 am instrument -w -r -e set $set com.satori.wx.test/com.satori.wx.ui.DesignSmoke" > "$OUT/instrument-$set.log"; then
+    pid=$(su -c "pidof com.satori.wx" || true)
+    if [ -n "$pid" ] && su -c "grep -q freezer /proc/$pid/wchan"; then
+      echo "测试进程被系统冻结（ColorOS Hans），测试没能跑完。息屏后重跑，或在系统设置里允许「知言」后台运行。" >&2
+    fi
+    su -c "am force-stop com.satori.wx" || true
   fi
-  su -c "am force-stop com.satori.wx" || true
-fi
-grep -E "shot|PASS|FAIL|at com" "$OUT/instrument.log" || true
-grep -q 'PASS: 知言界面设计冒烟' "$OUT/instrument.log" || { echo "设计冒烟未通过，见 $OUT/instrument.log" >&2; exit 1; }
+  grep -E "shot|PASS|FAIL|at com" "$OUT/instrument-$set.log" || true
+  grep -q 'PASS: 知言界面设计冒烟' "$OUT/instrument-$set.log" || { echo "设计冒烟（第 $set 批）未通过，见 $OUT/instrument-$set.log" >&2; exit 1; }
+done
 
 echo "== 5. 取回截图 =="
 for f in $(su -c "ls /data/data/com.satori.wx/files/design-review/"); do

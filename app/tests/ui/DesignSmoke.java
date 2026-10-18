@@ -16,6 +16,7 @@ import android.widget.ImageButton;
 import android.widget.LinearLayout;
 import android.widget.TextView;
 import com.satori.wx.R;
+import com.satori.wx.core.Api;
 import com.satori.wx.core.Conf;
 import com.satori.wx.core.Root;
 import com.satori.wx.core.Status;
@@ -39,9 +40,12 @@ public final class DesignSmoke extends Instrumentation {
     private final StringBuilder report = new StringBuilder();
     private final List<String> failures = new ArrayList<>();
     private File shots;
+    /** 页面分两批跑（a / b，缺省全跑）：ColorOS 会在息屏时把跑了近一分钟的后台进程清掉，一批跑不完。 */
+    private String set = "all";
 
     @Override public void onCreate(Bundle args) {
         super.onCreate(args);
+        if (args != null) set = args.getString("set", "all");
         start();
     }
 
@@ -50,7 +54,7 @@ public final class DesignSmoke extends Instrumentation {
         try {
             shots = new File(getTargetContext().getFilesDir(), "design-review");
             shots.mkdirs();
-            for (File old : shots.listFiles()) old.delete();
+            if (!set.equals("b")) for (File old : shots.listFiles()) old.delete();
             runOnMainSync(this::run);
             if (!failures.isEmpty()) throw new AssertionError(String.join("\n", failures));
             report.append("PASS: 知言界面设计冒烟\n");
@@ -66,22 +70,31 @@ public final class DesignSmoke extends Instrumentation {
 
     private void run() {
         try {
-            // ---- 首页：各种结论 ----
-            home("light-home-ready", false, 1f, 360, ready());
-            home("dark-home-ready", true, 1f, 360, ready());
-            home("light-home-service-down", false, 1f, 360, serviceDown());
-            home("dark-home-no-root", true, 1f, 360, noRoot());
-            home("light-home-checking", false, 1f, 360, new Status.Snapshot());
-            home("large-home-ready", false, 2f, 360, ready());
-            home("narrow-home-config-bad", false, 1.3f, 320, configBad());
-            home("light-home-frozen", false, 1f, 360, frozen());
-            home("dark-home-account-unseen", true, 1f, 360, accountUnseen());
-            // ---- 设置：有草稿、无草稿 ----
-            settings("light-settings", false, 1f, 360, true);
-            settings("dark-settings", true, 1f, 360, true);
-            settings("large-settings", false, 2f, 360, true);
-            // ---- 宽屏双栏 ----
-            wide("wide", false, 900);
+            if (!set.equals("b")) {
+                // ---- 首页：各种结论 ----
+                home("light-home-ready", false, 1f, 360, ready());
+                home("dark-home-ready", true, 1f, 360, ready());
+                home("light-home-service-down", false, 1f, 360, serviceDown());
+                home("dark-home-no-root", true, 1f, 360, noRoot());
+                home("light-home-checking", false, 1f, 360, new Status.Snapshot());
+                home("large-home-ready", false, 2f, 360, ready());
+                home("narrow-home-config-bad", false, 1.3f, 320, configBad());
+                home("light-home-frozen", false, 1f, 360, frozen());
+                home("dark-home-account-unseen", true, 1f, 360, accountUnseen());
+            }
+            if (!set.equals("a")) {
+                // ---- 冻结时沿用冻结前的状态、发送与微信版本不兼容 ----
+                home("light-home-frozen-carried", false, 1f, 360, frozenCarried());
+                home("dark-home-frozen-guard-off", true, 1.3f, 320, frozenCarried());
+                home("light-home-no-send", false, 1f, 360, noSend());
+                home("large-home-no-send", true, 2f, 360, noSend());
+                // ---- 设置：有草稿、无草稿 ----
+                settings("light-settings", false, 1f, 360, true);
+                settings("dark-settings", true, 1f, 360, true);
+                settings("large-settings", false, 2f, 360, true);
+                // ---- 宽屏双栏 ----
+                wide("wide", false, 900);
+            }
         } catch (Exception error) {
             throw new RuntimeException(error);
         }
@@ -118,6 +131,29 @@ public final class DesignSmoke extends Instrumentation {
     private static Status.Snapshot frozen() {
         Status.Snapshot s = serviceDown();
         s.device = Root.parse("module=1\nversion=v0.7.0\npid=6312\nfrozen=1\nauth=1114861342\n");
+        return s;
+    }
+
+    /** 微信被冻结、服务暂停，但沿用了冻结前的应答；看守停着。 */
+    private static Status.Snapshot frozenCarried() throws Exception {
+        Status.Snapshot s = ready();
+        s.device = Root.parse("module=1\nversion=v0.16.0\npid=6312\nfrozen=1\nguard=PAUSED\nguard_reason=user-stop\n");
+        s.carriedStatus = s.status;
+        s.carriedMeta = s.meta;
+        s.carriedPid = 6312;
+        s.http = Api.UNREACHABLE;
+        s.status = null;
+        s.meta = null;
+        s.failure = Api.FAIL_TIMEOUT;
+        return s;
+    }
+
+    /** 服务就绪、账号在线，但发送与当前微信版本对不上；看守开着。 */
+    private static Status.Snapshot noSend() throws Exception {
+        Status.Snapshot s = ready();
+        s.device = Root.parse("module=1\nversion=v0.16.0\npid=6312\nguard=ARMED\nguard_watch=1\n");
+        s.wechatVersion = "8.0.79";
+        s.status.getJSONObject("send").put("state", "incompatible").put("detail", "send methods not found (version mismatch?)");
         return s;
     }
 

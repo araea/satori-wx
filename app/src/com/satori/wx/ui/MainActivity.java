@@ -5,9 +5,12 @@ import android.animation.AnimatorListenerAdapter;
 import android.animation.AnimatorSet;
 import android.animation.ObjectAnimator;
 import android.app.Activity;
+import android.content.BroadcastReceiver;
 import android.content.ClipData;
 import android.content.ClipboardManager;
+import android.content.Context;
 import android.content.Intent;
+import android.content.IntentFilter;
 import android.content.SharedPreferences;
 import android.content.pm.PackageInfo;
 import android.graphics.Insets;
@@ -35,6 +38,7 @@ import com.satori.wx.core.Api;
 import com.satori.wx.core.Conf;
 import com.satori.wx.core.Root;
 import com.satori.wx.core.Status;
+import com.satori.wx.core.Watcher;
 import java.util.Objects;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -48,22 +52,56 @@ import org.json.JSONObject;
  *
  * <p>线程：回环探测与联系人读取走 {@link #worker}；root 调用走 {@link #rootWorker}。分开是必须的：
  * {@code su} 最长会占满 20 秒超时，与探测排在一条队列上会把刷新一起堵住。主线程不做任何 I/O。
- * 轮询只在前台进行（在线 5 秒、离线 10 秒、重启微信期间 2 秒），root 状态只在必要时重读。
+ *
+ * <p>状态是订阅来的，不是隔几秒问来的：前台时开着一条 root 侧的 {@link Watcher}（inotify 盯着微信的 cgroup、
+ * 模块发布的状态文件、保活看守与模块目录），再加一个微信安装 / 更新的广播；任何一个说「变了」就重新检查
+ * （短暂合并，同一时刻只有一次检查在跑）。只剩一个 60 秒的兜底，防订阅漏掉什么；订阅起不来时才退回
+ * 旧的 5 / 10 秒节奏。切到后台全部停掉。
+ *
+ * <p>微信被冻结又解冻来得很勤，页面不能跟着一闪一闪：同一个进程里有过活应答、此后连不上（冻结或超时）
+ * 还不到 {@link #DEBOUNCE} 时，先按上次的样子显示；超过了才说「冻结」，并保留冻结前的账号与发送能力。
  */
 public final class MainActivity extends Activity
         implements HomePage.Actions, SettingsPage.Actions {
     private static final int HOME = 0;
     private static final int SETTINGS = 1;
+    /** 订阅在时的兜底检查间隔；订阅起不来时退回旧的在线 5 秒、离线 10 秒。 */
+    private static final long SAFETY = 60000;
     private static final long POLL_ONLINE = 5000;
     private static final long POLL_OFFLINE = 10000;
     private static final long POLL_RESTARTING = 2000;
     private static final long ROOT_STALE = 15000;
     private static final long RESTART_TIMEOUT = 60000;
+    /**
+     * 事件来了之后等多久再检查（把一串事件并成一次），以及两次检查之间至少隔多久。事件一直不断时（冻结与解冻
+     * 来得很勤）每连着来一个就多等 1 秒、最多 6 秒，免得每个边沿都起一次 su。
+     */
+    private static final long SETTLE = 300;
+    private static final long BURST_WINDOW = 5000;
+    private static final long MIN_GAP = 1500;
+    /** 从第一次连不上起，不到这么久页面先不改口。 */
+    private static final long DEBOUNCE = 6000;
 
     private final Handler main = new Handler(Looper.getMainLooper());
     private final ExecutorService worker = Executors.newSingleThreadExecutor();
     private final ExecutorService rootWorker = Executors.newSingleThreadExecutor();
     private final HomePage.Model model = new HomePage.Model();
+    private final Watcher watcher = new Watcher(new Watcher.Listener() {
+        @Override public void changed(String line) {
+            main.post(MainActivity.this::onChanged);
+        }
+
+        @Override public void ended(boolean ran) {
+            main.post(() -> onWatchEnded(ran));
+        }
+    });
+    private final BroadcastReceiver packageChanges = new BroadcastReceiver() {
+        @Override public void onReceive(Context context, Intent intent) {
+            Uri data = intent.getData();
+            String name = data == null ? null : data.getSchemeSpecificPart();
+            if (Root.WECHAT.equals(name)) onChanged();
+        }
+    };
 
     private Tokens t;
     private Ui ui;
@@ -79,6 +117,18 @@ public final class MainActivity extends Activity
     private boolean rootBusy;
     private long deviceAt;
     private boolean forceRoot = true;
+    private boolean dirty;
+    private boolean settlePending;
+    private long lastEventAt;
+    private int burst;
+    private int guardPending;
+    private boolean watchFailed;
+    private boolean receiverOn;
+    private long refreshedAt;
+    // 同一个微信进程里最近一次活应答，及连不上是从什么时候开始的：暂停期间沿用，并给页面防抖。
+    private JSONObject carriedStatus, carriedMeta;
+    private int carriedPid;
+    private long liveAt, failSince;
     private long restartAt;
     private Bundle pendingState;
     private Runnable afterSave;
@@ -86,6 +136,19 @@ public final class MainActivity extends Activity
     private boolean backRegistered;
     private int insetTop, insetBottom, insetIme, insetLeft, insetRight;
     private final Runnable poll = () -> { if (resumed) refresh(); };
+    private final Runnable settle = new Runnable() {
+        @Override public void run() {
+            settlePending = false;
+            if (!resumed) return;
+            long wait = refreshedAt + MIN_GAP - System.currentTimeMillis();
+            if (wait > 0) {
+                settlePending = true;
+                main.postDelayed(this, wait);
+            } else {
+                refresh();
+            }
+        }
+    };
 
     @Override protected void onCreate(Bundle state) {
         super.onCreate(state);
@@ -361,29 +424,76 @@ public final class MainActivity extends Activity
     @Override protected void onResume() {
         super.onResume();
         resumed = true;
+        watchFailed = false;
         if (System.currentTimeMillis() - deviceAt > ROOT_STALE) forceRoot = true;
+        if (!receiverOn) {
+            IntentFilter packages = new IntentFilter();
+            packages.addAction(Intent.ACTION_PACKAGE_ADDED);
+            packages.addAction(Intent.ACTION_PACKAGE_REPLACED);
+            packages.addAction(Intent.ACTION_PACKAGE_REMOVED);
+            packages.addDataScheme("package");
+            registerReceiver(packageChanges, packages);
+            receiverOn = true;
+        }
         refresh();
     }
 
     @Override protected void onPause() {
         resumed = false;
         main.removeCallbacks(poll);
+        main.removeCallbacks(settle);
+        settlePending = false;
+        watcher.stop();
+        if (receiverOn) {
+            unregisterReceiver(packageChanges);
+            receiverOn = false;
+        }
         if (settings != null) settings.reveal(false);
         super.onPause();
     }
 
     @Override protected void onDestroy() {
         main.removeCallbacksAndMessages(null);
+        watcher.stop();
         worker.shutdownNow();
         rootWorker.shutdownNow();
         super.onDestroy();
     }
 
+    /** 订阅或广播说「变了」：下一次检查要重读 root 侧的事实；一串事件并成一次。 */
+    private void onChanged() {
+        if (!resumed) return;
+        forceRoot = true;
+        long now = System.currentTimeMillis();
+        burst = now - lastEventAt < BURST_WINDOW ? burst + 1 : 0;
+        lastEventAt = now;
+        // 固定窗口，不是每来一个就重新计时：事件不断也不会一直不检查。
+        if (settlePending) return;
+        settlePending = true;
+        main.postDelayed(settle, SETTLE + Math.min(burst, 6) * 1000L);
+    }
+
+    /** 订阅结束：没有 root 就退回慢速兜底；意外退出（被系统杀了）就再起一次。 */
+    private void onWatchEnded(boolean ran) {
+        if (!resumed) return;
+        if (!ran) {
+            watchFailed = true;
+            return;
+        }
+        main.postDelayed(() -> { if (resumed && !watchFailed) watcher.start(); }, 2000);
+    }
+
     /** 一次检查：必要时经 root 重读模块与配置，然后探测服务。结果整体替换，绝不半新半旧。 */
     @Override public void refresh() {
-        if (model.probing || isDestroyed()) return;
+        if (isDestroyed()) return;
+        if (model.probing) {
+            // 检查在途时又来了新情况：这一次跑完马上再来一次，不丢。
+            dirty = true;
+            return;
+        }
         main.removeCallbacks(poll);
         model.probing = true;
+        refreshedAt = System.currentTimeMillis();
         home.render(model);
         final Status.Snapshot previous = model.snapshot;
         // 没有授权时不自己重试：Magisk 会为每次 su 弹一次授权框。只在「重试」或回到前台时再请求。
@@ -406,7 +516,7 @@ public final class MainActivity extends Activity
                 }
             }
             PackageInfo info = wechatInfo();
-            int http = Api.UNREACHABLE;
+            int http = Api.UNREACHABLE, failure = Api.FAIL_NONE;
             JSONObject status = null, meta = null;
             boolean viaPrevious = false;
             // 刚探测到微信没在运行或被冻结：服务不可能应答，不必再等满读超时。
@@ -414,6 +524,7 @@ public final class MainActivity extends Activity
             if (conf != null && !hopeless) {
                 Api.Reply reply = new Api(conf.port, conf.token).status();
                 http = reply.code;
+                failure = reply.failure;
                 if (reply.ok()) {
                     status = reply.body;
                     Api.Reply m = new Api(conf.port, conf.token).meta();
@@ -425,19 +536,33 @@ public final class MainActivity extends Activity
                     if (r.ok()) {
                         viaPrevious = true;
                         http = 200;
+                        failure = Api.FAIL_NONE;
                         status = r.body;
                         Api.Reply m = old.meta();
                         meta = m.ok() ? m.body : null;
                     }
                 }
+            } else if (hopeless) {
+                failure = device.wechatPid <= 0 ? Api.FAIL_REFUSED : Api.FAIL_TIMEOUT;
             }
             final Conf fConf = conf;
             final String fError = confError;
-            final int fHttp = http;
+            final int fHttp = http, fFailure = failure;
             final JSONObject fStatus = status, fMeta = meta;
             final boolean fVia = viaPrevious;
             main.post(() -> {
                 if (isDestroyed()) return;
+                long now = System.currentTimeMillis();
+                boolean live = fHttp == 200 && fStatus != null;
+                if (live) {
+                    carriedStatus = fStatus;
+                    carriedMeta = fMeta;
+                    carriedPid = device.wechatPid;
+                    liveAt = now;
+                    failSince = 0;
+                } else if (failSince == 0) {
+                    failSince = now;
+                }
                 Status.Snapshot s = new Status.Snapshot();
                 s.checked = true;
                 s.device = device;
@@ -450,11 +575,28 @@ public final class MainActivity extends Activity
                 s.meta = fMeta;
                 s.viaPrevious = fVia;
                 s.port = fConf != null ? fConf.port : previous.port;
+                s.now = now;
+                s.failure = fFailure;
+                s.failSince = failSince;
+                s.carriedStatus = carriedStatus;
+                s.carriedMeta = carriedMeta;
+                s.carriedPid = carriedPid;
+                s.published = Status.parsePublished(device.publishedText);
+                // 防抖：同一个进程刚有过活应答，这会儿冻结或超时只是一瞬——先按上次的样子显示，
+                // 持续到超过 DEBOUNCE 才改口。冻结与解冻来得很勤，页面不能跟着一闪一闪。
+                boolean settling = !live && fConf != null && carriedStatus != null && device.wechatPid > 0
+                        && device.wechatPid == carriedPid && now - failSince < DEBOUNCE
+                        && (device.wechatFrozen || fFailure == Api.FAIL_TIMEOUT);
+                if (settling) {
+                    s.http = 200;
+                    s.status = carriedStatus;
+                    s.meta = carriedMeta;
+                }
                 // 新配置直接应答了：旧端口 / 令牌的记忆没用了。
                 if (fConf != null && fHttp == 200 && !fVia) clearPrevious();
                 if (restartAt > 0) {
-                    boolean back = fHttp == 200 && Status.login(s) != null;
-                    boolean timeout = System.currentTimeMillis() - restartAt > RESTART_TIMEOUT;
+                    boolean back = live && Status.login(s) != null;
+                    boolean timeout = now - restartAt > RESTART_TIMEOUT;
                     if (back || timeout) {
                         restartAt = 0;
                         if (timeout && !back) snackbar.show("微信已重新打开，但服务还没有恢复", null, null);
@@ -465,9 +607,20 @@ public final class MainActivity extends Activity
                 applySnapshot(s);
                 model.probing = false;
                 home.render(model);
-                if (resumed) {
-                    long delay = s.restarting ? POLL_RESTARTING : (s.http == 200 ? POLL_ONLINE : POLL_OFFLINE);
-                    main.postDelayed(poll, delay);
+                if (!resumed) return;
+                // root 侧的订阅：能读到 root 才开；起不来就退回慢速兜底，直到回到前台再试。
+                if (device.granted && !watchFailed && !watcher.running()) watcher.start();
+                boolean pushed = watcher.running();
+                long delay = s.restarting ? POLL_RESTARTING : pushed ? SAFETY : (s.http == 200 ? POLL_ONLINE : POLL_OFFLINE);
+                // 页面还在防抖：到点要重新看一眼，免得停在「就绪」上。
+                if (settling) {
+                    delay = Math.min(delay, DEBOUNCE - (now - failSince) + 200);
+                    forceRoot = true; // 到点时重读 root 侧的事实，冻着就不必再等 HTTP 超时
+                }
+                main.postDelayed(poll, delay);
+                if (dirty) {
+                    dirty = false;
+                    onChanged();
                 }
             });
         });
@@ -484,7 +637,6 @@ public final class MainActivity extends Activity
         }
         renderSettings();
     }
-
 
     /** 配置文件无效时给设置页填表用：尽量保留文件里还能认出的端口与令牌，认不出的用默认值。 */
     private Conf fallbackConf() {
@@ -545,6 +697,7 @@ public final class MainActivity extends Activity
             case Status.ACTION_RESTART_WECHAT: restartWeChat(); break;
             case Status.ACTION_FIX_CONFIG: openSettings(); break;
             case Status.ACTION_WECHAT_SETTINGS: openWeChatSettings(); break;
+            case Status.ACTION_GUARD_ON: setGuard(true); break;
             default: break;
         }
     }
@@ -602,6 +755,27 @@ public final class MainActivity extends Activity
                 }
                 forceRoot = true;
                 main.postDelayed(this::refresh, 1500);
+            });
+        });
+    }
+
+    /**
+     * 开关保活看守（模块自带的 wxguard）：开着，微信被系统冻结后会立刻解冻；停着，就只能等系统自己唤醒。
+     * 开关显示的是真实模式——动作做完重读一遍，失败时开关自己回到原样。
+     */
+    @Override public void setGuard(boolean on) {
+        // root 那条线是顺序的：别的 root 动作在途时这一个排在后面，不丢。
+        guardPending++;
+        model.guardBusy = true;
+        rootWorker.execute(() -> {
+            Root.Result result = Root.setGuard(on);
+            main.post(() -> {
+                if (isDestroyed()) return;
+                model.guardBusy = --guardPending > 0;
+                snackbar.show(result.ok() ? (on ? "保活看守已开启" : "保活看守已暂停")
+                        : result.granted ? "没能切换保活看守" : "没有 Root 授权", null, null);
+                forceRoot = true;
+                refresh();
             });
         });
     }

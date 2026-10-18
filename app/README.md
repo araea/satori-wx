@@ -1,6 +1,6 @@
 # 知言应用
 
-知言模块的原生管理界面（`com.satori.wx`）：查看服务是否连通、断在哪一环、下一步做什么；管理端口与令牌；重新启动微信让配置生效。同时是微信常驻通知上「唤醒锁」按钮的落点（`keepalive.WakeToggleReceiver` 把切换转给模块的 `POST /v1/internal/wakelock`）。设计规范见 [知言应用设计规范](../docs/app-design.md)。
+知言模块的原生管理界面（`com.satori.wx`）：查看服务是否连通、断在哪一环、下一步做什么；管理端口与令牌；开关保活看守；重新启动微信让配置生效。状态是订阅来的（root 侧 inotify），微信被冻结时沿用冻结前的状态，不会整页变空。同时是微信常驻通知上「唤醒锁」按钮的落点（`keepalive.WakeToggleReceiver` 把切换转给模块的 `POST /v1/internal/wakelock`）。设计规范见 [知言应用设计规范](../docs/app-design.md)。
 
 零依赖：只用 Android 框架 API，不引入 androidx / Material Components。视图直接构造，不解析 XML 布局。
 
@@ -15,7 +15,7 @@
 
 ```sh
 ./build.sh                 # → build/Zhiyan.apk（先自检令牌与图标生成物是否过期）
-./test.sh                  # JVM：配置与服务端 ReadConfig 一致性、状态推导、对比度合约；有 su 时加跑 root 脚本
+./test.sh                  # JVM：配置与服务端 ReadConfig 一致性、状态推导、对比度合约；有 su 时加跑 root 脚本与订阅测试
 bash tests/ui/run.sh       # 真机：离屏渲染各状态页面并检查，截图在 build/design-tests/design-review/；测试包跑完自动卸载
 
 python3 tools/make-tokens.py   # 改种子色后重新生成 res/values*/tokens.xml
@@ -35,9 +35,10 @@ su -c "cp build/Zhiyan.apk /data/local/tmp/ && pm install -r /data/local/tmp/Zhi
 | 路径 | 职责 |
 | --- | --- |
 | `src/com/satori/wx/core/Conf.java` | 配置解析与写出，规则逐条对齐 `native/server.cpp` 的 `ReadConfig` |
-| `src/com/satori/wx/core/Root.java` | `su`：探测模块与微信进程、原子写配置、重新启动微信 |
+| `src/com/satori/wx/core/Root.java` | `su -M`（全局挂载命名空间）：探测模块、微信进程、冻结状态、模块发布的状态文件与保活看守，原子写配置，开关看守，重新启动微信 |
+| `src/com/satori/wx/core/Watcher.java` | root 侧的变化订阅：一条 `inotifyd` 盯微信 cgroup、发布的状态文件、看守与模块目录，变了就通知应用重新检查 |
 | `src/com/satori/wx/core/Api.java` | 回环 HTTP：状态与元信息（只读） |
-| `src/com/satori/wx/core/Status.java` | 事实 → 结论、链路、生效与否、被拦下提示、诊断报告（纯函数） |
+| `src/com/satori/wx/core/Status.java` | 事实 → 结论、链路、生效与否、诊断报告（纯函数）；暂停时沿用冻结前的状态 |
 | `src/com/satori/wx/keepalive/WakeToggleReceiver.java` | 微信常驻通知唤醒锁按钮的落点，转发到 `internal/wakelock` |
 | `src/com/satori/wx/ui/` | 令牌读口、M3E 组件与两个页面；`MainActivity` 负责导航、线程与系统集成 |
 | `tools/` | 颜色令牌与图标的生成脚本 |

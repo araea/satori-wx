@@ -35,7 +35,8 @@ java -cp "$CP" StatusTest
 java -cp "$CP" -Dapp="$R" DesignTokenTest
 if su -c true >/dev/null 2>&1; then
   java -cp "$CP" RootScriptTest
+  java -cp "$CP" WatcherTest
 else
-  echo "   skip RootScriptTest（没有 su）"
+  echo "   skip RootScriptTest / WatcherTest（没有 su）"
 fi
 echo "== DONE =="

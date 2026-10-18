@@ -20,6 +20,12 @@ public final class Root {
     public static final String MODULE = "/data/adb/modules/satori_wx";
     public static final String MODULE_UPDATE = "/data/adb/modules_update/satori_wx";
     public static final String WECHAT = "com.tencent.mm";
+    /**
+     * {@code su -M}：在全局挂载命名空间里运行。Android 11 起每个应用有自己的挂载命名空间，别的应用的数据目录
+     * （微信的 /data/data/com.tencent.mm）在里面根本不存在；默认的 su 沿用调用者的命名空间，读微信的登录记录、
+     * 模块发布的状态文件、盯它们的变化都会落空，而且只是「读不到」，不报错。
+     */
+    public static final String[] SU = {"su", "-M"};
     private static final long TIMEOUT_MS = 20000;
     private static final int MAX_OUTPUT = 64 * 1024;
 
@@ -43,7 +49,7 @@ public final class Root {
     public static Result run(String script) {
         Process process = null;
         try {
-            process = new ProcessBuilder("su").redirectErrorStream(true).start();
+            process = new ProcessBuilder(SU).redirectErrorStream(true).start();
             try (OutputStream in = process.getOutputStream()) {
                 in.write(("echo __satori_wx_root__\n" + script + "\nexit\n").getBytes(StandardCharsets.UTF_8));
             }
@@ -104,10 +110,21 @@ public final class Root {
         public final boolean wechatFrozen;
         /** 微信自己记着一个已登录的账号（auth_info_key_prefs 的 _auth_uin 非零）。 */
         public final boolean wechatAuthed;
+        /**
+         * 模块自己发布的状态文件原文（微信数据目录里的 files/satori-wx/state.json）；没有（老版本模块、
+         * 还没写出）时为 null。进程被冻结、端口不应答时，它仍然是模块亲口说的最后状态。
+         */
+        public final String publishedText;
+        /** 保活看守（wxguard）的模式：ARMED / PAUSED；没有记录（没装、还没初始化）时为空串。 */
+        public final String guardMode;
+        /** 保活看守自己记的原因，例如 user-stop。 */
+        public final String guardReason;
+        /** 看守的「事件驱动解冻」监听器在跑。 */
+        public final boolean guardWatching;
 
         Device(boolean granted, boolean module, boolean disabled, boolean removing, boolean updatePending,
                String version, String updateVersion, String confText, int wechatPid, boolean wechatFrozen,
-               boolean wechatAuthed) {
+               boolean wechatAuthed, String publishedText, String guardMode, String guardReason, boolean guardWatching) {
             this.granted = granted;
             this.module = module;
             this.disabled = disabled;
@@ -119,16 +136,41 @@ public final class Root {
             this.wechatPid = wechatPid;
             this.wechatFrozen = wechatFrozen;
             this.wechatAuthed = wechatAuthed;
+            this.publishedText = publishedText;
+            this.guardMode = guardMode;
+            this.guardReason = guardReason;
+            this.guardWatching = guardWatching;
         }
 
-        public static final Device DENIED = new Device(false, false, false, false, false, "", "", null, 0, false, false);
+        public static final Device DENIED =
+                new Device(false, false, false, false, false, "", "", null, 0, false, false, null, "", "", false);
+
+        /** 看守处于暂停：微信被冻结后不会有人立刻解冻。 */
+        public boolean guardPaused() {
+            return "PAUSED".equals(guardMode);
+        }
+
+        /** 有看守可以开关：模块带了看守脚本、并留下过模式记录。 */
+        public boolean guardKnown() {
+            return !guardMode.isEmpty();
+        }
     }
+
+    /** 模块在微信数据目录里发布的状态文件，与保活看守的状态目录。 */
+    public static final String PUBLISHED = "/data/user/0/" + WECHAT + "/files/satori-wx/state.json";
+    public static final String GUARD_DIR = "/data/adb/satori-wx";
 
     /** 探测脚本；目录可换，只为让 tests/RootScriptTest 在临时目录上真跑一遍。 */
     public static String probeScript(String module, String update) {
+        return probeScript(module, update, PUBLISHED, GUARD_DIR);
+    }
+
+    public static String probeScript(String module, String update, String published, String guard) {
         return String.join("\n",
                 "M=" + module,
                 "U=" + update,
+                "S=" + published,
+                "G=" + guard,
                 "[ -d \"$M\" ] && echo module=1",
                 "[ -f \"$M/disable\" ] && echo disabled=1",
                 "[ -f \"$M/remove\" ] && echo removing=1",
@@ -147,6 +189,13 @@ public final class Root {
                 // 微信自己的鉴权记录：非零 uin 表示微信里有已登录的账号（用来区分「没登录」与「服务没认出」）。
                 "sed -n 's/.*name=\"_auth_uin\" value=\"\\(-\\{0,1\\}[0-9]*\\)\".*/auth=\\1/p' /data/data/" + WECHAT
                         + "/shared_prefs/auth_info_key_prefs.xml 2>/dev/null | head -n 1",
+                // 模块自己发布的状态：微信被冻结时端口不应答，这份文件仍在。
+                "[ -f \"$S\" ] && echo \"published=$(base64 -w 0 < \"$S\")\"",
+                // 保活看守：模式（有人手动停过它，微信就没人解冻）与事件驱动解冻的监听器是否在跑。
+                "sed -n 's/^MODE=/guard=/p' \"$G/guard.state\" 2>/dev/null | head -n 1",
+                "sed -n 's/^REASON=/guard_reason=/p' \"$G/guard.state\" 2>/dev/null | head -n 1",
+                // pid 文件可能是旧的（进程号被别的进程用了）：认命令行里的 thaw-watch，不能只看 pid 还活着。
+                "w=$(cat \"$G/guard.thaw.pid\" 2>/dev/null); [ -n \"$w\" ] && grep -q thaw-watch /proc/$w/cmdline 2>/dev/null && echo guard_watch=1",
                 "true");
     }
 
@@ -159,7 +208,8 @@ public final class Root {
     /** 解析探测脚本的输出；公开只为在 JVM 上测（tests/StatusTest）。 */
     public static Device parse(String out) {
         boolean module = false, disabled = false, removing = false, update = false, frozen = false, authed = false;
-        String version = "", updateVersion = "", conf = null;
+        boolean watching = false;
+        String version = "", updateVersion = "", conf = null, published = null, guard = "", guardReason = "";
         int pid = 0;
         for (String line : out.split("\n")) {
             int eq = line.indexOf('=');
@@ -173,6 +223,16 @@ public final class Root {
                 case "update": update = true; break;
                 case "frozen": frozen = true; break;
                 case "auth": authed = !value.isEmpty() && !value.equals("0"); break;
+                case "guard": guard = value; break;
+                case "guard_reason": guardReason = value; break;
+                case "guard_watch": watching = true; break;
+                case "published":
+                    try {
+                        published = new String(Base64.getDecoder().decode(value), StandardCharsets.UTF_8);
+                    } catch (IllegalArgumentException broken) {
+                        published = null;
+                    }
+                    break;
                 case "version": version = value; break;
                 case "update_version": updateVersion = value; break;
                 case "conf":
@@ -192,7 +252,8 @@ public final class Root {
                 default: break;
             }
         }
-        return new Device(true, module, disabled, removing, update, version, updateVersion, conf, pid, frozen && pid > 0, authed);
+        return new Device(true, module, disabled, removing, update, version, updateVersion, conf, pid, frozen && pid > 0,
+                authed, published, guard, guardReason, watching);
     }
 
     // ------------------------------------------------------------------ 写
@@ -227,6 +288,14 @@ public final class Root {
                 "done",
                 "[ \"$wrote\" = 1 ]",
                 "[ \"$(base64 -w 0 < " + module + "/satori-wx.conf)\" = '" + b64 + "' ]");
+    }
+
+    /**
+     * 开关保活看守：开启时它会在微信被冻结后立刻解冻（并在微信死掉时拉起），暂停时什么也不做。
+     * 脚本是模块开机时放进 /data/adb/satori-wx 的 wxguard.sh，模块的「操作」按钮用的是同一个。
+     */
+    public static Result setGuard(boolean on) {
+        return run("sh " + GUARD_DIR + "/wxguard.sh " + (on ? "start" : "stop") + " >/dev/null 2>&1");
     }
 
     /**

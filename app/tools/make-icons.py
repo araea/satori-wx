@@ -45,6 +45,7 @@ ICONS = {
     "chevron_right": ("chevron_right", "default"),
     "open_in_new": ("open_in_new", "default"),
     "restart_alt": ("restart_alt", "default"),
+    "shield": ("shield", "default"),
     "add": ("add", "default"),
     "search": ("search", "default"),
     "person": ("person", "default"),

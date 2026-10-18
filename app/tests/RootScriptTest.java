@@ -28,6 +28,27 @@ public final class RootScriptTest {
                 check(stat.out.startsWith("600 0 0 u:object_r:system_file:s0"), dir + " 权限 / 属主 / 上下文不对：" + stat.out);
                 check(!stat.out.contains(".satori-wx.conf.new"), "临时文件没有清理：" + stat.out);
             }
+            // 模块发布的状态与保活看守：探测能读回，看守的模式、原因与监听器都对得上。
+            String published = BASE + "/data/state.json", guardDir = BASE + "/guard";
+            Root.Result extras = Root.run(String.join("\n", "set -e", "mkdir -p " + BASE + "/data " + guardDir,
+                    "printf '{\"schema\":1,\"pid\":4242}' > " + published,
+                    "printf 'ARMS=2\\nMODE=PAUSED\\nREASON=user-stop\\n' > " + guardDir + "/guard.state",
+                    // 看守的监听器进程：命令行里带 thaw-watch（wxguard 自己拉起它时就是这样）。
+                    "sh -c 'sleep 30; true' thaw-watch </dev/null >/dev/null 2>&1 & echo $! > " + guardDir + "/guard.thaw.pid"));
+            check(extras.ok(), "准备发布状态与看守目录：" + extras.out);
+            Root.Device seen = Root.parse(Root.run(Root.probeScript(module, update, published, guardDir)).out);
+            check("{\"schema\":1,\"pid\":4242}".equals(seen.publishedText), "读回发布的状态：" + seen.publishedText);
+            check(seen.guardPaused() && seen.guardReason.equals("user-stop") && seen.guardWatching, "读回看守状态");
+            Root.run("kill -9 $(cat " + guardDir + "/guard.thaw.pid); sleep 0.3");
+            Root.Device after = Root.parse(Root.run(Root.probeScript(module, update, published, guardDir)).out);
+            check(!after.guardWatching, "监听器进程没了，就不再算在跑");
+            // pid 文件是旧的，号码被别的进程占了：不能算在跑。
+            Root.run("echo $$ > " + guardDir + "/guard.thaw.pid");
+            check(!Root.parse(Root.run(Root.probeScript(module, update, published, guardDir)).out).guardWatching,
+                    "pid 文件指到别的进程时不算在跑");
+            Root.Device none = Root.parse(Root.run(Root.probeScript(module, update, BASE + "/nope.json", BASE + "/nope")).out);
+            check(none.publishedText == null && !none.guardKnown(), "没有这些文件（老版本模块）时读成「没有」");
+
             Root.Device device = Root.parse(Root.run(Root.probeScript(module, update) + "\ntouch " + module + "/disable").out);
             check(device.module && device.updatePending && device.version.equals("v9.9.9")
                     && device.updateVersion.equals("v9.9.10"), "探测读错了模块状态");
