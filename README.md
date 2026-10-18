@@ -23,7 +23,7 @@ token=<安装器生成的令牌>
 - 配置在 `preAppSpecialize` 读取，文件描述符立即关闭。服务在 `postAppSpecialize` 启动，只在精确匹配的微信主进程内运行，非目标进程与 system_server 请求卸载模块。
 - 服务端只监听 `127.0.0.1`，随微信主进程结束退出。配置更改在下一次进程启动生效。
 
-知言应用（`app/`）管理端口与令牌、查看连接链路、重新启动微信。需要 Root 授权。
+知言应用（`app/`）管理端口与令牌、查看连接链路与发送能力、开关保活看守、重新启动微信。需要 Root 授权。状态是订阅来的（inotify 盯微信的 cgroup、模块发布的状态文件与看守），不是定时去问。
 
 ## 快速使用
 
@@ -43,7 +43,7 @@ HTTP 使用 `Authorization: Bearer <token>`：缺失 token 返回 401，错误 t
 | --- | --- |
 | `POST /v1/meta` | 返回只读身份快照 `{"logins":[...],"proxy_urls":[]}`；无账号时 `logins` 为空 |
 | `POST /v1/meta/webhook.create` / `webhook.delete` | 注册 / 注销 WebHook（`url` 必填、`token` 可选），最多 4 个，仅 http |
-| `POST /v1/internal/status` | 版本、native 状态、`send` 与 `keepalive` 状态块 |
+| `POST /v1/internal/status` | 版本、native 状态、`send`（含 `state`：ready / waiting / incompatible）与 `keepalive` 状态块 |
 | `POST /v1/internal/wakelock` | 切换 CPU / Wi-Fi 唤醒锁（`{"on":true\|false}` 或 `{"toggle":true}`） |
 | `POST /v1/login.get` | 返回已登记账号快照；未登录或身份不匹配时返回 403 |
 | `POST /v1/{resource}.{method}` | 标准方法参数校验与 native 后端分发 |
@@ -75,7 +75,8 @@ HTTP 使用 `Authorization: Bearer <token>`：缺失 token 返回 401，错误 t
 - 收到的图片多半只有缩略图，原图是微信私有的 `wxgf` 容器。语音是 SILK，不转码（见[消息内容](docs/wechat-content.md)）。
 - 好友 / 入群申请事件与对应的 approve 方法没做。事件的延迟与限制见[事件](docs/wechat-events.md)。
 - 微信无此概念的方法列入 `internal/capabilities.unsupported`：`message.update`、`channel.create`、`channel.mute`、`guild.member.mute`、`reaction.*`、`guild.role.create/update/delete`。
-- 微信被系统冻结时回环端口握手成功但无响应，客户端挂起至超时。root 侧 `wxguard` 默认 ARMED 负责解冻（见[常驻通知与保活](docs/keepalive.md)）。
+- **微信版本**：发送、撤回、群管理、拍一拍都是反射调用微信混淆过的类，名字每个版本都会变，只验证过 8.0.78。换到对不上的版本（实测 8.0.79 起）这些操作不可用，`internal/status` 的 `send.state` 是 `incompatible`，常驻通知与知言应用也会明说；通过库读取的接收与事件不受影响。
+- 微信被系统冻结时回环端口握手成功但无响应，客户端挂起至超时。root 侧 `wxguard` 默认 ARMED 负责解冻（见[常驻通知与保活](docs/keepalive.md)）。冻结期间知言应用仍能看到模块自己发布的最后状态（`files/satori-wx/state.json`）。
 - 只在 arm64 上构建与运行。
 - 写操作没有开关，成功表示「已交给微信派发」而非投递确认。破坏性动作不伪造成功，风控责任在调用方。
 - 一个 `message.create` 里的媒体发送串行执行，占着服务线程等确认。图片 ≤ 6 秒，视频 / 文件的「发送中」≤ 8 秒，整条请求的等待总预算 12 秒。一次最多 8 个媒体元素，其中图片 4 张。

@@ -41,7 +41,7 @@ token=<32-128 位字母数字-_>
 
 | 文件 | 职责 |
 | --- | --- |
-| `native/module.cpp` | Zygisk 入口：进程筛选、读配置、注册状态提供者、起服务端 / 账号 / 发送预热线程 |
+| `native/module.cpp` | Zygisk 入口：进程筛选、读配置、注册状态提供者、起服务端 / 账号线程与 keeper |
 | `native/server.cpp` | HTTP / WS、鉴权、路由、事件循环、`StatusProvider` 钩子；`/v1/proxy` 按 64 KiB 从文件流式回包（`Range` / `HEAD`），`message.create` 收 16 MiB，`upload.create` 流式收到 1 GiB（都先验令牌） |
 | `native/protocol.cpp/.h` | cJSON 校验、37 方法表、EventBus（堆上变长事件，上限 128 KiB）、Hub（登录快照 + 事件回放）、`g_login_count`、发送侧内容拍平（`PlainText` / `OutgoingText` 含 `<at>`、`<a href>`）、`ImageSpans`、base64 |
 | `native/webhook.cpp/.h` | 可选 WebHook（独立线程、有界队列、仅 http） |
@@ -62,11 +62,11 @@ token=<32-128 位字母数字-_>
 | `native/wx_voice.cpp/.h`、`native/audio_pcm.cpp/.h` | 语音条：`VoicePrepare` 把 `<audio>` 的文件变成微信 SILK（已是 SILK 原样、WAV 自读、其它 MediaCodec，重采样到 16 kHz，微信自己的 SILK 编码器）；`audio_pcm` 是纯函数（WAV、重采样、SILK 容器检查），host 可测 |
 | `native/wx_quote.h` | `QuoteRef`：引用回复要的被引用消息信息（库里读出，发送器拼 `<refermsg>`） |
 | `native/wx_capabilities.cpp/.h` | 唯一 features 列表 + `unsupported` 列表 |
-| `native/wx_send.cpp/.h` | 反射发送器（`SendText` 文本与 @、`SendImage` 图片、`SendRecall` 撤回）+ 状态与计数快照；对外暴露 ReflectEnv / ReflectResolve / ReflectLoad / ReflectDispatchScene 供群管理复用 |
+| `native/wx_send.cpp/.h` | 反射发送器（`SendText` 文本与 @、`SendImage` 图片、`SendRecall` 撤回）+ 状态与计数快照；`SendProbe()` 不发送地解析类与派发器，给出 `ready / waiting / incompatible`（微信换版本后类名对不上就是后者）；对外暴露 ReflectEnv / ReflectResolve / ReflectLoad / ReflectDispatchScene 供群管理复用 |
 | `native/wx_room.cpp/.h` | 反射群管理写操作：`qn.p`（踢人 / 退群，`m1` 派发）与 `qn.b` / `qn.e`（设 / 撤管理员，`z2.d` Cgi 派发） |
 | `native/wx_pat.cpp/.h` | 反射拍一戳：`nv3.l.nj` 插入本地行 + `qv3.b`（cgi `sendpat`）`doScene` 派发；`PatDispatch` 是 `/v1/internal/pat` 的 provider |
 | `native/tempstore.cpp/.h` | 内置 `upload.create` 的落盘与 TTL；`/v1/proxy` 的 `internal:.../_tmp/...` 目标 |
-| `native/wx_keepalive.cpp/.h` | 微信进程内常驻状态通知、唤醒锁、每 10 分钟重启微信自己的 CoreService；`keepalive` 状态块 |
+| `native/wx_keepalive.cpp/.h` | 微信进程内的 keeper：一个睡在条件变量上的线程，按状态变化（`NotifyStateChanged`）、10 分钟心跳与自己的期限醒来；常驻状态通知（在线时长用系统计时器）、唤醒锁、重启微信自己的 CoreService、发布 `files/satori-wx/state.json`；`keepalive` 状态块。不轮询 |
 | `native/wx_key.cpp/.h` | 捕获 SQLCipher 密钥：RegisterNatives 指针替换，只取 setCipherKey / nativeSetKey |
 | `tools/wxguard.sh` | root 侧看守（`service.sh` 开机恢复，`action.sh` 切换，见[常驻通知与保活](keepalive.md)） |
 | `tools/*.py` | 离线 DEX 分析工具 |
@@ -224,6 +224,6 @@ README 的「限制 / 风险」是使用面清单。开发者另需知道：
 
 ## 管理应用
 
-`app/` 是独立构建的 Android 原生管理界面（`com.satori.wx`，需要 JDK / aapt，与纯 native 的模块构建互不依赖）。它通过 `su` 读写 `satori-wx.conf`、经 `/v1/internal/status` 与 `/v1/meta` 看状态。常驻通知上的唤醒锁按钮是一个显式广播，落到应用的 `keepalive.WakeToggleReceiver`，它再把切换转到 `internal/wakelock`。
+`app/` 是独立构建的 Android 原生管理界面（`com.satori.wx`，需要 JDK / aapt，与纯 native 的模块构建互不依赖）。它通过 `su -M`（全局挂载命名空间，否则看不到微信的数据目录）读写 `satori-wx.conf`、读模块发布的状态文件与看守状态，经 `/v1/internal/status` 与 `/v1/meta` 看状态，并用一条常驻的 `inotifyd`（`core/Watcher`）订阅变化，不定时轮询。常驻通知上的唤醒锁按钮是一个显式广播，落到应用的 `keepalive.WakeToggleReceiver`，它再把切换转到 `internal/wakelock`。
 
-改 `ReadConfig` 的规则时同步改 `app/src/com/satori/wx/core/Conf.java`。`internal/status` 的 `send` 与 `keepalive` 块字段名被应用读取（`enabled`、计数与 `last_*`；`notification`、`wakelock`、`cpu_held`、`wifi_held`），改名要同步。构建与结构见 [app/README.md](../app/README.md)，设计规范见[知言应用设计规范](app-design.md)。
+改 `ReadConfig` 的规则时同步改 `app/src/com/satori/wx/core/Conf.java`。`internal/status` 的 `send` 与 `keepalive` 块字段名被应用读取（`state` / `dispatcher` / `resolved`、计数与 `last_*`；`notification`、`wakelock`、`cpu_held`、`wifi_held`、`uptime_ms`），`files/satori-wx/state.json` 的字段（见[常驻通知与保活](keepalive.md)）同理，改名要同步。构建与结构见 [app/README.md](../app/README.md)，设计规范见[知言应用设计规范](app-design.md)。
