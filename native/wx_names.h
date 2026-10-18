@@ -159,6 +159,10 @@ struct WxNames {
 // except that a discovered set may appear at index 0 (WxNamesInstall).
 int WxNamesCount();
 const WxNames &WxNamesAt(int index);
+// The newest set compiled in (8.0.79), whatever has been installed at run time.
+const WxNames &WxNamesNewestBuiltin();
+// The built-in (or installed) set with this label, or null.
+const WxNames *WxNamesByLabel(const char *label);
 // Takes a discovered set (copied; `values` holds kWxKeyCount strings in key order). A later call
 // replaces the earlier one. Returns false when a value is missing.
 bool WxNamesInstall(const char *label, const char *const *values);

@@ -55,6 +55,9 @@ python3 "$R/tests/protocol_test.py" "$OUT/server"
 build events-test -ldl tests/events_test.cpp wx_events wx_store wcdb wx_message media xml_lite protocol cjson
 "$OUT/events-test"
 
+build derive-test -ldl tests/derive_test.cpp wx_derive wx_dex wx_names
+"$OUT/derive-test"
+
 build media-test - tests/media_test.cpp media xml_lite
 "$OUT/media-test"
 
@@ -67,11 +70,11 @@ build audio-test - tests/audio_test.cpp audio_pcm
 build message-test - tests/message_test.cpp wx_message media xml_lite
 "$OUT/message-test"
 
-build capabilities-test -llog tests/capabilities_test.cpp wx_capabilities wx_send wx_names server protocol multipart \
+build capabilities-test "-llog -ldl" tests/capabilities_test.cpp wx_capabilities wx_send wx_names wx_discover wx_derive wx_dex server protocol multipart \
     upload_stream tempstore webhook wx_account wx_adapter cjson
 "$OUT/capabilities-test"
 
-build keepalive-test -llog tests/keepalive_test.cpp wx_keepalive wx_send wx_names protocol cjson
+build keepalive-test "-llog -ldl" tests/keepalive_test.cpp wx_keepalive wx_send wx_names wx_discover wx_derive wx_dex protocol cjson
 "$OUT/keepalive-test"
 
 build names-test - tests/names_test.cpp wx_names
@@ -92,7 +95,7 @@ build upload-stream-test - tests/upload_stream_test.cpp upload_stream multipart 
 build forward-test - tests/forward_test.cpp wx_forward protocol media xml_lite cjson
 "$OUT/forward-test"
 
-build backend-test -llog tests/backend_test.cpp wx_backend wx_send wx_names mp4_probe wx_capabilities protocol tempstore \
+build backend-test "-llog -ldl" tests/backend_test.cpp wx_backend wx_send wx_names wx_discover wx_derive wx_dex mp4_probe wx_capabilities protocol tempstore \
     media wx_forward cjson
 "$OUT/backend-test"
 

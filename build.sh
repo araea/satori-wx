@@ -24,6 +24,7 @@ MODULE_ONLY=(
     module wx_account wx_adapter wx_live wx_watch wx_store wx_backend wx_capabilities
     wx_send wx_send_media wx_names mp4_probe wx_voice audio_pcm wx_forward wx_room wx_pat
     wx_message wx_events wx_media media xml_lite wx_keepalive wx_key wcdb
+    wx_discover wx_derive wx_dex
 )
 sources() {
     local name

@@ -41,6 +41,17 @@ const WxNames &WxNamesAt(int index) {
     return index == 0 ? k79 : k78;
 }
 
+const WxNames &WxNamesNewestBuiltin() { return k79; }
+
+const WxNames *WxNamesByLabel(const char *label) {
+    if (!label) return nullptr;
+    for (int i = 0; i < WxNamesCount(); ++i) {
+        const WxNames &set = WxNamesAt(i);
+        if (set.label && !strcmp(set.label, label)) return &set;
+    }
+    return nullptr;
+}
+
 bool WxNamesInstall(const char *label, const char *const *values) {
     if (!values) return false;
     for (int i = 0; i < kWxKeyCount; ++i)

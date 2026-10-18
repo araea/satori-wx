@@ -4,6 +4,7 @@
 #include "wx_adapter.h"
 #include "wx_backend.h"
 #include "wx_capabilities.h"
+#include "wx_discover.h"
 #include "wx_keepalive.h"
 #include "wx_key.h"
 #include "wx_live.h"
@@ -208,9 +209,10 @@ public:
         if (!target_ || !configured_) return;
         // The sender needs the process JavaVM; classes are resolved lazily on first use.
         JavaVM *vm = nullptr;
-        if (env_->GetJavaVM(&vm) == JNI_OK)
+        if (env_->GetJavaVM(&vm) == JNI_OK) {
             satori::SendInit(vm);
-        else
+            satori::DiscoverInit(vm, g_data_dir);
+        } else
             __android_log_print(ANDROID_LOG_ERROR, "SatoriWx", "GetJavaVM failed; message sender disabled");
         // Resident notification + wake lock + in-process core-service keepalive + the published
         // state file. Event-driven: it is told about changes (login, listener, clients, sender)

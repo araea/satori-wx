@@ -15,6 +15,7 @@
 //   d1.doScene(dispatcher, com.tencent.mm.network.y2)   -> int netId (>= 0 accepted).
 #include "wx_send.h"
 #include "state_hook.h"
+#include "wx_discover.h"
 #include "wx_names.h"
 #include <jni.h>
 #include <pthread.h>
@@ -330,6 +331,8 @@ bool Resolve(JNIEnv *env, char *detail, size_t size) {
         } else {
             for (int i = 0; i < WxNamesCount() && !ok; ++i)
                 ok = ResolveWith(env, loader, load, WxNamesAt(i), detail, size);
+            // Nothing built in fits: ask the discovery engine for a set derived from this APK.
+            if (!ok) DiscoverStart(env);
         }
         if (loader_class) env->DeleteLocalRef(loader_class);
         env->DeleteLocalRef(loader);
