@@ -38,6 +38,8 @@ mapfile -t MODULE < <(sources "${MODULE_ONLY[@]}")
 "$CXX" "${FLAGS[@]}" "$R/tools/account_probe.cpp" "$R/native/wx_account.cpp" "$R/native/protocol.cpp" \
     "$R/native/wx_capabilities.cpp" "$WORK/cjson.o" -Wl,--no-undefined -o "$OUT/satori-wx-account"
 "$CXX" "${FLAGS[@]}" "$R/tools/wcdb_probe.cpp" "$R/native/wcdb.cpp" -Wl,--no-undefined -ldl -o "$OUT/satori-wx-wcdb"
+"$CXX" "${FLAGS[@]}" "$R/tools/wxnames_check.cpp" "$R/native/wx_derive.cpp" "$R/native/wx_dex.cpp" "$R/native/wx_names.cpp" \
+    -Wl,--no-undefined -ldl -o "$OUT/wxnames_check"
 cp "$R/module.prop" "$R/customize.sh" "$R/service.sh" "$R/action.sh" "$R/tools/wxguard.sh" "$WORK/module/"
 chmod 0755 "$WORK/module/service.sh" "$WORK/module/action.sh" "$WORK/module/wxguard.sh"
 mkdir -p "$WORK/module/licenses"

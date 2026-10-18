@@ -14,6 +14,8 @@
 #include "media.h"
 #include "wx_adapter.h"
 #include "wx_backend.h"
+#include "wx_discover.h"
+#include "wx_names.h"
 #include "wx_live.h"
 #include "wx_media.h"
 #include "wx_keepalive.h"
@@ -179,6 +181,19 @@ void *Control(void *) {
                     snprintf(reply, sizeof(reply), "{\"ok\":%d,\"id\":%lld,\"net\":%d,\"detail\":\"%s\"}\n",
                              r.ok ? 1 : 0, r.local_id, r.net_id, r.detail);
                 }
+            } else if (verb && !strcmp(verb, "discover")) {
+                // discover: derive a name set from the installed APK now (the sender starts this by
+                // itself when every built-in set fails). Development only.
+                satori::DiscoverStart(static_cast<JNIEnv *>(satori::ReflectEnv()));
+                snprintf(reply, sizeof(reply), "{\"ok\":1}\n");
+            } else if (verb && !strcmp(verb, "names")) {
+                int used = snprintf(reply, sizeof(reply), "{\"sets\":%d,\"labels\":[", satori::WxNamesCount());
+                for (int i = 0; i < satori::WxNamesCount() && used > 0 && used < static_cast<int>(sizeof(reply)); ++i)
+                    used += snprintf(reply + used, sizeof(reply) - used, "%s\"%s\"", i ? "," : "",
+                                     satori::WxNamesAt(i).label);
+                if (used > 0 && used < static_cast<int>(sizeof(reply)))
+                    snprintf(reply + used, sizeof(reply) - used, "],\"scene\":\"%s\"}\n",
+                             satori::WxNamesAt(0).value[satori::kSendSceneCls]);
             } else if (verb && !strcmp(verb, "cancel")) {
                 // cancel <notification id>
                 const bool done = cursor && CancelNotification(atoi(cursor));
@@ -225,6 +240,7 @@ void *Boot(void *) {
     satori::SetStatusProvider(Status);
     satori::SetPatProvider(satori::PatDispatch);
     satori::SendInit(vm);
+    satori::DiscoverInit(vm, kDataDir);
     // The keeper under test, kept apart from the pinned module's (own notification id, channel,
     // wake-lock tag and state file): the instance number is the dev generation's port offset.
     satori::SetWakelockProvider(satori::KeepaliveWakelock);

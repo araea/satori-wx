@@ -1346,6 +1346,7 @@ bool DeriveNames(const char *apk_path, const char *hints_label, DerivedNames *ou
         memcpy(out->value, engine->out.value, sizeof(out->value));
         memcpy(out->reason, engine->reason, sizeof(out->reason));
     }
+    engine->~Engine(); // releases the dex cache and the arena; free() alone would leak both
     free(engine);
     return ok;
 }

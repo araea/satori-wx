@@ -75,7 +75,7 @@ HTTP 使用 `Authorization: Bearer <token>`：缺失 token 返回 401，错误 t
 - 收到的图片多半只有缩略图，原图是微信私有的 `wxgf` 容器。语音是 SILK，不转码（见[消息内容](docs/wechat-content.md)）。
 - 好友 / 入群申请事件与对应的 approve 方法没做。事件的延迟与限制见[事件](docs/wechat-events.md)。
 - 微信无此概念的方法列入 `internal/capabilities.unsupported`：`message.update`、`channel.create`、`channel.mute`、`guild.member.mute`、`reaction.*`、`guild.role.create/update/delete`。
-- **微信版本**：发送、撤回、群管理、拍一拍都是反射调用微信混淆过的类，名字每个版本都会变，只验证过 8.0.78。换到对不上的版本（实测 8.0.79 起）这些操作不可用，`internal/status` 的 `send.state` 是 `incompatible`，常驻通知与知言应用也会明说；通过库读取的接收与事件不受影响。
+- **微信版本**：发送、撤回、群管理、拍一拍都是反射调用微信混淆过的类，名字每个版本都会变。内置 8.0.78 与 8.0.79 两套名字；对不上的版本会在后台从安装包推导一套（约 11 秒，写进缓存供后续启动），推导完成前的发送会失败。推不出来时 `internal/status` 的 `send.state` 是 `incompatible`，常驻通知与知言应用也会明说；接收与事件不受影响。见[微信名字与版本适配](docs/wechat-names.md)。
 - 微信被系统冻结时回环端口握手成功但无响应，客户端挂起至超时。root 侧 `wxguard` 默认 ARMED 负责解冻（见[常驻通知与保活](docs/keepalive.md)）。冻结期间知言应用仍能看到模块自己发布的最后状态（`files/satori-wx/state.json`）。
 - 只在 arm64 上构建与运行。
 - 写操作没有开关，成功表示「已交给微信派发」而非投递确认。破坏性动作不伪造成功，风控责任在调用方。
@@ -86,6 +86,7 @@ HTTP 使用 `Authorization: Bearer <token>`：缺失 token 返回 401，错误 t
 - [ZygiskNext](https://github.com/LSPosed/ZygiskNext)
 - [标准 Zygisk 模块接口](https://github.com/topjohnwu/zygisk-module-sample)
 - [Satori HTTP API](https://satori.chat/zh-CN/protocol/api.html) / [事件](https://satori.chat/zh-CN/protocol/events.html) / [元信息](https://satori.chat/zh-CN/advanced/meta.html)
+- [微信名字与版本适配](docs/wechat-names.md)
 - [发送各类消息](docs/wechat-send-types.md)
 - [消息内容、媒体链接与历史分页](docs/wechat-content.md)
 - [事件](docs/wechat-events.md)

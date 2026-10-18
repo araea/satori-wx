@@ -150,15 +150,21 @@ void DiscoverInit(JavaVM *vm, const char *data_dir) {
 
 void DiscoverStart(JNIEnv *env) {
     if (!env) return;
-    pthread_mutex_lock(&g_mu);
-    const bool already = g_started;
-    g_started = true;
-    pthread_mutex_unlock(&g_mu);
-    if (already) return;
+    auto start = [](bool value) {
+        pthread_mutex_lock(&g_mu);
+        const bool was = g_started;
+        g_started = value;
+        pthread_mutex_unlock(&g_mu);
+        return was;
+    };
+    if (start(true)) return;
+    // A failure before the thread exists undoes the flag: the next failed resolve may see a usable
+    // APK path (the first send can come before the Application object is fully up).
     Job *job = static_cast<Job *>(calloc(1, sizeof(Job)));
     if (!job) return;
     if (!ApkPath(env, job->apk, sizeof(job->apk))) {
         __android_log_print(ANDROID_LOG_WARN, kTag, "name discovery: APK path unavailable");
+        start(false);
         free(job);
         return;
     }
@@ -166,6 +172,7 @@ void DiscoverStart(JNIEnv *env) {
     struct stat st{};
     if (!job->dir[0] || stat(job->apk, &st) != 0) {
         __android_log_print(ANDROID_LOG_WARN, kTag, "name discovery: %s not readable", job->apk);
+        start(false);
         free(job);
         return;
     }
@@ -187,6 +194,7 @@ void DiscoverStart(JNIEnv *env) {
     pthread_t thread;
     if (pthread_create(&thread, nullptr, Worker, job) != 0) {
         __android_log_print(ANDROID_LOG_WARN, kTag, "name discovery: thread creation failed");
+        start(false);
         free(job);
         return;
     }

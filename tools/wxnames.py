@@ -1,20 +1,15 @@
-#!/ usr / bin / env python3
-""
-    "Derives native/wx_names.h's values for a WeChat build from its APK: the reference for the on-device
-    engine(native / wx_discover.cpp),
-    which follows the same rules.
+#!/usr/bin/env python3
+"""Derives native/wx_names.h's values for a WeChat build from its APK: the reference for the on-device
+engine (native/wx_discover.cpp), which follows the same rules.
 
-        WeChat is re
-        - obfuscated on every release,
-    so the obfuscated class names move.What stays put is what the code says : log tags, cgi paths,
-    the shape of constructors and methods,
-    and who points at whom.The rules below start from such anchors, walk the relations to the other classes,
-    and read member names and descriptors off the dex.A member name is taken from the previous
-        build's table ("hint") only to choose between candidates of the same shape,
-    never to invent one
-        .
+WeChat is re-obfuscated on every release, so the obfuscated class names move. What stays put is what the
+code says: log tags, cgi paths, the shape of constructors and methods, and who points at whom. The
+rules below start from such anchors, walk the relations to the other classes, and read member names and
+descriptors off the dex. A member name is taken from the previous build's table ("hint") only to choose
+between candidates of the same shape, never to invent one.
 
-    usage : wxnames.py<apk>[--check] print the derived set; --check also compares it with the built-in sets
+usage:
+  wxnames.py <apk> [--check]   print the derived set; --check also compares it with the built-in sets
 """
 import os
 import re
@@ -102,7 +97,7 @@ class Finder:
         self.r = {}
         self.why = {}
 
-#-- queries -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- --
+    # -- queries ------------------------------------------------------------------------------------
     def anchor(self, text):
         """{class descriptor: [(method name, proto)]} for the classes that load this string constant."""
         return self.a.get(text, {})
@@ -152,7 +147,7 @@ class Finder:
             return hint
         return None
 
-#-- results -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- --
+    # -- results ------------------------------------------------------------------------------------
     def set(self, key, value):
         self.r[key] = value
         return value
@@ -164,7 +159,7 @@ class Finder:
     def cls_key(self, key, desc):
         return self.set(key, dotted(desc))
 
-#-- the rules -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- --
+    # -- the rules ----------------------------------------------------------------------------------
     def run(self):
         for step in (self.send, self.recall, self.locator, self.prepare, self.image, self.appmsg, self.video,
                      self.voice, self.room, self.pat):
@@ -230,19 +225,18 @@ class Finder:
         return self._by_ftype.get(type_, [])
 
     def send(self):
-#doScene(dispatcher, callback) is declared on the scene base class; the cgi base and the text scene
-#both lead there.
+        # doScene(dispatcher, callback) is declared on the scene base class; the cgi base and the text scene
+        # both lead there.
         found = set()
         for start in list(self.anchor('MicroMsg.Cgi')) + list(self.anchor('MicroMsg.NetSceneSendMsg')):
             for c in self.supers(start):
-                found |= {p for n, p, f in self.methods(c, 'doScene', '(L*;L*;)I')
-}
-if len (found) == 1:
+                found |= {p for n, p, f in self.methods(c, 'doScene', '(L*;L*;)I')}
+        if len(found) == 1:
             desc = next(iter(found))
             self.set('DoSceneDesc', desc)
             self.cls_key('SceneDispatcherCls', params(desc)[0])
             self.cls_key('SceneCallbackCls', params(desc)[1])
-#The text scene : the class that logs as NetSceneSendMsg and takes(talker, text, type, flag, extra, source).
+        # The text scene: the class that logs as NetSceneSendMsg and takes (talker, text, type, flag, extra, source).
         scene = None
         for c in self.anchor('MicroMsg.NetSceneSendMsg'):
             if any(True for _ in self.methods(c, '<init>', '(Ljava/lang/String;Ljava/lang/String;IIJLjava/lang/String;)V')):
@@ -252,11 +246,11 @@ if len (found) == 1:
         self.cls_key('SendSceneCls', scene)
         self.member('SendSceneLocalIdName', None, scene, 'f', 'J', static=False)
         callback = descriptor(self.r.get('SceneCallbackCls', ''))
-#The callback object handed to doScene : the class that logs "Run successfully" and implements the callback.
+        # The callback object handed to doScene: the class that logs "Run successfully" and implements the callback.
         for c in self.anchor('[+] Run successfully: %s, funcId: %s'):
             if self.is_a(c, callback):
                 self.cls_key('NoopCallbackCls', c)
-#The push core, whose static accessor returns the remote dispatcher.
+        # The push core, whose static accessor returns the remote dispatcher.
         dispatcher = descriptor(self.r.get('SceneDispatcherCls', ''))
         for c in self.anchor('[+] MMAutoAuth was injected, run this scene now: %s, funcId: %s'):
             self.cls_key('PushCoreCls', c)
@@ -264,7 +258,7 @@ if len (found) == 1:
             if len(found) == 1:
                 self.set('PushCoreDispatcherName', found[0][0])
                 self.set('PushCoreDispatcherDesc', found[0][1])
-#The net queue : holds the dispatcher and a static instance of itself.
+        # The net queue: holds the dispatcher and a static instance of itself.
         for c in self.anchor('MicroMsg.NetSceneQueue'):
             singleton = [(n, t) for n, t, f in self.fields(c, c, static=True)]
             getter = [(n, p) for n, p, f in self.methods(c, pattern='()' + dispatcher, static=False)]
@@ -276,20 +270,18 @@ if len (found) == 1:
                 self.set('NetQueueDispatcherDesc', getter[0][1])
 
     def recall(self):
-#The revoke scene : the cgi path plus a constructor that takes(message, ?, ?).
+        # The revoke scene: the cgi path plus a constructor that takes (message, ?, ?).
         for c, ms in self.anchor('/cgi-bin/micromsg-bin/revokemsg').items():
             for n, p, f in self.methods(c, '<init>', '(L*;Ljava/lang/String;Ljava/lang/String;)V'):
                 self.cls_key('RevokeCls', c)
                 self.set('RevokeCtorDesc', p)
                 self.cls_key('MsgInfoCls', params(p)[0])
         msg = descriptor(self.r['MsgInfoCls']) if 'MsgInfoCls' in self.r else None
-#Whether the message was sent by this account is a field of the message base class(im.c8,
-#a library class that keeps its names), not a method : read it instead of calling one.
         self.set('MsgInfoIsSendField', 'field_isSend')
         if not msg:
             return
-#The message store : a class with several final(talker, id) -> message getters, that another class
-#(the holder, an interface of the service kind) keeps one static instance of.
+        # The message store: a class with several final (talker, id) -> message getters, that another class
+        # (the holder, an interface of the service kind) keeps one static instance of.
         getter = '(Ljava/lang/String;J)' + msg
         stores = {}
         for c, n, f in self.by_proto(getter):
@@ -308,7 +300,7 @@ if len (found) == 1:
         self.member('StoreGetName', 'StoreGetDesc', store, 'm', getter, static=False)
 
     def locator(self):
-#The service registry : logs as ServiceManager and has the static lookup(Class)->service.
+        # The service registry: logs as ServiceManager and has the static lookup (Class) -> service.
         manager = self.anchor('MicroMsg.ServiceManager')
         best = None
         for c, ms in manager.items():
@@ -320,7 +312,7 @@ if len (found) == 1:
             self.member('LocatorGetName', 'LocatorGetDesc', best, 'm', '(Ljava/lang/Class;)L*;', static=True)
 
     def prepare(self):
-#The chat UI's one-time preparation: a static ()V on the class that logs as BizHalfScreenChattingUtil.
+        # The chat UI's one-time preparation: a static ()V on the class that logs as BizHalfScreenChattingUtil.
         found = [c for c in self.anchor('MicroMsg.BizHalfScreenChattingUtil')
                  if any(n != '<clinit>' for n, _, _ in self.methods(c, pattern='()V', static=True))
                  and any(True for _ in self.methods(c, '<clinit>'))]
@@ -350,7 +342,7 @@ if len (found) == 1:
         if ctor:
             self.set('ImageParamsCtorDesc', ctor)
             self.cls_key('ImageContextCls', params(ctor)[4])
-#The field the constructor fills with "msg_raw_img_send" is the source tag.
+        # The field the constructor fills with "msg_raw_img_send" is the source tag.
         source = [f for c, ms in self.anchor('msg_raw_img_send').items() if c == params_cls for m in ms for f in [m[2]] if f]
         if len(set(source)) == 1:
             self.set('ImageParamsSourceName', source[0])
@@ -441,10 +433,10 @@ if len (found) == 1:
         impls = list(self.anchor('MicroMsg.C2CFileFeatureService'))
         if len(impls) == 1 and self.service_of(impls[0]):
             self.cls_key('VoicePathsCls', self.service_of(impls[0]))
-#The path method takes(kind, String, boolean, boolean) and builds a file name.Several
-#methods in the service have that shape(the message and the app - message variants), so the
-#kind class itself has to say which one : it is the one that declares a static instance of
-#its own type, next to its variant enum.
+            # The path method takes (kind, String, boolean, boolean) and builds a file name. Several
+            # methods in the service have that shape (the message and the app-message variants), so the
+            # kind class itself has to say which one: it is the one that declares a static instance of
+            # its own type, next to its variant enum.
             picks = []
             for n, p, f in self.methods(impls[0], pattern='(L*;Ljava/lang/String;ZZ)Ljava/lang/String;', static=False):
                 first = params(p)[0]
@@ -469,7 +461,7 @@ if len (found) == 1:
                 self.cls_key(key, found[0])
                 if key == 'RoomAdminAddCls':
                     scene = found[0]
-#The admin scenes are cgi wrappers : their base class holds the request object(kick is a plain scene).
+        # The admin scenes are cgi wrappers: their base class holds the request object (kick is a plain scene).
         cgi = self.anchor('MicroMsg.Cgi')
         if scene:
             base = [c for c in self.supers(scene)[1:] if c in cgi and any(not f & STATIC for _, _, f in self.fields(c))]
@@ -498,8 +490,9 @@ if len (found) == 1:
                 self.cls_key('PatServiceCls', self.service_of(found[0]))
             self.member('PatInsertName', None, found[0], 'm', shape_, static=False)
 
-#Keys no rule derives : they are not obfuscated(a field of WeChat's message base class) or are a
-#behaviour switch that the new build inherits from the one before it(see ThreadLooper in wx_send.cpp).
+
+# Keys no rule derives: they are not obfuscated (a field of WeChat's message base class) or are a
+# behaviour switch that the new build inherits from the one before it (see ThreadLooper in wx_send.cpp).
 CARRIED = ('ThreadLooper', 'MsgInfoIsSendField')
 
 

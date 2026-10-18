@@ -278,10 +278,11 @@ void CodeStrings(const File &f, uint32_t code_off, void *ctx, StringLoadFn fn) {
     if (static_cast<uint64_t>(code_off) + 16 + static_cast<uint64_t>(units) * 2 > f.size) return;
     const uint8_t *base = f.data + code_off + 16;
 
+    constexpr uint32_t kMaxLoads = 1024;
     struct Load {
         uint32_t string_idx;
         int32_t field_idx;
-    } loads[512];
+    } loads[kMaxLoads];
     struct Pending {
         int load;
         int ttl;
@@ -307,13 +308,18 @@ void CodeStrings(const File &f, uint32_t code_off, void *ctx, StringLoadFn fn) {
         if (op == 0x1a || op == 0x1b) {
             const uint32_t string_idx = op == 0x1a ? U16(insn + 2) : U32(insn + 2);
             const uint8_t reg = insn[1];
-            if (count < 512) {
-                loads[count].string_idx = string_idx;
-                loads[count].field_idx = -1;
-                pending[reg].load = static_cast<int>(count);
-                pending[reg].ttl = 7;
-                ++count;
+            if (count == kMaxLoads) {
+                // A method with this many constants is pathological; report what is held and keep going
+                // without the iput-object mapping (that mapping only matters for one small anchor).
+                for (uint32_t k = 0; k < count; ++k) fn(ctx, loads[k].string_idx, loads[k].field_idx);
+                count = 0;
+                memset(pending, 0, sizeof(pending));
             }
+            loads[count].string_idx = string_idx;
+            loads[count].field_idx = -1;
+            pending[reg].load = static_cast<int>(count);
+            pending[reg].ttl = 7;
+            ++count;
         } else if (op == 0x5b) { // iput-object vA, vB, field@CCCC
             const uint8_t reg = insn[1] & 0x0f;
             if (pending[reg].ttl > 0 && pending[reg].load >= 0) {

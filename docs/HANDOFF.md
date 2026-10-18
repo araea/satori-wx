@@ -1,6 +1,6 @@
 # 开发者指引
 
-微信 `com.tencent.mm`（8.0.78 / versionCode 671108664）的 Zygisk 原生模块，实现 Satori v1 协议，供本机 Koishi / 知微等客户端连接。用法与接口见 [`README.md`](../README.md)。文档与测试夹具里有真实 wxid / uin，`gh` 命令要加 `env -u GH_TOKEN`。
+微信 `com.tencent.mm`（8.0.78 / 8.0.79）的 Zygisk 原生模块，实现 Satori v1 协议，供本机 Koishi / 知微等客户端连接。用法与接口见 [`README.md`](../README.md)。文档与测试夹具里有真实 wxid / uin，`gh` 命令要加 `env -u GH_TOKEN`。
 
 ## 环境与构建
 
@@ -12,6 +12,7 @@
 ./build.sh          # 服务端 ZIP + satori-wx-check + satori-wx-account + satori-wx-wcdb
 ./tests/run.sh      # socket + 协议 + account + wcdb + store + events + media + message
                    # + capabilities + keepalive + content + tempstore + backend + webhook
+                   # + derive（SATORI_WX_APK 指向安装包时跑真实推导）
 ```
 
 版本号在 `module.prop`（`version` + 独立的 `versionCode` 递增）与 `native/version.h` 两处同步。
@@ -211,7 +212,7 @@ tools/dev/dev.sh --port   # 最近一次注入的端口（5610 + 代际 % 80）�
 
 它是同一套 server / backend / sender（去掉 `module.cpp`，不启保活与密钥捕获），在自己的端口上提供完整的 Satori 服务，curl 命令与上面一样，只换端口。`dev_entry.cpp` 另开「端口 +100」的单行控制口（`file` / `video` / `quote` 直调发送器，回一行 JSON），排查「哪个类找不到」最快。每次重跑得到新端口，旧代际留在进程里无害，微信重启后消失。新增源文件要同步 `dev.sh` 的 `SRC` 列表（和 `build.sh`、`tests/run.sh` 一样）。
 
-查库用 `tools/wxq.cpp`。反编译用常驻的 jadx 服务：一次加载约一分钟，之后 `dec` / `use` / `find` 毫秒级。jadx 输出里 `f233841f` 这类名字是它改的，JNI 用原名（注释 `renamed from`）。
+查库用 `tools/wxq.cpp`。名字推导见 [wechat-names.md](wechat-names.md)：规则在 native/wx_derive.cpp，离线版是 tools/wxnames.py，宿主工具是 tools/wxnames_check.cpp。反编译用常驻的 jadx 服务：一次加载约一分钟，之后 `dec` / `use` / `find` 毫秒级。jadx 输出里 `f233841f` 这类名字是它改的，JNI 用原名（注释 `renamed from`）。
 
 ## 已知限制
 
