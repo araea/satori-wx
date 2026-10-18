@@ -106,11 +106,13 @@ def method_code(data, class_size, class_off):
         for _ in range(static_size + instance_size):
             _, pos = uleb(data, pos)
             _, pos = uleb(data, pos)
-        method_idx = 0
-        for _ in range(direct_size + virtual_size):
-            diff, pos = uleb(data, pos)
-            method_idx += diff
-            _, pos = uleb(data, pos)
-            code_off, pos = uleb(data, pos)
-            if code_off:
-                yield class_idx, method_idx, code_off
+        # The method index is a delta that starts again at 0 for the virtual methods.
+        for count in (direct_size, virtual_size):
+            method_idx = 0
+            for _ in range(count):
+                diff, pos = uleb(data, pos)
+                method_idx += diff
+                _, pos = uleb(data, pos)
+                code_off, pos = uleb(data, pos)
+                if code_off:
+                    yield class_idx, method_idx, code_off
