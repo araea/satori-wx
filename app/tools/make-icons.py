@@ -53,6 +53,7 @@ ICONS = {
     "edit": ("edit", "default"),
     "link": ("link", "default"),
     "folder": ("folder", "default"),
+    "download": ("download", "default"),
 }
 MIRRORED = {"arrow_back", "chevron_right", "open_in_new"}
 

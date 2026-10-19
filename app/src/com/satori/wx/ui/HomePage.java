@@ -11,6 +11,7 @@ import android.widget.ScrollView;
 import android.widget.TextView;
 import com.satori.wx.R;
 import com.satori.wx.core.Status;
+import com.satori.wx.update.Updater;
 import java.util.Arrays;
 import org.json.JSONObject;
 
@@ -34,6 +35,9 @@ final class HomePage {
         void copyToken();
         void copyReport();
         void shareReport();
+        void updateAction(int action);
+        void checkUpdate();
+        void setAutoUpdate(boolean on);
     }
 
     /** 首页渲染需要的全部输入。 */
@@ -44,6 +48,8 @@ final class HomePage {
         boolean guardBusy;
         boolean enabledBusy;
         String appVersion = "";
+        Updater.State update;
+        boolean autoUpdate = true;
     }
 
     final LinearLayout root;
@@ -61,6 +67,8 @@ final class HomePage {
     private final TextView sent, failed;
     private final Item[] chain = new Item[4];
     private final Item endpoint, token, openWeChat, restartWeChat, guard, moduleSwitch;
+    private final Item checkRow, autoRow;
+    private final UpdateCard updateCard, rebootCard;
     private final Item[] data;
     private final ImageButton refresh;
     private int heroTone = -1;
@@ -103,6 +111,14 @@ final class HomePage {
         content.addView(brand, Ui.stack(t.spaceSm));
         content.addView(ui.text("微信的 Satori 服务", Tokens.BODY_LARGE, t.onSurfaceVariant), Ui.stack(t.spaceXs));
         bar.follow(scroll, brand);
+
+        // ---- 更新：重启卡在上（模块没生效是眼前的事），更新卡在下 ----
+        rebootCard = new UpdateCard(ui, actions::updateAction);
+        rebootCard.setId(R.id.reboot_card);
+        content.addView(rebootCard, Ui.stack(t.spaceXl));
+        updateCard = new UpdateCard(ui, actions::updateAction);
+        updateCard.setId(R.id.update_card);
+        content.addView(updateCard, Ui.stack(t.spaceMd));
 
         // ---- 状态卡片 ----
         LinearLayout hero = ui.column();
@@ -182,6 +198,20 @@ final class HomePage {
         moduleSwitch.setId(R.id.module_switch);
         moduleSwitch.setOnToggle((item, on) -> actions.setEnabled(on));
         content.addView(moduleGroup, Ui.stack(0));
+
+        // ---- 更新 ----
+        content.addView(ui.sectionTitle("更新"), Ui.stack(t.space2xl));
+        Ui.Group updateGroup = ui.group();
+        checkRow = updateGroup.add(new Item(t, Item.ACTION, "检查更新", "").leading(Icon.DOWNLOAD, t.onSurfaceVariant));
+        checkRow.setId(R.id.check_update);
+        checkRow.setOnClickListener(v -> actions.checkUpdate());
+        autoRow = updateGroup.add(new Item(t, Item.SWITCH, "自动检查更新",
+                "打开知言时检查，并每天在后台检查一次；有新版本时发出通知。").leading(Icon.WAIT, t.onSurfaceVariant));
+        autoRow.setId(R.id.auto_update);
+        autoRow.setOnToggle((item, on) -> actions.setAutoUpdate(on));
+        content.addView(updateGroup, Ui.stack(0));
+        content.addView(ui.text("更新来自 GitHub 发布页，下载后会校验。模块更新需要重启手机才会生效。",
+                Tokens.BODY_SMALL, t.onSurfaceVariant), Pages.note(t));
 
         // ---- 连接链路 ----
         content.addView(ui.sectionTitle("连接链路"), Ui.stack(t.space2xl));
@@ -327,5 +357,18 @@ final class HomePage {
 
         String[][] rows = Status.diagnostics(s, m.appVersion);
         for (int i = 0; i < rows.length; i++) data[i].setSupporting(rows[i][1]);
+
+        Updater.State u = m.update;
+        if (u == null) {
+            updateCard.show(null);
+            rebootCard.show(null);
+        } else {
+            String running = s.status == null ? "" : s.status.optString("version");
+            updateCard.show(UpdateFaces.update(u, "知言", m.appVersion));
+            rebootCard.show(UpdateFaces.reboot(u, "知言", running));
+            checkRow.setSupporting(UpdateFaces.row(u, m.appVersion, System.currentTimeMillis()));
+            checkRow.setEnabled(!u.checking && !u.working());
+        }
+        autoRow.setChecked(m.autoUpdate, false);
     }
 }

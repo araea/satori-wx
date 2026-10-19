@@ -38,4 +38,8 @@
     <item type="id" name="wechat_settings" />
     <item type="id" name="guard" />
     <item type="id" name="module_switch" />
+    <item type="id" name="update_card" />
+    <item type="id" name="reboot_card" />
+    <item type="id" name="check_update" />
+    <item type="id" name="auto_update" />
 </resources>

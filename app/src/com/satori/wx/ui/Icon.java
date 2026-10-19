@@ -42,6 +42,7 @@ final class Icon {
     static final int EDIT = R.drawable.ms_edit;
     static final int LINK = R.drawable.ms_link;
     static final int FOLDER = R.drawable.ms_folder;
+    static final int DOWNLOAD = R.drawable.ms_download;
 
     static Drawable of(Tokens t, int kind, int color) {
         Drawable drawable = t.context.getDrawable(kind).mutate();

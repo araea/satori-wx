@@ -23,6 +23,8 @@ AAPT=/data/data/com.termux/files/home/android/android-sdk-tools/build-tools/aapt
 mkdir -p "$OUT/gen"
 "$AAPT" package -f -m -J "$OUT/gen" -M "$R/AndroidManifest.xml" -I /system/framework/framework-res.apk -S "$R/res" 2>/dev/null
 find "$R/src/com/satori/wx/core" "$R/tests" -maxdepth 1 -name '*.java' > "$OUT/sources.txt"
+# 更新的判断逻辑（清单、版本、计划、探测输出）不碰 Android，和 core 一起在 JVM 上跑。
+for name in Release Versions ModuleState Plan Notes; do echo "$R/src/com/satori/wx/update/$name.java"; done >> "$OUT/sources.txt"
 javac --release 17 -classpath "$JSON_JAR" -encoding UTF-8 -nowarn -d "$OUT/classes" @"$OUT/sources.txt"
 # 界面层只做编译检查（它依赖 android.jar，不在 JVM 上跑）。
 find "$R/src" "$OUT/gen" -name '*.java' > "$OUT/all.txt"
@@ -32,6 +34,7 @@ echo "== 2. run =="
 CP="$JSON_JAR:$OUT/classes"
 java -cp "$CP" -Dparity="$OUT/conf-parity" ConfTest
 java -cp "$CP" StatusTest
+java -cp "$CP" UpdateTest
 java -cp "$CP" -Dapp="$R" DesignTokenTest
 if su -c true >/dev/null 2>&1; then
   java -cp "$CP" RootScriptTest
