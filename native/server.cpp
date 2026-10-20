@@ -1051,7 +1051,8 @@ void ServeMethod(Exchange &x, const Method &rpc, const Multipart *uploads, const
         Reply(x.c, 503, "Service Unavailable", ERROR_BODY("login_offline", "login offline"));
         return;
     }
-    if (!LoginServes(login, rpc.name)) {
+    // Internal methods are not login.features; whether they exist is the route table's business.
+    if (strncmp(rpc.name, "internal/", 9) && !LoginServes(login, rpc.name)) {
         Reply(x.c, 404, "Not Found", ERROR_BODY("unsupported_method", "unsupported method"));
         return;
     }
@@ -1092,6 +1093,7 @@ void Rpc(Client &c, Hub *hub, const Backend *backend, WebHooks *hooks, const Hea
     const bool wakelock = !strcmp(path, "/v1/internal/wakelock");
     const bool pat = !strcmp(path, "/v1/internal/pat");
     const Method *rpc = !strncmp(path, "/v1/", 4) ? FindMethod(path + 4) : nullptr;
+    if (!rpc && !strcmp(path + 4, kAtAllQuota.name)) rpc = &kAtAllQuota;
     if (!meta && !status && !capabilities && !webhook_create && !webhook_delete && !wakelock && !pat && !rpc) {
         Reply(c, 404, "Not Found", ERROR_BODY("not_found", "unknown API route"));
         return;

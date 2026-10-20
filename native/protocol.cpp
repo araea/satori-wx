@@ -176,6 +176,9 @@ const Method kMethods[] = {
     {"guild.member.approve", "message_id:s approve:b comment:?s", false},
 };
 const size_t kMethodCount = sizeof(kMethods) / sizeof(kMethods[0]);
+// Not a standard method, so outside kMethods (and login.features): the same name and answer as
+// satori-qq's internal/at_all_quota, which clients ask before sending <at type="all"/>.
+const Method kAtAllQuota = {"internal/at_all_quota", "channel_id:?s guild_id:?s", false};
 const Method *FindMethod(const char *name) {
     for (const auto &method : kMethods)
         if (!strcmp(name, method.name)) return &method;

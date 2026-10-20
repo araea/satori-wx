@@ -1157,6 +1157,10 @@ Response Call(void *, const Request &request) {
         return list ? Response{200, list} : Response{404, nullptr};
     }
     if (!strcmp(name, "user.channel.create")) return Read(StoreChannelGet(store, Text(request, "user_id")));
+    if (!strcmp(name, kAtAllQuota.name)) {
+        const char *guild_id = *Text(request, "guild_id") ? Text(request, "guild_id") : Text(request, "channel_id");
+        return Read(StoreAtAllQuota(store, guild_id));
+    }
     return {501, nullptr};
 }
 } // namespace

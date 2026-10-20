@@ -720,6 +720,12 @@ int main() {
     cJSON *none_roles = satori::StoreMemberRoleList(store, "123@chatroom", "nobody");
     Check(none_roles && cJSON_GetArraySize(Item(none_roles, "data")) == 0, "non-member has no roles");
     cJSON_Delete(none_roles);
+    // The test account (self_wxid) is neither owner nor admin of 123@chatroom: no @所有人, no counts.
+    cJSON *quota = satori::StoreAtAllQuota(store, "123@chatroom");
+    Check(quota && cJSON_IsFalse(Item(quota, "allowed")) && cJSON_IsNull(Item(quota, "remaining")),
+          "at_all_quota for a plain member");
+    cJSON_Delete(quota);
+    Check(satori::StoreAtAllQuota(store, "999@chatroom") == nullptr, "at_all_quota unknown guild");
 
     // ---- the owner's own rows versus the module's own sends ---------------------------------------
     {

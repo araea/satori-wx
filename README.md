@@ -62,11 +62,12 @@ HTTP 使用 `Authorization: Bearer <token>`：缺失 token 返回 401，错误 t
 | `POST /v1/meta/webhook.create` / `webhook.delete` | 注册 / 注销 WebHook（`url` 必填、`token` 可选），最多 4 个，仅 http |
 | `POST /v1/internal/status` | 版本、native 状态、`send`（含 `state`：ready / waiting / incompatible）与 `keepalive` 状态块 |
 | `POST /v1/internal/wakelock` | 切换 CPU / Wi-Fi 唤醒锁（`{"on":true\|false}` 或 `{"toggle":true}`） |
+| `POST /v1/internal/at_all_quota` | 本号能否在这个群 @所有人（群主、管理员才能）：`{"channel_id":"…@chatroom"}` → `{allowed, remaining, group_remaining, reason}`，与 satori-qq 同名同形；微信不限次，两个次数是 `null` |
 | `POST /v1/login.get` | 返回已登记账号快照；未登录或身份不匹配时返回 403 |
 | `POST /v1/{resource}.{method}` | 标准方法参数校验与 native 后端分发 |
 | `POST /v1/upload.create` | 标准 multipart 上传，边收边落盘到 `files/satori-wx-tmp/`（上限 1 GiB，不占内存；令牌与登录在读 body 之前校验），返回 `internal:wechat/<user>/_tmp/<name>`（5 分钟有效），经 `/v1/proxy` 回读；视频、文件先传这里，再把链接放进 `<video src>` / `<file src>` |
 | `GET /v1/proxy/{url}` | 资源代理：`internal:` 链接按登录号解析并回文件；非法 URL 400；未登记 http(s) 前缀 403；未知登录 404 |
-| `POST /v1/internal/capabilities` | 报告 `send` 状态块、`unsupported`、`message_elements`（`message.create` 认得的元素）与 `limits` |
+| `POST /v1/internal/capabilities` | 报告 `send` 状态块、`unsupported`、`message_elements`（`message.create` 认得的元素）、`limits` 与 `actions`（可用的 `internal/*`，与 satori-qq 同名字段） |
 | `GET /v1/events` | WebSocket upgrade；10 秒内 IDENTIFY；READY、登录事件与 PING / PONG |
 
 `features` 的唯一来源是 `native/wx_capabilities.cpp`。已实现方法：

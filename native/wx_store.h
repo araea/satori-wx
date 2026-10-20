@@ -71,6 +71,10 @@ cJSON *StoreGuildMemberGet(Store *store, const char *guild_id, const char *user_
 // guild.member.role.set/unset as soon as WeChat refreshes that row.
 cJSON *StoreGuildRoleList(Store *store, const char *guild_id);
 cJSON *StoreMemberRoleList(Store *store, const char *guild_id, const char *user_id);
+// internal/at_all_quota: whether the account may @所有人 in this group (owner or admin), in the
+// shape satori-qq answers with — {allowed, remaining, group_remaining, reason}; WeChat has no daily
+// count, so both counts are null. Null when the group is unknown. Caller frees.
+cJSON *StoreAtAllQuota(Store *store, const char *guild_id);
 
 // ---- change feeds ---------------------------------------------------------------------------
 // What the event scanner (wx_events) reads to notice things that are not new rows: recalled

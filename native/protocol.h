@@ -17,6 +17,7 @@ struct Method {
 };
 extern const Method kMethods[];
 extern const size_t kMethodCount;
+extern const Method kAtAllQuota; // internal/at_all_quota, served like a method but not a feature
 const Method *FindMethod(const char *name);
 bool ValidateParams(const Method &method, const cJSON *body);
 cJSON *Json(const char *data, size_t size);

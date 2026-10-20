@@ -142,6 +142,13 @@ void AddBackendStatus(cJSON *object, bool capabilities) {
         cJSON_AddNumberToObject(limits, "voice_max_seconds", 60); // longer <audio> goes out as a file
         cJSON_AddNumberToObject(limits, "upload_ttl_seconds", 300);
     }
+    // The internal/* routes, named like satori-qq's `actions` so a client checks one list on both.
+    static const char *const kActions[] = {"status", "capabilities", "wakelock", "pat", "at_all_quota"};
+    cJSON *actions = cJSON_CreateArray();
+    if (actions) {
+        cJSON_AddItemToObject(object, "actions", actions);
+        for (const char *name : kActions) cJSON_AddItemToArray(actions, cJSON_CreateString(name));
+    }
     size_t unsupported_count = 0;
     const char *const *unsupported = satori::WeChatUnsupported(&unsupported_count);
     cJSON *removed = cJSON_CreateArray();

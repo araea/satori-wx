@@ -785,6 +785,24 @@ cJSON *StoreMemberRoleList(Store *store, const char *guild_id, const char *user_
     if (owner) return RoleList("owner", "群主");
     return admin ? RoleList("admin", "管理员") : RoleList("member", "成员");
 }
+
+cJSON *StoreAtAllQuota(Store *store, const char *guild_id) {
+    if (!store || !store->db || !strstr(guild_id, "@chatroom")) return nullptr;
+    const char *self = StoreSelfId(store);
+    Chatroom room{};
+    if (!*self || !LoadChatroom(store, guild_id, &room)) return nullptr;
+    const bool owner = !strcmp(room.roomowner, self);
+    const bool allowed = owner || RoomAdmin(room.roomdata, room.roomdata_size, self);
+    FreeChatroom(&room);
+    cJSON *result = cJSON_CreateObject();
+    if (!result) return nullptr;
+    cJSON_AddBoolToObject(result, "allowed", allowed);
+    // WeChat counts nothing per day; null keeps the shape satori-qq answers with.
+    cJSON_AddNullToObject(result, "remaining");
+    cJSON_AddNullToObject(result, "group_remaining");
+    cJSON_AddStringToObject(result, "reason", allowed ? "" : "只有群主和管理员能 @所有人");
+    return result;
+}
 } // namespace satori
 
 // ==== messages ===============================================================================

@@ -131,6 +131,7 @@ cJSON *StoreGuildMemberList(Store *, const char *, const char *, int) { return n
 cJSON *StoreGuildMemberGet(Store *, const char *, const char *) { return nullptr; }
 cJSON *StoreGuildRoleList(Store *, const char *) { return nullptr; }
 cJSON *StoreMemberRoleList(Store *, const char *, const char *) { return nullptr; }
+cJSON *StoreAtAllQuota(Store *, const char *) { return nullptr; }
 ActionResult RoomRemoveMember(const char *, const char *) { return {}; }
 ActionResult RoomSetAdmin(const char *, const char *, bool) { return {}; }
 void KeepaliveWakelockBegin() {}
