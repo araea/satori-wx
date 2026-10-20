@@ -19,13 +19,11 @@
   反复出现的「401/403」「登录头与登录查找」「打印并回 200/500」收成一个辅助函数。
 - 源文件清单在 `build.sh` 的两张表里（`SERVER_CORE`、`MODULE_ONLY`），新增文件要登记；测试在 `tests/run.sh` 里一行一个。
 
-## Java（`app/`）
+## 管理页（`webroot/`）
 
-- 语言级别 Java 17：`javac --release 17`，D8 脱糖到 min-api 26。record、switch 表达式、`instanceof` 模式匹配可用，
-  `switch` 上的模式匹配（Java 21）不用。
-- 只用 Android 26 有的类库，或 D8 能回填的方法。`javac` 对着 JDK 的类库编译而不是 `android.jar`，较新的 API
-  编译期查不出来。
-- import 排成一块：静态在前，其余按 ASCII 序；不写行内全限定名。`tools/java-imports.py --check` 检查，`app/test.sh` 会跑它。
+- 原生 ES 模块，不打包、不引第三方库；`kit.css`、`kit.js`、`icons.js` 与 satori-qq 逐字相同，改一边就同步另一边。
+- 页面不拼 shell 脚本：所有 root 动作都是 `ctl.sh` 的子命令，参数逐个单引号转义后传入，`ctl.sh` 自己再校验。
+- 视觉只用 Material 3 Expressive 的令牌与形状；颜色只在 `index.html` 的 `:root` 里定义。
 
 ## Python（`tools/`、`tests/`）
 

@@ -1,2 +1,2 @@
 #pragma once
-#define SATORI_WX_VERSION "0.20.0"
+#define SATORI_WX_VERSION "0.21.0"

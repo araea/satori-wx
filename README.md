@@ -4,11 +4,11 @@
 
 [![GitHub](https://img.shields.io/badge/GitHub-araea%2Fsatori--wx-181717?logo=github&logoColor=white)](https://github.com/araea/satori-wx)
 
-纯 native C++ 服务端。模块本身无 DEX、无 Java 助手、无 hook 引擎；管理界面是另一个应用（`app/`）。身份读微信自己的 SharedPreferences，消息只读打开微信的 `EnMicroMsg.db`，密钥在 `RegisterNatives` 边界捕获。发送、撤回与群管理由宿主 ClassLoader 反射调用微信自己的 NetScene，入库、加密、发送由微信完成。
+纯 native C++ 服务端。模块本身无 DEX、无 Java 助手、无 hook 引擎；管理界面是模块自带的网页（`webroot/`），在 root 管理器里打开，不用另装应用。身份读微信自己的 SharedPreferences，消息只读打开微信的 `EnMicroMsg.db`，密钥在 `RegisterNatives` 边界捕获。发送、撤回与群管理由宿主 ClassLoader 反射调用微信自己的 NetScene，入库、加密、发送由微信完成。
 
 ## 安装
 
-通过 Magisk / KernelSU 管理器安装服务端 ZIP，重启设备让模块生效。要求已有可用的 Zygisk 实现（Zygisk Next 按其官方要求配置）。管理界面用 Release 里的 `Zhiyan.apk`（需要 Root 授权）。
+通过 Magisk / KernelSU 管理器安装服务端 ZIP，重启设备让模块生效。要求已有可用的 Zygisk 实现（Zygisk Next 按其官方要求配置）。装好后在 KernelSU / APatch 的模块列表里点知言即可打开管理页。
 
 安装器首次生成 256 位随机 token，升级保留现有配置。配置文件在 `/data/adb/modules/satori_wx/satori-wx.conf`：
 
@@ -23,24 +23,21 @@ token=<安装器生成的令牌>
 - 配置在 `preAppSpecialize` 读取，文件描述符立即关闭。服务在 `postAppSpecialize` 启动，只在精确匹配的微信主进程内运行，非目标进程与 system_server 请求卸载模块。
 - 服务端只监听 `127.0.0.1`，随微信主进程结束退出。配置更改在下一次进程启动生效。
 
-知言应用（`app/`）管理端口与令牌、查看连接链路与发送能力、开关保活看守、重新启动微信。需要 Root 授权。状态是订阅来的（inotify 盯微信的 cgroup、模块发布的状态文件与看守），不是定时去问。
+管理页（`webroot/`，KernelSU / APatch 的模块网页界面）管理端口与令牌、查看连接链路与发送能力、开关保活看守与唤醒锁、重新启动微信、检查与安装更新。页面里的每个 root 动作都是模块自带的 `ctl.sh` 的一条子命令（`ctl.sh probe` 可以直接在终端里跑），页面打开时每 4 秒探测一次。Magisk 没有模块网页界面，可以直接用 `ctl.sh`。
 
 ## 模块开关
 
-首页的「模块开关」是总开关。关闭后不监听端口、不显示常驻通知、不持唤醒锁、不重启微信的核心服务，也不保活；微信本身照常运行，客户端连不上。开关写在微信数据目录的 `files/satori-wx/enabled`（`1` / `0`），模块里的 gate 线程每秒读一次，拨动后一两秒内生效，不用重启微信。关闭时知言应用会把 root 看守 `wxguard` 一并暂停；重新开启时恢复原来的保活意图。
+管理页的「模块开关」是总开关。关闭后不监听端口、不显示常驻通知、不持唤醒锁、不重启微信的核心服务，也不保活；微信本身照常运行，客户端连不上。开关写在微信数据目录的 `files/satori-wx/enabled`（`1` / `0`），模块里的 gate 线程每秒读一次，拨动后一两秒内生效，不用重启微信。关闭时管理页会把 root 看守 `wxguard` 一并暂停；重新开启时恢复原来的保活意图。
 
 关闭状态发布在 `state.json` 的 `enabled` 字段里；`internal/status` 的 `keepalive.enabled` 也是同一个值。
 
 ## 更新
 
-知言应用会自己检查更新：打开应用时检查，并每天在后台再查一次。发现新版本时，首页顶部出现「更新」卡，点「更新」即可——先装模块、后装应用，应用装好后自动重新打开；模块更新要重启手机才生效，装好后首页会给出「立即重启」。
+管理页会检查更新：打开时检查（成功后 6 小时、失败后 30 分钟内不重复，可以关掉），也可以手动「检查更新」。有新版本时页首出现「更新」卡，点「更新」由 `ctl.sh` 下载、核对 SHA-256，再交给 root 管理器自己的安装命令（`ksud` / `apd` / `magisk`）；端口与令牌由 `customize.sh` 原样保留。模块更新要重启手机才生效，装好后页首给出「立即重启」。
 
-- 更新来自本仓库的 GitHub 发布页（附带 `update.json`），下载后核对 SHA-256，APK 还要核对签名与当前应用一致。模块安装沿用 `customize.sh`，端口与令牌配置原样保留。
-- 需要 Root 授权才能一键安装。没有授权、找不到模块安装命令或安装器报错时，更新包会放进「下载」文件夹，按卡片提示在 Magisk / KernelSU / APatch 里安装即可。
-- 模块的 `module.prop` 带 `updateJson`，root 管理器的模块页里同样会显示知言的更新。
-- 「更新」区块可以关闭自动检查（同时取消后台检查与通知），也可以手动「检查更新」。
+模块的 `module.prop` 带 `updateJson`，root 管理器的模块列表本身也会提示更新。
 
-发布时用 `tools/release.sh`（先 `./build.sh` 与 `app/build.sh`）：核对版本、生成 `update.json`、创建 GitHub release。
+发布时用 `tools/release.sh`（先 `./build.sh`）：核对版本、生成 `update.json`、创建 GitHub release。
 
 ## 快速使用
 
@@ -94,7 +91,7 @@ HTTP 使用 `Authorization: Bearer <token>`：缺失 token 返回 401，错误 t
 - 好友 / 入群申请事件与对应的 approve 方法没做。事件的延迟与限制见[事件](docs/wechat-events.md)。
 - 微信无此概念的方法列入 `internal/capabilities.unsupported`：`message.update`、`channel.create`、`channel.mute`、`guild.member.mute`、`reaction.*`、`guild.role.create/update/delete`。
 - **微信版本**：发送、撤回、群管理、拍一拍都是反射调用微信混淆过的类，名字每个版本都会变。内置 8.0.78 与 8.0.79 两套名字；对不上的版本会在后台从安装包推导一套（约 11 秒，写进缓存供后续启动），推导完成前的发送会失败。推不出来时 `internal/status` 的 `send.state` 是 `incompatible`，常驻通知与知言应用也会明说；接收与事件不受影响。见[微信名字与版本适配](docs/wechat-names.md)。
-- 微信被系统冻结时回环端口握手成功但无响应，客户端挂起至超时。root 侧 `wxguard` 默认 ARMED 负责解冻（见[常驻通知与保活](docs/keepalive.md)）。冻结期间知言应用仍能看到模块自己发布的最后状态（`files/satori-wx/state.json`）。
+- 微信被系统冻结时回环端口握手成功但无响应，客户端挂起至超时。root 侧 `wxguard` 默认 ARMED 负责解冻（见[常驻通知与保活](docs/keepalive.md)）。冻结期间管理页仍能看到模块自己发布的最后状态（`files/satori-wx/state.json`）。
 - 只在 arm64 上构建与运行。
 - 写操作没有开关，成功表示「已交给微信派发」而非投递确认。破坏性动作不伪造成功，风控责任在调用方。
 - 一个 `message.create` 里的媒体发送串行执行，占着服务线程等确认。图片 ≤ 6 秒，视频 / 文件的「发送中」≤ 8 秒，整条请求的等待总预算 12 秒。一次最多 8 个媒体元素，其中图片 4 张。

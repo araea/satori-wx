@@ -40,8 +40,10 @@ mapfile -t MODULE < <(sources "${MODULE_ONLY[@]}")
 "$CXX" "${FLAGS[@]}" "$R/tools/wcdb_probe.cpp" "$R/native/wcdb.cpp" -Wl,--no-undefined -ldl -o "$OUT/satori-wx-wcdb"
 "$CXX" "${FLAGS[@]}" "$R/tools/wxnames_check.cpp" "$R/native/wx_derive.cpp" "$R/native/wx_dex.cpp" "$R/native/wx_names.cpp" \
     -Wl,--no-undefined -ldl -o "$OUT/wxnames_check"
-cp "$R/module.prop" "$R/customize.sh" "$R/service.sh" "$R/action.sh" "$R/tools/wxguard.sh" "$WORK/module/"
-chmod 0755 "$WORK/module/service.sh" "$WORK/module/action.sh" "$WORK/module/wxguard.sh"
+cp "$R/module.prop" "$R/customize.sh" "$R/service.sh" "$R/action.sh" "$R/ctl.sh" "$R/tools/wxguard.sh" "$WORK/module/"
+chmod 0755 "$WORK/module/service.sh" "$WORK/module/action.sh" "$WORK/module/ctl.sh" "$WORK/module/wxguard.sh"
+# 模块管理页：KernelSU / APatch 在模块列表里直接打开 webroot/index.html。
+cp -r "$R/webroot" "$WORK/module/webroot"
 mkdir -p "$WORK/module/licenses"
 cp "$R/native/vendor/cjson/LICENSE" "$WORK/module/licenses/cJSON.txt"
 patchelf --remove-rpath "$WORK/module/zygisk/arm64-v8a.so"

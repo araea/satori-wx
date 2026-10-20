@@ -26,9 +26,8 @@
 // minute heartbeat (core-service restart, and a check that the notification and the channel are
 // still there), or a deadline of its own (a send probe retry; an automatic hold expiring).
 //
-// The notification action button is a broadcast to the companion Zhiyan app
-// (com.satori.wx/.keepalive.WakeToggleReceiver); the app is a normal Android app and is the
-// only place a BroadcastReceiver can live, because the module deliberately ships no dex.
+// The notification has no action button: the wake lock is switched from the module page in the
+// root manager (webroot/ → ctl.sh → POST /v1/internal/wakelock).
 namespace satori {
 struct Config;
 

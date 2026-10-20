@@ -38,7 +38,6 @@ constexpr int kFlagUpdateCurrent = 0x08000000; // PendingIntent.FLAG_UPDATE_CURR
 constexpr int kFlagImmutable = 0x04000000;     // PendingIntent.FLAG_IMMUTABLE
 constexpr int kNotifyIdBase = 0x5A710001;
 constexpr int kReqOpen = 0x5A710003;
-constexpr int kReqToggle = 0x5A710004;
 // The heartbeat: restart WeChat's core service, and check that the notification, its channel and
 // the permission to show it are still there. There is no event for any of these going away.
 constexpr long long kHeartbeatMs = 10 * 60 * 1000;
@@ -63,8 +62,6 @@ constexpr int kColorDegraded = 0xFFBA1A1A;
 constexpr const char *kChannelName = "知言服务状态";
 constexpr const char *kHostPackage = "com.tencent.mm";
 constexpr const char *kHostService = "com.tencent.mm.booter.CoreService";
-constexpr const char *kTogglerPackage = "com.satori.wx";
-constexpr const char *kTogglerReceiver = "com.satori.wx.keepalive.WakeToggleReceiver";
 
 JavaVM *g_vm = nullptr;
 pthread_mutex_t g_mu = PTHREAD_MUTEX_INITIALIZER; // the Java side and the lock/notification state
@@ -92,8 +89,8 @@ volatile long long g_wakes = 0;       // passes run, for any reason
 volatile long long g_event_wakes = 0; // ... of which because something changed
 
 // The user toggle defaults to on: the module exists to keep the service responsive, so the
-// untimed CPU + Wi-Fi hold is armed from the first pass. The button and
-// POST /v1/internal/wakelock turn it off for the current boot.
+// untimed CPU + Wi-Fi hold is armed from the first pass. POST /v1/internal/wakelock (the
+// module page in the root manager) turns it off for the current boot.
 volatile bool g_want_lock = true;
 volatile bool g_lock_held = false;
 // Nesting depth of module-driven holds around outbound work; a user hold is independent.
@@ -792,33 +789,8 @@ void Notify(JNIEnv *env, bool verify) {
         }
     }
 
-    // Action button: a broadcast to the companion app, which forwards the toggle to
-    // POST /v1/internal/wakelock. The module cannot host a receiver without loading code.
-    if (g_j.pi_broadcast && g_j.intent_ctor && g_j.intent_component && g_j.intent_put_int && g_j.intent_put_string &&
-        g_j.intent_put_bool && g_j.component_ctor && g_j.b_action) {
-        jobject action = env->NewObject(g_j.cls_intent, g_j.intent_ctor);
-        jobject component = env->NewObject(g_j.cls_component, g_j.component_ctor, String(env, kTogglerPackage),
-                                           String(env, kTogglerReceiver));
-        if (action && component) {
-            env->CallObjectMethod(action, g_j.intent_component, component);
-            env->CallObjectMethod(action, g_j.intent_put_int, String(env, "port"), static_cast<jint>(g_port));
-            env->CallObjectMethod(action, g_j.intent_put_string, String(env, "token"), String(env, g_token));
-            env->CallObjectMethod(action, g_j.intent_put_bool, String(env, "on"), g_want_lock ? JNI_FALSE : JNI_TRUE);
-            Clear(env);
-            jobject toggle =
-                env->CallStaticObjectMethod(g_j.cls_pi, g_j.pi_broadcast, g_j.context, kReqToggle + g_instance, action,
-                                            kFlagUpdateCurrent | kFlagImmutable);
-            Clear(env);
-            if (toggle) {
-                env->CallObjectMethod(builder, g_j.b_action, g_j.icon,
-                                      String(env, g_want_lock ? "释放唤醒锁" : "获取唤醒锁"), toggle);
-                Clear(env);
-                env->DeleteLocalRef(toggle);
-            }
-        }
-        if (action) env->DeleteLocalRef(action);
-        if (component) env->DeleteLocalRef(component);
-    }
+    // No action button: the wake lock is switched from the module page in the root manager
+    // (POST /v1/internal/wakelock); the module ships no dex, so nothing in WeChat could receive it.
 
     jobject notification = env->CallObjectMethod(builder, g_j.b_build);
     if (!notification) {

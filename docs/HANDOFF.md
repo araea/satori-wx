@@ -26,7 +26,7 @@ port=5601
 token=<32-128 位字母数字-_>
 ```
 
-未知键、非法值会让 `ReadConfig` 失败，服务端不启动（fail-closed）。发送没有开关也没有实现端限速。`app/src/com/satori/wx/core/Conf.java` 必须与 `ReadConfig` 判得完全一致，`app/test.sh` 的 `ConfTest` 逐条比对。
+未知键、非法值会让 `ReadConfig` 失败，服务端不启动（fail-closed）。发送没有开关也没有实现端限速。管理页的 `parseConf`（`webroot/app.js`）必须与 `ReadConfig` 判得一致，原 `app/test.sh` 的 `ConfTest` 逐条比对。
 
 ## 协议覆盖（37 个标准方法）
 
@@ -223,8 +223,8 @@ README 的「限制 / 风险」是使用面清单。开发者另需知道：
 3. 事件延迟：撤回 ≤ 3 秒，群成员 ≥ 3 秒（两轮确认），好友 12–24 秒。模块启动前发生的变化不补发。
 4. 服务端事件序号以进程启动时的毫秒为基线，不跨进程回放。
 
-## 管理应用
+## 管理页
 
-`app/` 是独立构建的 Android 原生管理界面（`com.satori.wx`，需要 JDK / aapt，与纯 native 的模块构建互不依赖）。它通过 `su -M`（全局挂载命名空间，否则看不到微信的数据目录）读写 `satori-wx.conf`、读模块发布的状态文件与看守状态，经 `/v1/internal/status` 与 `/v1/meta` 看状态，并用一条常驻的 `inotifyd`（`core/Watcher`）订阅变化，不定时轮询。常驻通知上的唤醒锁按钮是一个显式广播，落到应用的 `keepalive.WakeToggleReceiver`，它再把切换转到 `internal/wakelock`。
+`webroot/` 是 KernelSU / APatch 的模块网页界面（管理器在模块列表里直接打开），没有单独的应用。页面只负责展示，所有 root 动作都经模块自带的 `ctl.sh`：`probe` 一次读出模块、配置、开关、微信进程与冻结状态、看守、模块发布的状态文件，以及 `/v1/internal/status` 与 `/v1/meta` 的实时应答（3 秒超时）；其余子命令写配置、写开关、开关看守与唤醒锁、重启微信、检查与安装更新。`ctl.sh` 发现自己不在全局挂载命名空间时用 `nsenter -t 1 -m` 换过去，否则看不到微信的数据目录。
 
-改 `ReadConfig` 的规则时同步改 `app/src/com/satori/wx/core/Conf.java`。`internal/status` 的 `send` 与 `keepalive` 块字段名被应用读取（`state` / `dispatcher` / `resolved`、计数与 `last_*`；`notification`、`wakelock`、`cpu_held`、`wifi_held`、`uptime_ms`），`files/satori-wx/state.json` 的字段（见[常驻通知与保活](keepalive.md)）同理，改名要同步。构建与结构见 [app/README.md](../app/README.md)，设计规范见[知言应用设计规范](app-design.md)。
+改 `ReadConfig` 的规则时同步改 `webroot/app.js` 的 `parseConf` 与 `ctl.sh` 的 `write_conf` 校验。`internal/status` 的 `send` 与 `keepalive` 块字段名被管理页读取（`state` / `dispatcher` / `resolved`、计数与 `last_*`；`notification`、`wakelock`、`cpu_held`、`wifi_held`、`uptime_ms`），`files/satori-wx/state.json` 的字段（见[常驻通知与保活](keepalive.md)）同理，改名要同步。

@@ -4,7 +4,7 @@
 
 ## 模块开关
 
-总开关在知言应用首页。关闭时 gate 线程（`module.cpp`，每秒读一次）调用 `Stop()` 关掉回环监听，`KeepaliveSetEnabled(false)` 取消通知、释放 CPU / Wi-Fi 锁、停止核心服务重启，并把 `enabled:false` 写进 `state.json`；`wx_live` 仍然推进水位但不发布事件，重新开启时不会补放关闭期间的消息。root 看守由应用侧 `wxguard.sh stop` 暂停，重新开启时按关闭前的意图恢复。开关值文件是微信数据目录里的 `files/satori-wx/enabled`，缺省为开启。
+总开关在管理页（`webroot/`）。关闭时 gate 线程（`module.cpp`，每秒读一次）调用 `Stop()` 关掉回环监听，`KeepaliveSetEnabled(false)` 取消通知、释放 CPU / Wi-Fi 锁、停止核心服务重启，并把 `enabled:false` 写进 `state.json`；`wx_live` 仍然推进水位但不发布事件，重新开启时不会补放关闭期间的消息。root 看守由 `ctl.sh set-enabled 0` 一并暂停，重新开启时按关闭前的意图恢复。开关值文件是微信数据目录里的 `files/satori-wx/enabled`，缺省为开启。
 
 模块仍被注入微信进程（这是 Zygisk 的工作方式），但关闭后除 gate 的一次/秒检查外不监听、不通知、不保活。
 
@@ -27,7 +27,7 @@
 - 常驻状态通知：低重要性、静默、`ongoing` 的通道 `satori-wx-status`，状态色与 satori-qq 一致（在线=品牌色 / 等待=琥珀 / 异常=错误红）。标题与正文跟随真实状态：服务在监听且已登录 / 等待登录 / 已登录但端口没监听。折叠时是标题加一行（在连客户端数（WebSocket）与端口）；展开后是这一行，加「上线于 03:41」（不是今天就带日期），以及发送与当前微信版本不兼容时的一句提醒。不附唤醒锁与发送开关的状态：唤醒锁的状态就是按钮上的字（「获取 / 释放唤醒锁」），发送没有开关。点击用微信的 launcher intent 打开微信。
 - **在线时长是系统的计时器**：`setWhen(上线时刻)` + `setUsesChronometer(true)`，SystemUI 自己每秒走字，进程里不为它醒。通知只在上面那些内容变化时重发，不再按分钟重绘。
 - 通知渠道在每次发布前重建一次：微信或 ColorOS 会把 `satori-wx-status` 这个渠道删掉（`mDeleted=true`），向不存在的渠道发布通知会被系统默默拒收（logcat 里的 `No Channel found`，不抛异常）。
-- 被清掉后补发：没有「被取消」的事件可订，所以在心跳时、以及 `/v1/internal/status` 被请求时（最多每 30 秒一次，由 keeper 线程做，不占服务线程）用 `NotificationManager.getActiveNotifications()` 核对，没了就补发。知言应用在前台时每次刷新都会请求状态，所以实际几乎立刻补上；应用没开时最迟一个心跳。
+- 被清掉后补发：没有「被取消」的事件可订，所以在心跳时、以及 `/v1/internal/status` 被请求时（最多每 30 秒一次，由 keeper 线程做，不占服务线程）用 `NotificationManager.getActiveNotifications()` 核对，没了就补发。管理页开着时每次探测都会请求状态，所以实际几乎立刻补上；没开时最迟一个心跳。
 
 ### 发布的状态文件
 
@@ -40,19 +40,19 @@
  "keepalive":{"notify":"posted","wakelock":true},"changed_at":1792297261248}
 ```
 
-用途：微信被系统冻结时回环端口不应答，但这份文件仍在，知言应用（root）读它就知道冻结前服务是什么样——账号是谁、发送能不能用、跑了多久。`pid` 对不上眼下的微信进程就是上一个进程的遗物，读者必须丢掉。应用还用 inotify 盯着它被改名替换，所以变化是推来的。
+用途：微信被系统冻结时回环端口不应答，但这份文件仍在，管理页经 `ctl.sh probe`（root）读它就知道冻结前服务是什么样——账号是谁、发送能不能用、跑了多久。`pid` 对不上眼下的微信进程就是上一个进程的遗物，读者必须丢掉。管理页打开时每 4 秒探测一次。
 
 ### 发送能力
 
-`send.state`（`/v1/internal/status` 与上面的文件里都有）：`ready` 能发；`waiting` 找到了微信的发送类、但网络层还没起来；`incompatible` 当前微信版本里没有发送路径反射要用的类或成员（微信是混淆的，换版本会改名；模块只验证过一个版本，见 `wx_send.cpp` 头部）；`unknown` 还没探测、应用没就绪，或找不到类这件事还没被确认第二次。`incompatible` 时通知的展开正文会说，应用的状态卡会说「可以接收，暂不能发送」。状态由 keeper 线程的 `SendProbe()` 探测（登录后按 0 / 2.5 / 5 / 10 / 30 / 60 秒重试直到就绪或判定不兼容；心跳时再看一次；`internal/status` 被请求而发送还没就绪时，最多每 30 秒请求它再探一次），`internal/status` 只读缓存，服务线程上不做 JNI。找不到类或成员要**连着两次**才判不兼容（一次可能只是应用还没完全起来），之后一次成功的探测就清掉它。没有专门的预热线程。
+`send.state`（`/v1/internal/status` 与上面的文件里都有）：`ready` 能发；`waiting` 找到了微信的发送类、但网络层还没起来；`incompatible` 当前微信版本里没有发送路径反射要用的类或成员（微信是混淆的，换版本会改名；模块只验证过一个版本，见 `wx_send.cpp` 头部）；`unknown` 还没探测、应用没就绪，或找不到类这件事还没被确认第二次。`incompatible` 时通知的展开正文会说，管理页的状态卡会说「可以接收，暂不能发送」。状态由 keeper 线程的 `SendProbe()` 探测（登录后按 0 / 2.5 / 5 / 10 / 30 / 60 秒重试直到就绪或判定不兼容；心跳时再看一次；`internal/status` 被请求而发送还没就绪时，最多每 30 秒请求它再探一次），`internal/status` 只读缓存，服务线程上不做 JNI。找不到类或成员要**连着两次**才判不兼容（一次可能只是应用还没完全起来），之后一次成功的探测就清掉它。没有专门的预热线程。
 
 ### 唤醒锁
 
-一个 `PARTIAL_WAKE_LOCK`（tag `satori-wx:wakelock`）加一个尽力而为的 `WIFI_MODE_FULL_HIGH_PERF`，都 `setReferenceCounted(false)`。默认开：第一次处理就把不定时的 CPU + Wi-Fi 锁持上。通知上的按钮与 `POST /v1/internal/wakelock` 关掉它只管本次开机。对齐 satori-qq 的 `WakeLockCtl`，还有两路自动持有：
+一个 `PARTIAL_WAKE_LOCK`（tag `satori-wx:wakelock`）加一个尽力而为的 `WIFI_MODE_FULL_HIGH_PERF`，都 `setReferenceCounted(false)`。默认开：第一次处理就把不定时的 CPU + Wi-Fi 锁持上。管理页的「唤醒锁」开关（`POST /v1/internal/wakelock`）关掉它只管本次开机。对齐 satori-qq 的 `WakeLockCtl`，还有两路自动持有：
 
 - 出站期间自动持有（`KeepaliveWakelockBegin/End`，引用计数）：`message.create`、`message.delete`、`channel.delete`、`guild.member.kick`、`guild.member.role.set/unset` 在派发期间持有 CPU 锁，避免息屏后微信内核的上传 / 派发被电源管理掐掉。自动持有带 180 秒上限：到点 keeper 醒来放手（用户手动的持有是不定时长的，不受影响）。
 - 有客户端连接时保 Wi-Fi：只要有一个 `/v1/events` WebSocket 客户端在连，就保持 Wi-Fi 锁（对应 satori-qq 的 `sustainWifi`）。
-- 按钮自身是一个 `PendingIntent.getBroadcast`，指向知言应用导出的 `com.satori.wx.keepalive.WakeToggleReceiver`，Intent 里带当前 `port` / `token` / 目标 `on` 状态。接收器把 `{"on":…}` POST 到 `http://127.0.0.1:<port>/v1/internal/wakelock`，模块在 `ApplyLock()` 里真正持有或释放，随后 keeper 重发通知更新按钮文字。
+- 通知上没有按钮：模块不带 dex，微信进程里没有能接广播的代码。切换走管理页：`ctl.sh wakelock on|off` 把 `{"on":…}` POST 到 `http://127.0.0.1:<port>/v1/internal/wakelock`，模块在 `ApplyLock()` 里真正持有或释放。
 
 ### 进程内保活
 
