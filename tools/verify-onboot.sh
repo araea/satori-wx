@@ -58,7 +58,7 @@ while [ "$i" -lt 90 ]; do
             echo
         fi
         logcat -d -s SatoriWx:V '*:S' | tail -n 60
-        KEYS=/data/data/com.tencent.mm/files/satori-wx
+        KEYS=/data/data/com.tencent.mm/files/.svc
         echo "--- cipher key ---"
         cat "$KEYS/key.log" 2>/dev/null || echo "(none)"
         printf 'SEND verdict: expected=%s ok=%s target=%s\n' "$SEND_EXPECTED" "$SEND_OK" "$TARGET"

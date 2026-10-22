@@ -4,7 +4,7 @@
 
 ## 模块开关
 
-总开关在管理页（`webroot/`）。关闭时 gate 线程（`module.cpp`，每秒读一次）调用 `Stop()` 关掉回环监听，`KeepaliveSetEnabled(false)` 取消通知、释放 CPU / Wi-Fi 锁、停止核心服务重启，并把 `enabled:false` 写进 `state.json`；`wx_live` 仍然推进水位但不发布事件，重新开启时不会补放关闭期间的消息。root 看守由 `ctl.sh set-enabled 0` 一并暂停，重新开启时按关闭前的意图恢复。开关值文件是微信数据目录里的 `files/satori-wx/enabled`，缺省为开启。
+总开关在管理页（`webroot/`）。关闭时 gate 线程（`module.cpp`，每秒读一次）调用 `Stop()` 关掉回环监听，`KeepaliveSetEnabled(false)` 取消通知、释放 CPU / Wi-Fi 锁、停止核心服务重启，并把 `enabled:false` 写进 `state.json`；`wx_live` 仍然推进水位但不发布事件，重新开启时不会补放关闭期间的消息。root 看守由 `ctl.sh set-enabled 0` 一并暂停，重新开启时按关闭前的意图恢复。开关值文件是微信数据目录里的 `files/.svc/enabled`，缺省为开启。
 
 模块仍被注入微信进程（这是 Zygisk 的工作方式），但关闭后除 gate 的一次/秒检查外不监听、不通知、不保活。
 
@@ -31,7 +31,7 @@
 
 ### 发布的状态文件
 
-模块把自己的状态写在微信数据目录里：`files/satori-wx/state.json`（0600，临时文件加改名，原子；内容没变不重写）。只有变得慢的事实，不含逐条消息变化的计数器：
+模块把自己的状态写在微信数据目录里：`files/.svc/state.json`（0600，临时文件加改名，原子；内容没变不重写）。只有变得慢的事实，不含逐条消息变化的计数器：
 
 ```json
 {"schema":1,"version":"0.18.0","pid":11598,"port":5601,"listening":true,"enabled":true,

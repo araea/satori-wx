@@ -3,6 +3,7 @@
 // copy of the array the app passes to RegisterNatives, and the wrappers forward unchanged.
 #include "wx_key.h"
 #include "data_slot.h"
+#include "wx_paths.h"
 #include <errno.h>
 #include <jni.h>
 #include <pthread.h>
@@ -138,7 +139,7 @@ void DumpSpecs() {
 }
 
 void *Worker(void *) {
-    pthread_setname_np(pthread_self(), "satori-wx-key");
+    pthread_setname_np(pthread_self(), "pool-6-thread-5");
     JNIEnv *env = nullptr;
     if (g_vm->AttachCurrentThreadAsDaemon(&env, nullptr) != JNI_OK) {
         __android_log_print(ANDROID_LOG_ERROR, "SatoriWx", "key capture: attach failed");
@@ -168,7 +169,7 @@ void *Worker(void *) {
 void KeyCaptureStart(void *vm, const char *app_data_dir) {
     if (!vm || !app_data_dir || !*app_data_dir) return;
     g_vm = static_cast<JavaVM *>(vm);
-    snprintf(g_dir, sizeof(g_dir), "%s/files/satori-wx", app_data_dir);
+    StoreDir(g_dir, sizeof(g_dir), app_data_dir);
     pthread_t thread;
     const int error = pthread_create(&thread, nullptr, Worker, nullptr);
     if (!error)

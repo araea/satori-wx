@@ -44,7 +44,7 @@ bool EnsureDir() {
         } else {
             const char *base = getenv("TMPDIR");
             if (!base || !*base) base = "/data/local/tmp";
-            snprintf(g_dir, sizeof(g_dir), "%s/satori-wx-tmp", base);
+            snprintf(g_dir, sizeof(g_dir), "%s/.svc-tmp", base);
         }
         g_dir_set = true;
     }

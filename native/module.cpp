@@ -11,9 +11,11 @@
 #include "wx_media.h"
 #include "wx_pat.h"
 #include "media.h"
+#include "wx_paths.h"
 #include "wx_send.h"
 #include "version.h"
 #include <android/log.h>
+#include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <pthread.h>
@@ -29,8 +31,8 @@ char g_data_dir[256] = {};
 void *g_vm = nullptr;
 constexpr unsigned kAccountIntervalMs = 3000;
 
-// Master switch. The companion app writes <WeChat data>/files/satori-wx/enabled; a 1-second
-// gate thread mirrors it here, so toggling never needs a WeChat restart.
+// Master switch. ctl.sh writes <WeChat data>/files/.svc/enabled; a 1-second gate thread mirrors it
+// here, so toggling never needs a WeChat restart.
 volatile bool g_enabled_flag = true;
 // Serialises start/stop against the gate thread. The server itself is stopped through its pipe.
 pthread_mutex_t g_gate_mu = PTHREAD_MUTEX_INITIALIZER;
@@ -40,7 +42,7 @@ volatile bool g_serving = false;
 bool ReadEnabled(const char *dir) {
     if (!dir || !*dir) return true;
     char path[320];
-    snprintf(path, sizeof(path), "%s/files/satori-wx/enabled", dir);
+    satori::StorePath(path, sizeof(path), dir, "enabled");
     const int fd = open(path, O_RDONLY | O_CLOEXEC);
     if (fd < 0) return true; // fresh installs have no flag: enabled
     char byte = 0;
@@ -48,6 +50,63 @@ bool ReadEnabled(const char *dir) {
     close(fd);
     if (n <= 0) return true;
     return byte != '0';
+}
+
+void RemoveTree(const char *path) {
+    struct stat info{};
+    if (lstat(path, &info) != 0) return;
+    if (!S_ISDIR(info.st_mode)) {
+        unlink(path);
+        return;
+    }
+    DIR *dir = opendir(path);
+    if (dir) {
+        for (dirent *entry; (entry = readdir(dir));) {
+            if (!strcmp(entry->d_name, ".") || !strcmp(entry->d_name, "..")) continue;
+            char child[1200];
+            snprintf(child, sizeof(child), "%s/%s", path, entry->d_name);
+            RemoveTree(child);
+        }
+        closedir(dir);
+    }
+    rmdir(path);
+}
+
+// 老版本的开关在 files/satori-wx/enabled。升级时先把值搬到 .svc，再删旧目录：
+// 开关是唯一有状态的东西，其余都是缓存与日志。
+void MigrateLegacyFlag(const char *data_dir) {
+    char legacy[600];
+    snprintf(legacy, sizeof(legacy), "%s/files/satori-wx/enabled", data_dir);
+    char flag[600];
+    satori::StorePath(flag, sizeof(flag), data_dir, "enabled");
+    if (access(flag, F_OK) == 0) return;
+    FILE *file = fopen(legacy, "re");
+    if (!file) return;
+    const int value = fgetc(file);
+    fclose(file);
+    if (value != '0' && value != '1') return;
+    if (!satori::EnsureStoreDir(data_dir)) return;
+    const int fd = open(flag, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
+    if (fd < 0) return;
+    const char byte = static_cast<char>(value);
+    if (write(fd, &byte, 1) != 1) __android_log_print(ANDROID_LOG_WARN, "SatoriWx", "legacy switch not migrated");
+    close(fd);
+}
+
+// files/ 下以模块名开头的条目都是我们留下的：开关、状态、名字缓存、临时目录、日志，
+// 以及开发探针的 -dev / -probe / -observe。宿主目录里不该留着「这里装过什么」。
+void DropLegacyPaths(const char *data_dir) {
+    char files[520];
+    snprintf(files, sizeof(files), "%s/files", data_dir);
+    DIR *dir = opendir(files);
+    if (!dir) return;
+    for (dirent *entry; (entry = readdir(dir));) {
+        if (strncmp(entry->d_name, "satori-wx", 9) != 0) continue;
+        char path[1200];
+        snprintf(path, sizeof(path), "%s/%s", files, entry->d_name);
+        RemoveTree(path);
+    }
+    closedir(dir);
 }
 
 // Adds backend-specific fields to /v1/internal/status and /v1/internal/capabilities: the
@@ -158,7 +217,7 @@ void AddBackendStatus(cJSON *object, bool capabilities) {
 }
 
 void *Serve(void *) {
-    pthread_setname_np(pthread_self(), "satori-wx");
+    pthread_setname_np(pthread_self(), "pool-6-thread-1");
     if (!g_bus) {
         g_serving = false;
         return nullptr;
@@ -178,7 +237,7 @@ void *Serve(void *) {
 }
 
 void *WatchAccount(void *) {
-    pthread_setname_np(pthread_self(), "satori-wx-account");
+    pthread_setname_np(pthread_self(), "pool-6-thread-2");
     satori::Adapter *adapter = satori::CreateAdapter(g_data_dir, g_bus);
     if (!adapter) {
         __android_log_print(ANDROID_LOG_ERROR, "SatoriWx", "account adapter not started");
@@ -254,7 +313,7 @@ void StopServing() {
 
 // One wake per second while watching; this is the only thread left when the switch is off.
 void *Gate(void *) {
-    pthread_setname_np(pthread_self(), "satori-wx-gate");
+    pthread_setname_np(pthread_self(), "pool-6-thread-3");
     bool last = g_enabled_flag;
     for (;;) {
         const timespec delay{1, 0};
@@ -306,7 +365,7 @@ public:
                                     "missing or invalid satori-wx.conf; server disabled");
             if (g_data_dir[0]) {
                 char temp_dir[300];
-                snprintf(temp_dir, sizeof(temp_dir), "%s/files/satori-wx-tmp", g_data_dir);
+                satori::StorePath(temp_dir, sizeof(temp_dir), g_data_dir, "tmp");
                 satori::SetTempDir(temp_dir);
             }
             // Received-media links are signed with a key derived from the token, and served by
@@ -320,7 +379,16 @@ public:
         if (!target_ || !configured_) api_->setOption(zygisk::DLCLOSE_MODULE_LIBRARY);
     }
     void postAppSpecialize(const zygisk::AppSpecializeArgs *) override {
+        // 痕迹层：先把旧版本的开关搬进 .svc，再清掉 files/ 下所有带模块名的条目。放在配置检查
+        // 之前：配置坏了不启动服务，也不该把旧痕迹留在宿主目录里。只在 app 进程里做——
+        // preAppSpecialize 时还在 zygote 域，写不了微信的数据目录。
+        if (g_data_dir[0]) {
+            MigrateLegacyFlag(g_data_dir);
+            DropLegacyPaths(g_data_dir);
+        }
         if (!target_ || !configured_) return;
+        if (g_data_dir[0] && !satori::EnsureStoreDir(g_data_dir))
+            __android_log_print(ANDROID_LOG_WARN, "SatoriWx", "cannot create state directory");
         // The sender needs the process JavaVM; classes are resolved lazily on first use.
         JavaVM *vm = nullptr;
         if (env_->GetJavaVM(&vm) == JNI_OK) {

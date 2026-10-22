@@ -27,7 +27,7 @@ token=<安装器生成的令牌>
 
 ## 模块开关
 
-管理页的「模块开关」是总开关。关闭后不监听端口、不显示常驻通知、不持唤醒锁、不重启微信的核心服务，也不保活；微信本身照常运行，客户端连不上。开关写在微信数据目录的 `files/satori-wx/enabled`（`1` / `0`），模块里的 gate 线程每秒读一次，拨动后一两秒内生效，不用重启微信。关闭时管理页会把 root 看守 `wxguard` 一并暂停；重新开启时恢复原来的保活意图。
+管理页的「模块开关」是总开关。关闭后不监听端口、不显示常驻通知、不持唤醒锁、不重启微信的核心服务，也不保活；微信本身照常运行，客户端连不上。开关写在微信数据目录的 `files/.svc/enabled`（`1` / `0`），模块里的 gate 线程每秒读一次，拨动后一两秒内生效，不用重启微信。关闭时管理页会把 root 看守 `wxguard` 一并暂停；重新开启时恢复原来的保活意图。
 
 关闭状态发布在 `state.json` 的 `enabled` 字段里；`internal/status` 的 `keepalive.enabled` 也是同一个值。
 
@@ -62,7 +62,7 @@ HTTP 使用 `Authorization: Bearer <token>`：缺失 token 返回 401，错误 t
 | `POST /v1/internal/at_all_quota` | 本号能否在这个群 @所有人（群主、管理员才能）：`{"channel_id":"…@chatroom"}` → `{allowed, remaining, group_remaining, reason}`，与 satori-qq 同名同形；微信不限次，两个次数是 `null` |
 | `POST /v1/login.get` | 返回已登记账号快照；未登录或身份不匹配时返回 403 |
 | `POST /v1/{resource}.{method}` | 标准方法参数校验与 native 后端分发 |
-| `POST /v1/upload.create` | 标准 multipart 上传，边收边落盘到 `files/satori-wx-tmp/`（上限 1 GiB，不占内存；令牌与登录在读 body 之前校验），返回 `internal:wechat/<user>/_tmp/<name>`（5 分钟有效），经 `/v1/proxy` 回读；视频、文件先传这里，再把链接放进 `<video src>` / `<file src>` |
+| `POST /v1/upload.create` | 标准 multipart 上传，边收边落盘到 `files/.svc/tmp/`（上限 1 GiB，不占内存；令牌与登录在读 body 之前校验），返回 `internal:wechat/<user>/_tmp/<name>`（5 分钟有效），经 `/v1/proxy` 回读；视频、文件先传这里，再把链接放进 `<video src>` / `<file src>` |
 | `GET /v1/proxy/{url}` | 资源代理：`internal:` 链接按登录号解析并回文件；非法 URL 400；未登记 http(s) 前缀 403；未知登录 404 |
 | `POST /v1/internal/capabilities` | 报告 `send` 状态块、`unsupported`、`message_elements`（`message.create` 认得的元素）、`limits` 与 `actions`（可用的 `internal/*`，与 satori-qq 同名字段） |
 | `GET /v1/events` | WebSocket upgrade；10 秒内 IDENTIFY；READY、登录事件与 PING / PONG |
@@ -91,7 +91,8 @@ HTTP 使用 `Authorization: Bearer <token>`：缺失 token 返回 401，错误 t
 - 好友 / 入群申请事件与对应的 approve 方法没做。事件的延迟与限制见[事件](docs/wechat-events.md)。
 - 微信无此概念的方法列入 `internal/capabilities.unsupported`：`message.update`、`channel.create`、`channel.mute`、`guild.member.mute`、`reaction.*`、`guild.role.create/update/delete`。
 - **微信版本**：发送、撤回、群管理、拍一拍都是反射调用微信混淆过的类，名字每个版本都会变。内置 8.0.78 与 8.0.79 两套名字；对不上的版本会在后台从安装包推导一套（约 11 秒，写进缓存供后续启动），推导完成前的发送会失败。推不出来时 `internal/status` 的 `send.state` 是 `incompatible`，常驻通知与知言应用也会明说；接收与事件不受影响。见[微信名字与版本适配](docs/wechat-names.md)。
-- 微信被系统冻结时回环端口握手成功但无响应，客户端挂起至超时。root 侧 `wxguard` 默认 ARMED 负责解冻（见[常驻通知与保活](docs/keepalive.md)）。冻结期间管理页仍能看到模块自己发布的最后状态（`files/satori-wx/state.json`）。
+- 微信被系统冻结时回环端口握手成功但无响应，客户端挂起至超时。root 侧 `wxguard` 默认 ARMED 负责解冻（见[常驻通知与保活](docs/keepalive.md)）。冻结期间管理页仍能看到模块自己发布的最后状态（`files/.svc/state.json`）。
+- 痕迹：落盘只有一个隐藏目录 `files/.svc`，线程名、通知渠道 id、唤醒锁 tag 都不带模块名，升级时清掉旧的 `files/satori-wx*`。能做到什么、做不到什么见[痕迹](docs/stealth.md)。
 - 只在 arm64 上构建与运行。
 - 写操作没有开关，成功表示「已交给微信派发」而非投递确认。破坏性动作不伪造成功，风控责任在调用方。
 - 一个 `message.create` 里的媒体发送串行执行，占着服务线程等确认。图片 ≤ 6 秒，视频 / 文件的「发送中」≤ 8 秒，整条请求的等待总预算 12 秒。一次最多 8 个媒体元素，其中图片 4 张。

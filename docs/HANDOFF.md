@@ -67,8 +67,9 @@ token=<32-128 位字母数字-_>
 | `native/wx_room.cpp/.h` | 反射群管理写操作：`qn.p`（踢人 / 退群，`m1` 派发）与 `qn.b` / `qn.e`（设 / 撤管理员，`z2.d` Cgi 派发） |
 | `native/wx_pat.cpp/.h` | 反射拍一戳：`nv3.l.nj` 插入本地行 + `qv3.b`（cgi `sendpat`）`doScene` 派发；`PatDispatch` 是 `/v1/internal/pat` 的 provider |
 | `native/tempstore.cpp/.h` | 内置 `upload.create` 的落盘与 TTL；`/v1/proxy` 的 `internal:.../_tmp/...` 目标 |
-| `native/wx_keepalive.cpp/.h` | 微信进程内的 keeper：一个睡在条件变量上的线程，按状态变化（`NotifyStateChanged`）、10 分钟心跳与自己的期限醒来；常驻状态通知（在线时长用系统计时器）、唤醒锁、重启微信自己的 CoreService、发布 `files/satori-wx/state.json`；`keepalive` 状态块。不轮询 |
+| `native/wx_keepalive.cpp/.h` | 微信进程内的 keeper：一个睡在条件变量上的线程，按状态变化（`NotifyStateChanged`）、10 分钟心跳与自己的期限醒来；常驻状态通知（在线时长用系统计时器）、唤醒锁、重启微信自己的 CoreService、发布 `files/.svc/state.json`；`keepalive` 状态块。不轮询 |
 | `native/wx_key.cpp/.h` | 捕获 SQLCipher 密钥：RegisterNatives 指针替换，只取 setCipherKey / nativeSetKey |
+| `native/wx_paths.h` | 宿主私有目录里唯一的落盘根 `files/.svc`：路径构造与建目录；名字不带模块名（见[痕迹](stealth.md)） |
 | `tools/wxguard.sh` | root 侧看守（`service.sh` 开机恢复，`action.sh` 切换，见[常驻通知与保活](keepalive.md)） |
 | `tools/*.py` | 离线 DEX 分析工具 |
 | `tools/verify-onboot.sh` | 一次性开机自检脚本 |
@@ -125,7 +126,7 @@ python3 tools/dexmethodstrings.py $APK 'Lcom/tencent/mm/app/q3;' b
 
 `tools/dexlib.py` 是精确指令解码器。`libapp.so` 里的编译化 dex 这些工具看不到，能用可读 dex 拼出来的路径优先别去碰它。JADX 也可用：`~/tools/jadx/bin/jadx --single-class <点分名> -d <输出目录> base.apk`。
 
-库检查台 `tools/wxq.cpp`（`./build.sh` 不编它，手编：`clang -O2 -I native tools/wxq.cpp native/wcdb.cpp -ldl -o build/wxq`）：只读跑一条 SELECT，参数是 libWCDB.so 路径、库路径、`hex:<密钥>` 或 `-`（明文）。密钥在 `<微信数据目录>/files/satori-wx/key.log` 的 `hex=`。热拷贝 db+wal 的副本读不了，密钥确定正确时直接以只读方式开活库是安全的。
+库检查台 `tools/wxq.cpp`（`./build.sh` 不编它，手编：`clang -O2 -I native tools/wxq.cpp native/wcdb.cpp -ldl -o build/wxq`）：只读跑一条 SELECT，参数是 libWCDB.so 路径、库路径、`hex:<密钥>` 或 `-`（明文）。密钥在 `<微信数据目录>/files/.svc/key.log` 的 `hex=`。热拷贝 db+wal 的副本读不了，密钥确定正确时直接以只读方式开活库是安全的。
 
 ## 真机验收
 
@@ -218,7 +219,7 @@ tools/dev/dev.sh --port   # 最近一次注入的端口（5610 + 代际 % 80）�
 
 README 的「限制 / 风险」是使用面清单。开发者另需知道：
 
-1. 密钥捕获把明文写进 `files/satori-wx/key.log`（0600）。
+1. 密钥捕获把明文写进 `files/.svc/key.log`（0600）。
 2. 微信 `:push` 子进程有 mars。服务端只在主进程，发送靠反射，不依赖子进程。
 3. 事件延迟：撤回 ≤ 3 秒，群成员 ≥ 3 秒（两轮确认），好友 12–24 秒。模块启动前发生的变化不补发。
 4. 服务端事件序号以进程启动时的毫秒为基线，不跨进程回放。
@@ -227,4 +228,4 @@ README 的「限制 / 风险」是使用面清单。开发者另需知道：
 
 `webroot/` 是 KernelSU / APatch 的模块网页界面（管理器在模块列表里直接打开），没有单独的应用。页面只负责展示，所有 root 动作都经模块自带的 `ctl.sh`：`probe` 一次读出模块、配置、开关、微信进程与冻结状态、看守、模块发布的状态文件，以及 `/v1/internal/status` 与 `/v1/meta` 的实时应答（3 秒超时）；其余子命令写配置、写开关、开关看守与唤醒锁、重启微信、检查与安装更新。`ctl.sh` 发现自己不在全局挂载命名空间时用 `nsenter -t 1 -m` 换过去，否则看不到微信的数据目录。
 
-改 `ReadConfig` 的规则时同步改 `webroot/app.js` 的 `parseConf` 与 `ctl.sh` 的 `write_conf` 校验。`internal/status` 的 `send` 与 `keepalive` 块字段名被管理页读取（`state` / `dispatcher` / `resolved`、计数与 `last_*`；`notification`、`wakelock`、`cpu_held`、`wifi_held`、`uptime_ms`），`files/satori-wx/state.json` 的字段（见[常驻通知与保活](keepalive.md)）同理，改名要同步。
+改 `ReadConfig` 的规则时同步改 `webroot/app.js` 的 `parseConf` 与 `ctl.sh` 的 `write_conf` 校验。`internal/status` 的 `send` 与 `keepalive` 块字段名被管理页读取（`state` / `dispatcher` / `resolved`、计数与 `last_*`；`notification`、`wakelock`、`cpu_held`、`wifi_held`、`uptime_ms`），`files/.svc/state.json` 的字段（见[常驻通知与保活](keepalive.md)）同理，改名要同步。

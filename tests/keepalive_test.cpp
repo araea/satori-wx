@@ -214,10 +214,13 @@ void TestKeeper() {
              static_cast<int>(getpid()));
     mkdir(dir, 0700);
     char state[320], tmp[330];
-    snprintf(state, sizeof(state), "%s/files/satori-wx/state.json", dir);
+    snprintf(state, sizeof(state), "%s/files/.svc/state.json", dir);
     snprintf(tmp, sizeof(tmp), "%s.tmp", state);
     char files[300];
     snprintf(files, sizeof(files), "%s/files", dir);
+    mkdir(files, 0700);
+    // 模块自己建 .svc；测试里先摆好
+    snprintf(files, sizeof(files), "%s/files/.svc", dir);
     mkdir(files, 0700);
 
     satori::Config config;

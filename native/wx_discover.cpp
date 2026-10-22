@@ -1,4 +1,5 @@
 #include "wx_discover.h"
+#include "wx_paths.h"
 
 #include "wx_derive.h"
 #include "wx_names.h"
@@ -61,7 +62,9 @@ bool ApkPath(JNIEnv *env, char *out, size_t size) {
 }
 
 void CachePath(char *out, size_t size, const char *dir, const char *fingerprint) {
-    snprintf(out, size, "%s/files/satori-wx/%s%s.conf", dir, kCachePrefix, fingerprint);
+    char leaf[96];
+    snprintf(leaf, sizeof(leaf), "%s%s.conf", kCachePrefix, fingerprint);
+    StorePath(out, size, dir, leaf);
 }
 
 // Reads a cache written for this very APK. Fails on a different fingerprint, a missing key or a
@@ -97,7 +100,7 @@ bool SaveCache(const char *path, const Job &job, const DerivedNames &names) {
     snprintf(temporary, sizeof(temporary), "%s.tmp", path);
     FILE *file = fopen(temporary, "w");
     if (!file) return false;
-    fprintf(file, "satori-wx names 1\napk %s\n", job.fingerprint);
+    fprintf(file, "names 1\napk %s\n", job.fingerprint);
     for (int i = 0; i < kWxKeyCount; ++i) fprintf(file, "%s %s\n", WxKeyId(static_cast<WxKey>(i)), names.value[i]);
     const bool ok = fflush(file) == 0 && fsync(fileno(file)) == 0;
     fclose(file);

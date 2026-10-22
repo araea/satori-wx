@@ -19,7 +19,7 @@
 | message.delete（撤回） | 用 `ex0.k0.F0.k(talker,localId)` 取 MsgInfo，反射调 `com.tencent.mm.modelsimple.d1`（cgi revokemsg）；只撤回本账号消息 |
 | channel.delete / guild.member.kick | 反射 `qn.p`（cgi delchatroommember），退群用 `[self]`，踢人用目标 wxid |
 | guild.member.role.set / unset（可选） | 反射 `qn.b` / `qn.e`（cgi add/delchatroomadmin），经 `com.tencent.mm.modelbase.z2.d(o,null,false)` 走微信 Cgi 运行器；只变更 `admin` 角色 |
-| upload.create | core 内置 SDK 默认实现，`multipart/form-data` 流式落盘（超过 16 KiB 的 body 不缓冲，上限 1 GiB）为 `internal:wechat/<user>/_tmp/<name>`（5 分钟、随机名、0600），落在微信数据目录下的 `files/satori-wx-tmp/`；链接由 `/v1/proxy` 回读（发送端不消费） |
+| upload.create | core 内置 SDK 默认实现，`multipart/form-data` 流式落盘（超过 16 KiB 的 body 不缓冲，上限 1 GiB）为 `internal:wechat/<user>/_tmp/<name>`（5 分钟、随机名、0600），落在微信数据目录下的 `files/.svc/tmp/`；链接由 `/v1/proxy` 回读（发送端不消费） |
 | /v1/proxy/{url} | `internal:` 链接按登录号解析并流式回文件（`Range`、`HEAD`、百分号编码）；`_tmp` 是上传，`_msg` 是收到的消息媒体（验签失败与不存在都是 404）；未登记 http(s) 前缀 403；非法 400；未知登录 404；带 CORS，不需 Satori 登录头 |
 | guild.member.get / list | 读 `chatroom` 的 memberlist + displayname（`、` 分隔）+ roomowner；`next` 是成员偏移；displayname 与 memberlist 数量不一致时忽略群昵称、回落到 rcontact |
 | guild.role.list / guild.member.role.list | 合成角色：`owner`（群主）/ `admin`（管理员）/ `member`（成员）；管理员位读 `chatroom.roomdata` 的成员标志（`flag & 2048`），没有 roomdata 缓存时按普通成员算；非成员返回空列表；未知群返回 404 |

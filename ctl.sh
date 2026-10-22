@@ -8,6 +8,7 @@
 #   ctl.sh wakelock on|off        切换模块持有的 CPU / Wi-Fi 唤醒锁
 #   ctl.sh open | restart | app-settings    打开微信 / 重新启动微信 / 微信的应用详情
 #   ctl.sh update-check | update-install <url> <sha256> | reboot
+#   ctl.sh purge                  清掉微信目录里属于模块的东西（卸载模块前用）
 #
 # 输出是 key=value 行，任意文本走 base64。参数都由界面生成，这里仍逐一校验。
 MODDIR=${0%/*}
@@ -27,8 +28,11 @@ PKG=com.tencent.mm
 M=/data/adb/modules/$ID
 U=/data/adb/modules_update/$ID
 DATA=/data/user/0/$PKG
-FLAG=$DATA/files/satori-wx/enabled
-PUBLISHED=$DATA/files/satori-wx/state.json
+# 宿主私有目录里的落盘根。不带模块名：微信随时能看见自己的 files/，名字里写模块名等于
+# 把模块写在宿主的目录上。目录由模块进程自己建，这里只补 0700 与属主。
+STATE_DIR=$DATA/files/.svc
+FLAG=$STATE_DIR/enabled
+PUBLISHED=$STATE_DIR/state.json
 G=/data/adb/satori-wx
 GUARD=$G/wxguard.sh
 CONF=$M/satori-wx.conf
@@ -183,6 +187,16 @@ update_install() {
     echo ok=1
 }
 
+# 清掉宿主目录里属于模块的东西：隐藏目录（开关、状态、key、缓存、日志）与旧版本留下的条目。
+# 升级不需要它——模块自己会在启动时清旧路径；这里给「卸载模块前」用。
+purge() {
+    rm -rf "$STATE_DIR"
+    for p in "$DATA"/files/satori-wx*; do
+        [ -e "$p" ] && rm -rf "$p"
+    done
+    echo ok=1
+}
+
 case $1 in
     probe) probe ;;
     write-conf) write_conf "$2" ;;
@@ -196,5 +210,6 @@ case $1 in
     update-check) update_check ;;
     update-install) update_install "$2" "$3" ;;
     reboot) svc power reboot 2>/dev/null || reboot ;;
-    *) echo "usage: ctl.sh probe|write-conf|set-enabled|guard|wakelock|open|restart|app-settings|update-check|update-install|reboot" >&2; exit 2 ;;
+    purge) purge ;;
+    *) echo "usage: ctl.sh probe|write-conf|set-enabled|guard|wakelock|open|restart|app-settings|update-check|update-install|purge|reboot" >&2; exit 2 ;;
 esac

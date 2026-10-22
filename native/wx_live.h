@@ -3,7 +3,7 @@
 
 namespace satori {
 // Starts a background poller that reads the cipher spec captured by the main module
-// (native/wx_key.cpp; files/satori-wx/key.log), opens the account message database read-only
+// (native/wx_key.cpp; files/.svc/key.log), opens the account message database read-only
 // and publishes `message-created` events to the bus.
 //
 // Safety: only the spec that carries a cipher version (the setCipherKey path) is used to

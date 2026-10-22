@@ -1,5 +1,6 @@
 #include "wx_live.h"
 #include "wx_events.h"
+#include "wx_paths.h"
 #include "wx_store.h"
 #include "wx_account.h"
 #include "wx_watch.h"
@@ -65,11 +66,11 @@ bool Emit(void *context, const char *event) {
 }
 
 // File diagnostics: logcat is unreliable for an injected module tag, so status goes to
-// <app>/files/satori-wx-store.log (same uid, overwritten each process start).
+// <app>/files/.svc/store.log (same uid, overwritten each process start).
 void Log(const char *app_data, const char *format, ...) {
     static bool started = false;
     char path[1200];
-    snprintf(path, sizeof(path), "%s/files/satori-wx-store.log", app_data);
+    StorePath(path, sizeof(path), app_data, "store.log");
     FILE *file = fopen(path, started ? "a" : "w");
     started = true;
     if (!file) return;
@@ -132,7 +133,7 @@ bool FindDatabase(const char *app_data, char *out, size_t capacity) {
 // (native/wx_key.cpp); there is no separate probe module any more.
 bool LoadCipherSpec(const char *app_data, Spec *spec) {
     char path[1300];
-    snprintf(path, sizeof(path), "%s/files/satori-wx/key.log", app_data);
+    StorePath(path, sizeof(path), app_data, "key.log");
     FILE *file = fopen(path, "r");
     if (!file) return false;
     char line[512];
@@ -194,7 +195,7 @@ long long RealtimeMs() {
 
 void *Loop(void *argument) {
     auto *live = static_cast<Live *>(argument);
-    pthread_setname_np(pthread_self(), "satori-wx-store");
+    pthread_setname_np(pthread_self(), "pool-6-thread-6");
     for (int i = 0; i < 90 && !live->store; ++i) {
         if (TryOpen(live, &live->store)) break;
         const timespec delay{2, 0};

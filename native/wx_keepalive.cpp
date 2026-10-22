@@ -14,6 +14,7 @@
 #include "protocol.h"
 #include "version.h"
 #include "wx_send.h"
+#include "wx_paths.h"
 #include "jni_helpers.h"
 #include <jni.h>
 #include <errno.h>
@@ -74,9 +75,11 @@ int g_instance = 0;
 int g_notify_id = kNotifyIdBase;
 // Primary ids, and the ones used only if the primary channel cannot be (re)created, e.g. a ROM
 // that keeps a deleted id blocked.
-char g_channel[40] = "satori-wx-status";
-char g_channel_fallback[40] = "satori-wx-status-2";
-char g_lock_tag[48] = "satori-wx:wakelock";
+// 渠道 id 与唤醒锁 tag 都是宿主能自己读到的名字（notification 里能枚举渠道），所以不用模块名，
+// 按微信自己的 channel 命名风格取；渠道的显示名仍是「知言服务状态」，那是给用户看的。
+char g_channel[40] = "service_status_channel";
+char g_channel_fallback[40] = "service_status_channel_2";
+char g_lock_tag[48] = "svc:hold";
 char g_state_path[600] = {};
 char g_state_tmp[620] = {};
 char g_state_dir[560] = {};
@@ -1051,7 +1054,7 @@ void Pass() {
 }
 
 void *Manager(void *) {
-    pthread_setname_np(pthread_self(), "satori-wx-keep");
+    pthread_setname_np(pthread_self(), "pool-6-thread-4");
     unsigned long long seen = 0;
     for (;;) {
         long long deadline = NextDeadline();
@@ -1125,13 +1128,13 @@ void KeepaliveStart(void *vm, const Config &config, const char *data_dir, int in
     snprintf(g_token, sizeof(g_token), "%s", config.token);
     if (g_instance > 0) {
         g_notify_id = kNotifyIdBase + 0x100 + g_instance;
-        snprintf(g_channel, sizeof(g_channel), "satori-wx-status-dev");
-        snprintf(g_channel_fallback, sizeof(g_channel_fallback), "satori-wx-status-dev-2");
-        snprintf(g_lock_tag, sizeof(g_lock_tag), "satori-wx:wakelock-dev");
+        snprintf(g_channel, sizeof(g_channel), "service_status_channel_dev");
+        snprintf(g_channel_fallback, sizeof(g_channel_fallback), "service_status_channel_dev_2");
+        snprintf(g_lock_tag, sizeof(g_lock_tag), "svc:hold-dev");
         g_active_channel = g_channel;
     }
     if (data_dir && *data_dir) {
-        snprintf(g_state_dir, sizeof(g_state_dir), "%s/files/satori-wx", data_dir);
+        StoreDir(g_state_dir, sizeof(g_state_dir), data_dir);
         snprintf(g_state_path, sizeof(g_state_path), "%s/%s", g_state_dir,
                  g_instance ? "state-dev.json" : "state.json");
         snprintf(g_state_tmp, sizeof(g_state_tmp), "%s.tmp", g_state_path);

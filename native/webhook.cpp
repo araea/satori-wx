@@ -205,7 +205,7 @@ bool Deliver(const Hook &hook, int opcode, const char *body, size_t size) {
 
 void *DeliverLoop(void *argument) {
     auto *hooks = static_cast<WebHooks *>(argument);
-    pthread_setname_np(pthread_self(), "satori-wx-hook");
+    pthread_setname_np(pthread_self(), "pool-6-thread-7");
     for (;;) {
         pthread_mutex_lock(&hooks->mutex);
         while (!hooks->stopping && !hooks->used) pthread_cond_wait(&hooks->cond, &hooks->mutex);

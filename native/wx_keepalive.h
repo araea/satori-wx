@@ -17,7 +17,7 @@
 //     mirroring satori-qq's WakeLockCtl;
 //   * a periodic restart of WeChat's own core service, which keeps the main process at
 //     SERVICE_ADJ instead of CACHED so the system freezer leaves it alone;
-//   * the published state file (`files/satori-wx/state.json` in WeChat's data directory): the
+//   * the published state file (`files/.svc/state.json` in WeChat's data directory): the
 //     module's own view of itself, rewritten whenever it changes, so a reader with root learns the
 //     state even while the system has the process frozen and the HTTP port cannot answer.
 //

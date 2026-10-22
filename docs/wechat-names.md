@@ -16,7 +16,7 @@
 内置表全都对不上时（微信更新），`Resolve()` 失败后调用 `DiscoverStart()`：
 
 1. `ActivityThread.currentApplication().getPackageCodePath()` 取安装包路径，按文件大小 + mtime 算指纹；
-2. `files/satori-wx/names-<指纹>.conf` 有完整缓存就直接装上（之后启动零成本）；
+2. `files/.svc/names-<指纹>.conf` 有完整缓存就直接装上（之后启动零成本）；
 3. 没有就在后台线程跑 `DeriveNames()`（`native/wx_derive.cpp`），完成后写缓存并 `WxNamesInstall()`。
 
 整轮约 11 秒、峰值内存约 70 MB（dex 缓存 56 MB 上限 + 类索引约 15 MB）。只读安装包，不执行微信代码，不需要 root 之外的东西。
