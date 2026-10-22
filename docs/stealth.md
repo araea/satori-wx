@@ -31,4 +31,4 @@ su -c 'for p in /proc/$(pidof com.tencent.mm)/task/*/comm; do cat $p; done | sor
 su -c 'dumpsys notification --noredact | grep -c satori'   # 0
 ```
 
-设备上还留着早期版本的 `files/satori-wx*` 时，升级后重启一次微信就会清掉。要整个卸载模块时先跑 `ctl.sh purge`，把 `.svc` 与旧条目一起删掉；卸载之后模块就没有机会自己清了。
+设备上还留着早期版本的 `files/satori-wx*` 时，升级后重启一次微信就会清掉。卸载模块时 `uninstall.sh` 会停掉看守并清掉 `.svc` 与旧条目；绕过模块卸载（直接删模块目录）时手动跑一次 `ctl.sh purge`，否则卸载之后模块就没有机会自己清了。
