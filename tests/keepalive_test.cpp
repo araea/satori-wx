@@ -329,7 +329,7 @@ void TestKeeper() {
     unlink(state);
     unlink(tmp);
     char sub[330];
-    snprintf(sub, sizeof(sub), "%s/files/satori-wx", dir);
+    snprintf(sub, sizeof(sub), "%s/files/.svc", dir);
     rmdir(sub);
     rmdir(files);
     rmdir(dir);

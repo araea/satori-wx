@@ -80,6 +80,9 @@ build keepalive-test "-llog -ldl" tests/keepalive_test.cpp wx_keepalive wx_send 
 build names-test - tests/names_test.cpp wx_names
 "$OUT/names-test"
 
+build paths-test - tests/paths_test.cpp wx_paths
+"$OUT/paths-test"
+
 build content-test - tests/content_test.cpp protocol cjson
 "$OUT/content-test"
 

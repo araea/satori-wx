@@ -32,4 +32,10 @@ inline bool EnsureStoreDir(const char *data_dir) {
     return !stat(dir, &info) && S_ISDIR(info.st_mode);
 }
 
+// 收拢旧版本的痕迹：建 .svc，把 files/satori-wx/enabled 的值搬进 .svc/enabled，
+// 再删掉 files/ 下所有以 satori-wx 开头的条目。返回删掉的条目数；建不出目录时返回 -1。
+//
+// 只认自己的名字，所以对宿主的其他文件是只读的；失败也不阻塞启动——调用方只记一行。
+int MigrateLegacy(const char *data_dir);
+
 } // namespace satori
