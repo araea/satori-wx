@@ -8,7 +8,7 @@
 // an ordinary client on a second connection. Nothing in WeChat's code, ArtMethods or sqlite
 // connections is modified, and only SELECTs are issued.
 //
-// The database key is obtained separately (see docs/wechat-store.md); it is only held in
+// The database key is obtained separately; it is only held in
 // memory and never written to disk.
 namespace satori {
 struct Wcdb;
